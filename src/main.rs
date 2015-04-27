@@ -21,11 +21,18 @@
 // THE SOFTWARE.
 
 use std::env;
+use std::io::Read;
+use std::fs;
 
-mod parse;
+// mod parse;
+mod lex;
 
 fn main() {
-	let src_code = env::args().skip(1).next().unwrap();
+	let file_name = env::args().skip(1).next().unwrap();
 
-	println!("{:?}", parse::parse_string(&src_code));
+	let mut scr_code = String::with_capacity(4_000);
+	fs::File::open(file_name).unwrap().read_to_string(&mut scr_code).unwrap();
+
+	// println!("{:?}", parse::parse_string(&src_code));
+	println!("{:?}", lex::split_by_whitespace(&scr_code));
 }
