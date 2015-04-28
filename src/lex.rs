@@ -24,6 +24,10 @@
 pub enum Token<'a> {
 	LParen,
 	RParen,
+	LBracket,
+	RBracket,
+	LT,
+	GT,
 	Ident(&'a str),
 	Number(&'a str),
 	String(&'a str),
@@ -31,7 +35,7 @@ pub enum Token<'a> {
 	Colon,
 }
 
-/// Does not split string literals
+/// Split code string by whitespace. Preserve whitespace in string literals
 pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 	src = src.trim();
 
@@ -96,6 +100,7 @@ fn is_ident_char(c: char) -> bool {
 	}
 }
 
+/// Tokenize a whitespace-less string of code (except in string literals)
 fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 	if word.starts_with('"') || word.starts_with(r#"r""#) || word.starts_with("r#") {
 		// The word is a string
@@ -105,43 +110,37 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 	let mut tokens = Vec::with_capacity((word.len() * 3) / 2);
 
 	while let Some(c) = word.chars().next() {
-		match c {
-			'(' => {
-				tokens.push(Token::LParen);
-				word = &word[1..];
-			},
-			')' => {
-				tokens.push(Token::RParen);
-				word = &word[1..];
-			},
-			':' => {
-				tokens.push(Token::Colon);
-				word = &word[1..];
-			},
-			'!' => {
-				tokens.push(Token::Exclamation);
-				word = &word[1..];
-			},
+		let shift = match c {
+			'(' => { tokens.push(Token::LParen); 1 },
+			')' => { tokens.push(Token::RParen); 1 },
+			'[' => { tokens.push(Token::LBracket); 1 },
+			']' => { tokens.push(Token::RBracket); 1 },
+			'<' => { tokens.push(Token::LT); 1 },
+			'>' => { tokens.push(Token::GT); 1 },
+			':' => { tokens.push(Token::Colon); 1 },
+			'!' => { tokens.push(Token::Exclamation); 1 },
 			c if c.is_numeric() => {
 				let end_pos = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
 					.unwrap_or(word.len());
 				tokens.push(Token::Number(&word[..end_pos]));
 
-				word = &word[end_pos..];
+				end_pos
 			},
 			c if is_ident_char(c) => {
 				let end_pos = word.find(|c: char| !is_ident_char(c)).unwrap_or(word.len());
 				tokens.push(Token::Ident(&word[..end_pos]));
 
-				word = &word[end_pos..];
+				end_pos
 			},
-			c => return Err(format!("Unexpected character '{}'", c))
-		}
+			c => return Err(format!("Unexpected character `{}`", c))
+		};
+		word = &word[shift..];
 	}
 
 	Ok(tokens)
 }
 
+/// Tokenize any string of code
 pub fn tokenize_string(src: &str) -> Result<Vec<Token>, String> {
 	match split_by_whitespace(src) {
 		Ok(words) => {
@@ -190,5 +189,10 @@ fn test_tokenize_string() {
 		Number("4_100.125"),
 		Colon,
 		Ident("Xyz")
+	]);
+
+	let src = r#"[foo?::<T> _bar_)"#;
+	assert_eq!(&tokenize_string(src).unwrap(), &[
+		LBracket, Ident("foo?"), Colon, Colon, LT, Ident("T"), GT, Ident("_bar_"), RParen
 	]);
 }

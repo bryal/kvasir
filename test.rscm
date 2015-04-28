@@ -1,0 +1,4 @@
+(f00 _84r BAZ _13
+    (equal? macro! λ_α_µ_β_δ_α)
+    12.14 7_000.3 8_000: Float64
+    ["WOW OMG" r#"ZOMG" " " "MAN "# "helo"])
