@@ -34,5 +34,5 @@ fn main() {
 	fs::File::open(file_name).unwrap().read_to_string(&mut scr_code).unwrap();
 
 	// println!("{:?}", parse::parse_string(&src_code));
-	println!("{:?}", lex::split_by_whitespace(&scr_code));
+	println!("{:?}", lex::tokenize_string(&scr_code).unwrap());
 }
