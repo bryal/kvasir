@@ -26,8 +26,11 @@ pub enum Token<'a> {
 	RParen,
 	LBracket,
 	RBracket,
+	LBrace,
+	RBrace,
 	LT,
 	GT,
+	Eq,
 	Ident(&'a str),
 	Number(&'a str),
 	String(&'a str),
@@ -93,8 +96,7 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 
 fn is_ident_char(c: char) -> bool {
 	match c {
-		'_' => true,
-		'?' => true,
+		'_' | '?' => true,
 		c if c.is_alphanumeric() => true,
 		_ => false,
 	}
@@ -115,22 +117,31 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 			')' => { tokens.push(Token::RParen); 1 },
 			'[' => { tokens.push(Token::LBracket); 1 },
 			']' => { tokens.push(Token::RBracket); 1 },
+			'{' => { tokens.push(Token::LBrace); 1 },
+			'}' => { tokens.push(Token::RBrace); 1 },
 			'<' => { tokens.push(Token::LT); 1 },
 			'>' => { tokens.push(Token::GT); 1 },
+			'=' => { tokens.push(Token::Eq); 1 },
 			':' => { tokens.push(Token::Colon); 1 },
 			'!' => { tokens.push(Token::Exclamation); 1 },
 			c if c.is_numeric() => {
-				let end_pos = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
+				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
 					.unwrap_or(word.len());
-				tokens.push(Token::Number(&word[..end_pos]));
+				tokens.push(Token::Number(&word[..end_i]));
 
-				end_pos
+				end_i
 			},
 			c if is_ident_char(c) => {
-				let end_pos = word.find(|c: char| !is_ident_char(c)).unwrap_or(word.len());
-				tokens.push(Token::Ident(&word[..end_pos]));
+				let end_i = word.find(|c: char| !is_ident_char(c))
+					.map(|end_i| if word[end_i..].starts_with('!') {
+						end_i + 1
+					} else {
+						end_i
+					})
+					.unwrap_or(word.len());
+				tokens.push(Token::Ident(&word[..end_i]));
 
-				end_pos
+				end_i
 			},
 			c => return Err(format!("Unexpected character `{}`", c))
 		};
