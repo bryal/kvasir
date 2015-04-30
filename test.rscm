@@ -1,2 +1,6 @@
+(define (world)
+	(format! "{} {:?}" "World!" (vec! 1: u32 2 345_678): <Vec u32>)
+	: String)
+
 (define (main)
-	(println! "Hello World! {}" 123_456: u32))
+	(println! "Hello {}" (world)): Nil)

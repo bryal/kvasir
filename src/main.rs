@@ -51,10 +51,12 @@
 //! (define (f_baz: Fn<(F32) F64> a) a) ; == fn tmp(a: _) -> _ {a}; const f_foo: fn(f32) -> f64 = tmp;
 //! 
 //! The `main` function entry, same as Rust `fn main() { ...`
-//! (define (main) {
+//! (define (main) (block
 //! 	(println! "c_foo: {}, c_bar: {}, c_baz: {}" C_FOO C_BAR C_BAZ)
-//! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32)))})
+//! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32)))))
 //! ```
+
+#![feature(non_ascii_idents)]
 
 use std::env;
 use std::io::Read;
