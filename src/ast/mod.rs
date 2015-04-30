@@ -18,56 +18,12 @@
 // AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.	
+// THE SOFTWARE.
 
-use lex::Token;
+use self::types::Type;
+use ::lex::Token;
 
-#[derive(Debug, Clone)]
-enum Type {
-	Basic(String),
-	Construct(String, Vec<Type>),
-}
-impl Type {
-	/// Parse a type from tokens. On success, return parsed type and number of tokens used
-	fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {
-		if tokens.len() == 0 {
-			return Err("Type::parse: no tokens".into())
-		}
-		match &tokens[0] {
-			&Token::Ident(s) => Ok((Type::Basic(s.into()), 1)),
-			&Token::LT if tokens.len() > 2 => if let Token::Ident(ident) = tokens[1] {
-				find_closing_delim(Token::LT, &tokens[2..])
-					.map(|delim_i| delim_i + 2)
-					.ok_or("Type::parse: failed to find closing angle bracket".into())
-					.and_then(|delim_i| parse_types(&tokens[2..delim_i])
-						.map(|tys| (Type::Construct(ident.into(), tys), delim_i + 1)))
-			} else {
-				Err(format!(
-					"Type::parse: first token in angle brackets was not type ident: `{:?}`",
-					tokens[1]
-				))
-			},
-			_ => Err(format!("Type::parse: no valid type siganture in tokens: {:?}", tokens))
-		}
-	}
-}
-
-fn parse_types(tokens: &[Token]) -> Result<Vec<Type>, String> {
-	let mut tys = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match Type::parse(&tokens[i..]) {
-			Ok((ty, len)) => {
-				tys.push(ty);
-				i += len;
-			},
-			Err(e) => return Err(e),
-		}
-	}
-
-	Ok(tys)
-}
+mod types;
 
 #[derive(Debug, Clone)]
 struct TypedBinding {

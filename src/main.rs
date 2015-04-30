@@ -72,7 +72,7 @@ fn main() {
 	fs::File::open(file_name).unwrap().read_to_string(&mut scr_code).unwrap();
 
 	let tokens = lex::tokenize_string(&scr_code).unwrap();
-	println!("{:?}", tokens);
+	println!("{:?}\n", tokens);
 
-	println!("{:?}", ast::AST::parse(&tokens));
+	println!("{:?}", ast::AST::parse(&tokens).unwrap());
 }
