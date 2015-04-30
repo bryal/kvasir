@@ -24,6 +24,7 @@ pub use self::types::Type;
 use ::lex::Token;
 
 mod types;
+mod inference;
 
 #[derive(Debug, Clone)]
 struct TypedBinding {
@@ -278,6 +279,10 @@ fn parse_expr(tokens: &[Token]) -> Result<(ExprMeta, usize), String> {
 /// Parse tokens to items of some expr.
 /// E.g. might be function binding and operands in a SExpr, might be clauses in a Cond
 fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
+	if tokens.len() == 0 {
+		return Err("parse_exprs: no tokens".into());
+	}
+
 	let mut exprs = Vec::new();
 
 	let mut i = 0;

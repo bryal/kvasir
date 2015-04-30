@@ -74,5 +74,8 @@ fn main() {
 	let tokens = lex::tokenize_string(&scr_code).unwrap();
 	println!("{:?}\n", tokens);
 
-	println!("{:?}", ast::AST::parse(&tokens).unwrap());
+	let mut ast = ast::AST::parse(&tokens).unwrap();
+	println!("{:?}\n", ast);
+	ast.infer_types();
+	println!("{:?}\n", ast);
 }
