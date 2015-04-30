@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use self::types::Type;
+pub use self::types::Type;
 use ::lex::Token;
 
 mod types;
@@ -56,6 +56,59 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 }
 
 #[derive(Debug, Clone)]
+struct Cond {
+	clauses: Vec<(ExprMeta, ExprMeta)>,
+}
+impl Cond {
+	fn parse(tokens: &[Token]) -> Result<Cond, String> {
+		if tokens.len() == 0 {
+			return Err("Cond::parse: no tokens".into());
+		}
+
+		let mut clauses = Vec::with_capacity(2);
+
+		let mut i = 0;
+		while let Some(token) = tokens.get(i) {
+			let result = match token {
+				&Token::LParen => find_closing_delim(Token::LParen, &tokens[1..])
+					.map(|delim_i| delim_i + 1)
+					.ok_or("Cond::parse: failed to find closing paren".into())
+					.and_then(|delim_i| parse_exprs(&tokens[1..delim_i])
+						.map(|expr| (expr, delim_i + 1))),
+				t => Err(format!("Cond::parse: unexpected token `{:?}`", t)),
+			};
+
+			if let Ok((mut exprs, new_i)) = result {
+				if exprs.len() == 2 {
+					let second = exprs.pop().unwrap();
+					clauses.push((exprs.pop().unwrap(), second));
+				} else {
+					return Err(
+						format!("Cond::parse: clause is not pair of expressions: `{:?}`", exprs)
+					);
+				}
+				i = new_i;
+			} else if let Err(e) = result {
+				return Err(e);
+			}
+		}
+
+		Ok(Cond{ clauses: clauses })
+	}
+}
+
+#[derive(Debug, Clone)]
+struct SExpr {
+	func: ExprMeta,
+	args: Vec<ExprMeta>,
+}
+impl SExpr {
+	fn parse(tokens: &[Token]) -> Result<SExpr, String> {
+		parse_exprs(tokens).map(|exprs| SExpr{ func: exprs[0].clone(), args: exprs[1..].to_vec() })
+	}
+}
+
+#[derive(Debug, Clone)]
 struct Lambda {
 	arg_bindings: Vec<TypedBinding>,
 	body: ExprMeta
@@ -79,14 +132,8 @@ impl Lambda {
 }
 
 #[derive(Debug, Clone)]
-struct SExpr {
-	func: ExprMeta,
-	args: Vec<ExprMeta>,
-}
-impl SExpr {
-	fn parse(tokens: &[Token]) -> Result<SExpr, String> {
-		parse_exprs(tokens).map(|exprs| SExpr{ func: exprs[0].clone(), args: exprs[1..].to_vec() })
-	}
+struct Block {
+	exprs: Vec<ExprMeta>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,44 +168,6 @@ impl Definition {
 }
 
 #[derive(Debug, Clone)]
-struct Cond {
-	clauses: Vec<(ExprMeta, ExprMeta)>,
-}
-impl Cond {
-	fn parse(tokens: &[Token]) -> Result<Cond, String> {
-		let mut clauses = Vec::with_capacity(2);
-
-		let mut i = 0;
-		while let Some(token) = tokens.get(i) {
-			let result = match token {
-				&Token::LParen => find_closing_delim(Token::LParen, &tokens[1..])
-					.map(|delim_i| delim_i + 1)
-					.ok_or("Cond::parse: failed to find closing paren".into())
-					.and_then(|delim_i| parse_exprs(&tokens[1..delim_i])
-						.map(|expr| (expr, delim_i + 1))),
-				t => Err(format!("Cond::parse: unexpected token `{:?}`", t)),
-			};
-
-			if let Ok((mut exprs, new_i)) = result {
-				if exprs.len() == 2 {
-					let second = exprs.pop().unwrap();
-					clauses.push((exprs.pop().unwrap(), second));
-				} else {
-					return Err(
-						format!("Cond::parse: clause is not pair of expressions: `{:?}`", exprs)
-					);
-				}
-				i = new_i;
-			} else if let Err(e) = result {
-				return Err(e);
-			}
-		}
-
-		Ok(Cond{ clauses: clauses })
-	}
-}
-
-#[derive(Debug, Clone)]
 enum Expr {
 	Cond(Cond),
 	SExpr(SExpr),
@@ -167,7 +176,7 @@ enum Expr {
 	Binding(String),
 	Lambda(Lambda),
 	// ArrayLit(String),
-	Block(Vec<ExprMeta>),
+	Block(Block),
 	Definition(Definition),
 	Nil,
 }
@@ -216,7 +225,8 @@ fn parenthesized_to_expr(tokens: &[Token]) -> Result<Expr, String> {
 	match tokens[0] {
 		Token::Ident("cond") => Cond::parse(&tokens[1..]).map(|c| Expr::Cond(c)),
 		Token::Ident("lambda") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
-		Token::Ident("block") => parse_exprs(&tokens[1..]).map(|exprs| Expr::Block(exprs)),
+		Token::Ident("block") => parse_exprs(&tokens[1..])
+			.map(|exprs| Expr::Block(Block{ exprs: exprs })),
 		Token::Ident("define") => Definition::parse(&tokens[1..]).map(|def| Expr::Definition(def)),
 		_ => SExpr::parse(tokens).map(|se| Expr::SExpr(se)),
 	}
@@ -286,11 +296,11 @@ fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
 
 #[derive(Debug, Clone)]
 pub struct AST {
-	nodes: Vec<ExprMeta>,
+	exprs: Vec<ExprMeta>,
 }
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		parse_exprs(tokens).map(|exprs| AST{ nodes: exprs })
+		parse_exprs(tokens).map(|exprs| AST{ exprs: exprs })
 	}
 }

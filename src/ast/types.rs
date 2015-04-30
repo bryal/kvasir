@@ -25,6 +25,7 @@ use lex::Token;
 
 #[derive(Debug, Clone)]
 pub enum Type {
+	Nil,
 	Basic(String),
 	Construct(String, Vec<Type>),
 }
@@ -35,6 +36,7 @@ impl Type {
 			return Err("Type::parse: no tokens".into())
 		}
 		match &tokens[0] {
+			&Token::Ident("Nil") => Ok((Type::Nil, 1)),
 			&Token::Ident(s) => Ok((Type::Basic(s.into()), 1)),
 			&Token::LT if tokens.len() > 2 => if let Token::Ident(ident) = tokens[1] {
 				find_closing_delim(Token::LT, &tokens[2..])
