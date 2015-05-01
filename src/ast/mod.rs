@@ -27,9 +27,9 @@ mod types;
 mod inference;
 
 #[derive(Debug, Clone)]
-struct TypedBinding {
-	ident: String,
-	type_sig: Option<Type>,
+pub struct TypedBinding {
+	pub ident: String,
+	pub type_sig: Option<Type>,
 }
 
 fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
@@ -57,8 +57,8 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 }
 
 #[derive(Debug, Clone)]
-struct Cond {
-	clauses: Vec<(ExprMeta, ExprMeta)>,
+pub struct Cond {
+	pub clauses: Vec<(ExprMeta, ExprMeta)>,
 }
 impl Cond {
 	fn parse(tokens: &[Token]) -> Result<Cond, String> {
@@ -99,9 +99,9 @@ impl Cond {
 }
 
 #[derive(Debug, Clone)]
-struct SExpr {
-	func: ExprMeta,
-	args: Vec<ExprMeta>,
+pub struct SExpr {
+	pub func: ExprMeta,
+	pub args: Vec<ExprMeta>,
 }
 impl SExpr {
 	fn parse(tokens: &[Token]) -> Result<SExpr, String> {
@@ -110,9 +110,9 @@ impl SExpr {
 }
 
 #[derive(Debug, Clone)]
-struct Lambda {
-	arg_bindings: Vec<TypedBinding>,
-	body: ExprMeta
+pub struct Lambda {
+	pub arg_bindings: Vec<TypedBinding>,
+	pub body: ExprMeta
 }
 impl Lambda {
 	fn parse(tokens: &[Token]) -> Result<Lambda, String> {
@@ -133,15 +133,15 @@ impl Lambda {
 }
 
 #[derive(Debug, Clone)]
-struct Block {
-	exprs: Vec<ExprMeta>,
+pub struct Block {
+	pub exprs: Vec<ExprMeta>,
 }
 
 #[derive(Debug, Clone)]
-struct Definition {
-	binding: TypedBinding,
-	arg_bindings: Vec<TypedBinding>,
-	body: ExprMeta,
+pub struct Definition {
+	pub binding: TypedBinding,
+	pub arg_bindings: Vec<TypedBinding>,
+	pub body: ExprMeta,
 }
 impl Definition {
 	fn parse(tokens: &[Token]) -> Result<Definition, String> {
@@ -169,7 +169,7 @@ impl Definition {
 }
 
 #[derive(Debug, Clone)]
-enum Expr {
+pub enum Expr {
 	Cond(Cond),
 	SExpr(SExpr),
 	NumLit(String),
@@ -184,9 +184,9 @@ enum Expr {
 
 /// An expression with additional attributes such as type information
 #[derive(Debug, Clone)]
-struct ExprMeta {
-	value: Box<Expr>,
-	coerce_type: Option<Type>
+pub struct ExprMeta {
+	pub value: Box<Expr>,
+	pub coerce_type: Option<Type>
 }
 impl ExprMeta {
 	fn new(value: Expr, coerce_type: Option<Type>) -> ExprMeta {
@@ -301,7 +301,7 @@ fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
 
 #[derive(Debug, Clone)]
 pub struct AST {
-	exprs: Vec<ExprMeta>,
+	pub exprs: Vec<ExprMeta>,
 }
 
 impl AST {

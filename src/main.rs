@@ -62,6 +62,9 @@ use std::env;
 use std::io::Read;
 use std::fs;
 
+use emit::transpile_to_rust;
+
+mod emit;
 mod ast;
 mod lex;
 
@@ -78,4 +81,6 @@ fn main() {
 	println!("{:?}\n", ast);
 	ast.infer_types();
 	println!("{:?}\n", ast);
+
+	println!("{}", transpile_to_rust(&ast));
 }
