@@ -39,15 +39,17 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 	while let Some(token) = tokens.get(i) {
 		if let &Token::Ident(ident) = token {
 			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
-				Type::parse(&tokens[2..])
-					.map(|(t, tl)| (Some(t), tl))
-					.unwrap_or((None, 0))
+				if let Ok((ty, tl)) = Type::parse(&tokens[i + 2 ..]) {
+					(Some(ty), tl)
+				} else {
+					return Err("parse_expr: colon not followed by a type".into());
+				}
 			} else {
 				(None, 0)
 			};
 
 			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
-			i += 2 + type_len; // (ident + colon) + type_len
+			i += 1 + if type_len != 0 { 1 + type_len } else { 0 }; // (ident + colon) + type_len
 		} else {
 			return Err(format!("parse_typed_bindings: unexpected token `{:?}`", token));
 		}
@@ -59,6 +61,7 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 #[derive(Debug, Clone)]
 pub struct Cond {
 	pub clauses: Vec<(ExprMeta, ExprMeta)>,
+	pub else_clause: Option<ExprMeta>
 }
 impl Cond {
 	fn parse(tokens: &[Token]) -> Result<Cond, String> {
@@ -66,35 +69,40 @@ impl Cond {
 			return Err("Cond::parse: no tokens".into());
 		}
 
-		let mut clauses = Vec::with_capacity(2);
+		let mut cond = Cond{ clauses: Vec::new(), else_clause: None };
 
 		let mut i = 0;
 		while let Some(token) = tokens.get(i) {
 			let result = match token {
-				&Token::LParen => find_closing_delim(Token::LParen, &tokens[1..])
-					.map(|delim_i| delim_i + 1)
+				&Token::LParen => find_closing_delim(Token::LParen, &tokens[i + 1 ..])
+					.map(|delim_i| delim_i + i + 1)
 					.ok_or("Cond::parse: failed to find closing paren".into())
-					.and_then(|delim_i| parse_exprs(&tokens[1..delim_i])
-						.map(|expr| (expr, delim_i + 1))),
+					.and_then(|delim_i| parse_exprs(&tokens[i + 1 .. delim_i])
+						.map(|expr| (expr, delim_i + 1 - i))),
 				t => Err(format!("Cond::parse: unexpected token `{:?}`", t)),
 			};
 
-			if let Ok((mut exprs, new_i)) = result {
-				if exprs.len() == 2 {
-					let second = exprs.pop().unwrap();
-					clauses.push((exprs.pop().unwrap(), second));
+			if let Ok((items, used_tokens)) = result {
+				if items.len() == 2 {
+					if if let Expr::Binding(ref b) = *items[0].value { b == "else" } else { false }
+					{
+						cond.else_clause = Some(items[1].clone());
+
+						return Ok(cond);
+					}
+					cond.clauses.push((items[0].clone(), items[1].clone()));
 				} else {
 					return Err(
-						format!("Cond::parse: clause is not pair of expressions: `{:?}`", exprs)
+						format!("Cond::parse: clause is not pair of expressions: `{:?}`", items)
 					);
 				}
-				i = new_i;
+				i += used_tokens;
 			} else if let Err(e) = result {
 				return Err(e);
 			}
 		}
 
-		Ok(Cond{ clauses: clauses })
+		Ok(cond)
 	}
 }
 
@@ -253,15 +261,27 @@ fn parse_expr(tokens: &[Token]) -> Result<(ExprMeta, usize), String> {
 		Token::RBrace => Err("parse_expr: unexpected right brace".into()),
 		Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 		Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
-		Token::Ident(ident) => Ok((Expr::Binding(ident.into()), 1)),
+		Token::Ident(ident) =>
+			if tokens.get(1) == Some(&Token::Colon) && tokens.get(2) == Some(&Token::Colon)
+		{
+			if let Ok((ExprMeta{ value: box Expr::Binding(i2), .. }, i2l)) =
+				parse_expr(&tokens[3..])
+			{
+				Ok((Expr::Binding(format!("{}::{}", ident, i2)), 3 + i2l))
+			} else {
+				Err("parse_expr: two colons were not followed by ident".into())
+			}
+		} else {
+			Ok((Expr::Binding(ident.into()), 1))
+		},
 		Token::LT => Ok((Expr::Binding("<".into()), 1)),
 		Token::GT => Ok((Expr::Binding(">".into()), 1)),
 		Token::Eq => Ok((Expr::Binding("=".into()), 1)),
 		Token::Exclamation => Ok((Expr::Binding("!".into()), 1)),
+		Token::Amp => Ok((Expr::Binding("&".into()), 1)),
 		Token::Colon => Err("parse_expr: unexpected colon".into()),
 	};
 
-	
 	result.and_then(|(expr, expr_len)| {
 		let (maybe_type, type_len) = match tokens.get(expr_len) {
 			Some(&Token::Colon) => if let Ok((ty, tl)) = Type::parse(&tokens[expr_len + 1 ..]) {
@@ -306,6 +326,7 @@ pub struct AST {
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
+		// TODO: Add support for non-expression items, like extern crate etc.
 		parse_exprs(tokens).map(|exprs| AST{ exprs: exprs })
 	}
 }

@@ -60,16 +60,14 @@ impl ToRustSrc for TypedBinding {
 
 impl ToRustSrc for Cond {
 	fn to_rust_src(&self) -> String {
-		let mut src = format!("if {} {{ {} }}",
+		format!("if {} {{ {} }}{}{}",
 			self.clauses[0].0.to_rust_src(),
-			self.clauses[0].1.to_rust_src()
-		);
-
-		for &(ref condition, ref consequence) in &self.clauses {
-			write!(src, " else if {} {{ {} }}", condition.to_rust_src(), consequence.to_rust_src());
-		}
-
-		src
+			self.clauses[0].1.to_rust_src(),
+			self.clauses.iter().fold(String::new(), |acc, &(ref cond, ref conseq)|
+				format!("{} else if {} {{ {} }}", acc, cond.to_rust_src(), conseq.to_rust_src())),
+			self.else_clause.as_ref().map(|conseq| format!(" else {{ {} }}", conseq.to_rust_src()))
+				.unwrap_or("".into()),
+		)
 	}
 }
 
@@ -120,7 +118,10 @@ impl ToRustSrc for Definition {
 					.fold(first.to_rust_src(), |acc, bnd|
 						format!("{}, {}", acc, bnd.to_rust_src())))
 				.unwrap_or("".into()),
-			self.body.coerce_type.as_ref().unwrap().to_rust_src(),
+			self.body.coerce_type.as_ref()
+				.expect(&format!("Definition::to_rust_src: function body of `{}` has no type",
+					self.binding.ident))
+				.to_rust_src(),
 			self.body.to_rust_src()
 		)
 	}
@@ -149,7 +150,7 @@ impl ToRustSrc for AST {
 		let mut src = String::with_capacity(500);
 
 		for expr in &self.exprs {
-			writeln!(src, "{}", expr.to_rust_src());
+			writeln!(src, "{}", expr.to_rust_src()).unwrap();
 		}
 
 		src

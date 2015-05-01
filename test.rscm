@@ -1,6 +1,12 @@
-(define (world)
-	(format! "{} {:?}" "World!" (vec! 1: u32 2 345_678): <Vec u32>)
-	: String)
+(define (eq a: u64 b: u64)
+    (PartialEq::eq (& a) (& b)): bool)
+
+(define (fib n: u64)
+    (cond ((eq n 0) 0)
+          ((eq n 1) 1)
+          (else (Add::add (fib (Sub::sub n 1)) (fib (Sub::sub n 2)))))
+    : u64)
 
 (define (main)
-	(println! "Hello {}" (world)): Nil)
+    (println! "Fib 10 = {}" (fib 10))
+    : Nil)

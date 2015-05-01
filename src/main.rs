@@ -56,7 +56,7 @@
 //! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32)))))
 //! ```
 
-#![feature(non_ascii_idents)]
+#![feature(non_ascii_idents, box_patterns)]
 
 use std::env;
 use std::io::Read;

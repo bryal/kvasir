@@ -36,6 +36,7 @@ pub enum Token<'a> {
 	String(&'a str),
 	Exclamation,
 	Colon,
+	Amp,
 }
 
 /// Split code string by whitespace. Preserve whitespace in string literals
@@ -124,6 +125,7 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 			'=' => { tokens.push(Token::Eq); 1 },
 			':' => { tokens.push(Token::Colon); 1 },
 			'!' => { tokens.push(Token::Exclamation); 1 },
+			'&' => { tokens.push(Token::Amp); 1 },
 			c if c.is_numeric() => {
 				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
 					.unwrap_or(word.len());
