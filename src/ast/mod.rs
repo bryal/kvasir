@@ -44,7 +44,7 @@ pub enum Ident {
 }
 impl PartialEq<String> for Ident {
 	fn eq(&self, s: &String) -> bool {
-		&::emit::ToRustSrc::to_rust_src(self) == s
+		&::compile::emit::ToRustSrc::to_rust_src(self) == s
 	}
 }
 

@@ -4,3 +4,7 @@ version = "0.0.1"
 authors = ["bryal <96.bryal@gmail.com>"]
 repository = "https://github.com/bryal/rusty-scheme"
 license = "MIT"
+
+[dependencies]
+getopts = "*"
+bitflags = "*"

@@ -23,9 +23,9 @@
 //! Emit the AST in some format
 //!
 //! Which formats should be supported:
-//! 	* Rust source code
-//! 	* Rust AST
-//! 	* LLVM something
+//! 	* Rust source code ☑
+//! 	* Rust AST ☐
+//! 	* LLVM something ☐
 
 use ast::*;
 use std::fmt::Write;
@@ -201,6 +201,6 @@ impl ToRustSrc for AST {
 	}
 }
 
-pub fn transpile_to_rust(ast: &AST) -> String {
+pub fn generate_rust_src(ast: &AST) -> String {
 	ast.to_rust_src()
 }

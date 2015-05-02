@@ -13,3 +13,4 @@
 Cargo.lock
 test.scm
 out.rs
+scmrs_out.rs
