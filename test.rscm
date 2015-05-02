@@ -1,12 +1,14 @@
-(define (eq a: u64 b: u64)
-    (PartialEq::eq (& a) (& b)): bool)
+{use (std::ops Add Sub)}
 
-(define (fib n: u64)
+{_define_fn (eq a: u64 b: u64)
+    (PartialEq::eq (& a) (& b)): bool}
+
+{_define_fn (fib n: u64)
     (cond ((eq n 0) 0)
           ((eq n 1) 1)
           (else (Add::add (fib (Sub::sub n 1)) (fib (Sub::sub n 2)))))
-    : u64)
+    : u64}
 
-(define (main)
+{_define_fn (main)
     (println! "Fib 10 = {}" (fib 10))
-    : Nil)
+    : Nil}

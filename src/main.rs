@@ -56,11 +56,14 @@
 //! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32)))))
 //! ```
 
+// TODO: Compile time execution. By marking functions as pure,
+// enable calculation of constants from these functions at compile time.
+
 #![feature(non_ascii_idents, box_patterns)]
 
 use std::env;
-use std::io::Read;
-use std::fs;
+use std::io::{ Read, Write };
+use std::fs::File;
 
 use emit::transpile_to_rust;
 
@@ -72,7 +75,7 @@ fn main() {
 	let file_name = env::args().skip(1).next().unwrap();
 
 	let mut scr_code = String::with_capacity(4_000);
-	fs::File::open(file_name).unwrap().read_to_string(&mut scr_code).unwrap();
+	File::open(file_name).unwrap().read_to_string(&mut scr_code).unwrap();
 
 	let tokens = lex::tokenize_string(&scr_code).unwrap();
 	println!("{:?}\n", tokens);
@@ -82,5 +85,9 @@ fn main() {
 	ast.infer_types();
 	println!("{:?}\n", ast);
 
-	println!("{}", transpile_to_rust(&ast));
+	let transpiled_rust = transpile_to_rust(&ast);
+	println!("{}", transpiled_rust);
+
+	let mut f = File::create("out.rs").unwrap();
+	f.write_all(transpiled_rust.as_bytes()).unwrap();
 }

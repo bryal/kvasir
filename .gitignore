@@ -12,3 +12,4 @@
 
 Cargo.lock
 test.scm
+out.rs

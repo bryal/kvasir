@@ -20,11 +20,15 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-pub use self::types::Type;
-use ::lex::Token;
-
-mod types;
+mod parse;
 mod inference;
+
+#[derive(Debug, Clone)]
+pub enum Type {
+	Nil,
+	Basic(String),
+	Construct(String, Vec<Type>),
+}
 
 #[derive(Debug, Clone)]
 pub struct TypedBinding {
@@ -32,78 +36,47 @@ pub struct TypedBinding {
 	pub type_sig: Option<Type>,
 }
 
-fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
-	let mut bindings = Vec::new();
-
-	let mut i = 0;
-	while let Some(token) = tokens.get(i) {
-		if let &Token::Ident(ident) = token {
-			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
-				if let Ok((ty, tl)) = Type::parse(&tokens[i + 2 ..]) {
-					(Some(ty), tl)
-				} else {
-					return Err("parse_expr: colon not followed by a type".into());
-				}
-			} else {
-				(None, 0)
-			};
-
-			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
-			i += 1 + if type_len != 0 { 1 + type_len } else { 0 }; // (ident + colon) + type_len
-		} else {
-			return Err(format!("parse_typed_bindings: unexpected token `{:?}`", token));
-		}
+/// e.g. Path(fs, Path(File, Name(create))) == fs::File::create
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ident {
+	Name(String),
+	Path(String, Box<Ident>),
+}
+impl PartialEq<String> for Ident {
+	fn eq(&self, s: &String) -> bool {
+		&::emit::ToRustSrc::to_rust_src(self) == s
 	}
-
-	Ok(bindings)
 }
 
 #[derive(Debug, Clone)]
-pub struct Cond {
-	pub clauses: Vec<(ExprMeta, ExprMeta)>,
-	pub else_clause: Option<ExprMeta>
+pub struct Use {
+	pub paths: Vec<Ident>,
 }
-impl Cond {
-	fn parse(tokens: &[Token]) -> Result<Cond, String> {
-		if tokens.len() == 0 {
-			return Err("Cond::parse: no tokens".into());
-		}
 
-		let mut cond = Cond{ clauses: Vec::new(), else_clause: None };
+#[derive(Debug, Clone)]
+pub struct FnDef {
+	pub binding: TypedBinding,
+	pub arg_bindings: Vec<TypedBinding>,
+	pub body: ExprMeta,
+}
 
-		let mut i = 0;
-		while let Some(token) = tokens.get(i) {
-			let result = match token {
-				&Token::LParen => find_closing_delim(Token::LParen, &tokens[i + 1 ..])
-					.map(|delim_i| delim_i + i + 1)
-					.ok_or("Cond::parse: failed to find closing paren".into())
-					.and_then(|delim_i| parse_exprs(&tokens[i + 1 .. delim_i])
-						.map(|expr| (expr, delim_i + 1 - i))),
-				t => Err(format!("Cond::parse: unexpected token `{:?}`", t)),
-			};
+#[derive(Debug, Clone)]
+pub struct ConstDef {
+	pub binding: TypedBinding,
+	pub body: ExprMeta,
+}
 
-			if let Ok((items, used_tokens)) = result {
-				if items.len() == 2 {
-					if if let Expr::Binding(ref b) = *items[0].value { b == "else" } else { false }
-					{
-						cond.else_clause = Some(items[1].clone());
+#[derive(Debug, Clone)]
+pub enum Item {
+	Use(Use),
+	FnDef(FnDef),
+	ConstDef(ConstDef),
+}
 
-						return Ok(cond);
-					}
-					cond.clauses.push((items[0].clone(), items[1].clone()));
-				} else {
-					return Err(
-						format!("Cond::parse: clause is not pair of expressions: `{:?}`", items)
-					);
-				}
-				i += used_tokens;
-			} else if let Err(e) = result {
-				return Err(e);
-			}
-		}
-
-		Ok(cond)
-	}
+#[derive(Debug, Clone)]
+pub struct ItemMeta {
+	pub item: Box<Item>,
+	// pub attributes: Vec<Attribute>
 }
 
 #[derive(Debug, Clone)]
@@ -111,10 +84,17 @@ pub struct SExpr {
 	pub func: ExprMeta,
 	pub args: Vec<ExprMeta>,
 }
-impl SExpr {
-	fn parse(tokens: &[Token]) -> Result<SExpr, String> {
-		parse_exprs(tokens).map(|exprs| SExpr{ func: exprs[0].clone(), args: exprs[1..].to_vec() })
-	}
+
+#[derive(Debug, Clone)]
+pub struct Block {
+	pub items: Vec<ItemMeta>,
+	pub exprs: Vec<ExprMeta>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cond {
+	pub clauses: Vec<(ExprMeta, ExprMeta)>,
+	pub else_clause: Option<ExprMeta>
 }
 
 #[derive(Debug, Clone)]
@@ -122,71 +102,16 @@ pub struct Lambda {
 	pub arg_bindings: Vec<TypedBinding>,
 	pub body: ExprMeta
 }
-impl Lambda {
-	fn parse(tokens: &[Token]) -> Result<Lambda, String> {
-		if let Some(&Token::LParen) = tokens.get(0) {
-			find_closing_delim(Token::LParen, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("Lambda::parse: failed to find closing paren".into())
-				.and_then(|delim_i| parse_typed_bindings(&tokens[1..delim_i])
-					.map(|binds| (binds, delim_i + 1)))
-				.and_then(|(binds, body_i)| parse_expr(&tokens[body_i..])
-					.map(|(body, _)| Lambda{ arg_bindings: binds, body: body }))
-		} else {
-			Err(format!("Lambda::parse: expected parenthesized bindings, found `{:?}`",
-				tokens.get(0)
-			))
-		}
-	}
-}
-
-#[derive(Debug, Clone)]
-pub struct Block {
-	pub exprs: Vec<ExprMeta>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Definition {
-	pub binding: TypedBinding,
-	pub arg_bindings: Vec<TypedBinding>,
-	pub body: ExprMeta,
-}
-impl Definition {
-	fn parse(tokens: &[Token]) -> Result<Definition, String> {
-		if let Some(&Token::LParen) = tokens.get(0) {
-			find_closing_delim(Token::LParen, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("Definition::parse: failed to find closing paren".into())
-				.and_then(|delim_i| parse_typed_bindings(&tokens[1..delim_i])
-					.map(|binds| (binds.into_iter(), delim_i + 1)))
-				.and_then(|(mut binds, body_i)| parse_expr(&tokens[body_i..])
-					.and_then(|(body, _)| binds.next()
-						.map(|binding| Definition{
-							binding: binding,
-							arg_bindings: binds.collect(),
-							body: body
-						})
-						.ok_or(format!("Definition::parse: no function binding given"))))
-
-		} else {
-			Err(format!("Definition::parse: expected parenthesized bindings, found `{:?}`",
-				tokens.get(0)
-			))
-		}
-	}
-}
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-	Cond(Cond),
-	SExpr(SExpr),
 	NumLit(String),
 	StrLit(String),
-	Binding(String),
-	Lambda(Lambda),
-	// ArrayLit(String),
+	Binding(Ident),
+	SExpr(SExpr),
 	Block(Block),
-	Definition(Definition),
+	Cond(Cond),
+	Lambda(Lambda),
 	Nil,
 }
 
@@ -199,134 +124,18 @@ pub struct ExprMeta {
 impl ExprMeta {
 	fn new(value: Expr, coerce_type: Option<Type>) -> ExprMeta {
 		ExprMeta{ value: Box::new(value), coerce_type: coerce_type }
-	} 
-}
-
-fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
-	let delim = match open_token {
-		Token::LParen => Token::RParen,
-		Token::LBracket => Token::RBracket,
-		Token::LBrace => Token::RBrace,
-		Token::LT => Token::GT,
-		_ => return None,
-	};
-
-	let mut opens = 0u64;
-	for (i, token) in tokens.iter().enumerate() {
-		if *token == open_token {
-			opens += 1;
-		} else if *token == delim {
-			if opens == 0 {
-				return Some(i)
-			}
-			opens -= 1;
-		}
-	}
-	None
-}
-
-/// Parse an expression from tokens within parentheses
-fn parenthesized_to_expr(tokens: &[Token]) -> Result<Expr, String> {
-	if tokens.len() == 0 {
-		return Ok(Expr::Nil);
-	}
-
-	match tokens[0] {
-		Token::Ident("cond") => Cond::parse(&tokens[1..]).map(|c| Expr::Cond(c)),
-		Token::Ident("lambda") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
-		Token::Ident("block") => parse_exprs(&tokens[1..])
-			.map(|exprs| Expr::Block(Block{ exprs: exprs })),
-		Token::Ident("define") => Definition::parse(&tokens[1..]).map(|def| Expr::Definition(def)),
-		_ => SExpr::parse(tokens).map(|se| Expr::SExpr(se)),
 	}
 }
 
-// Parse the tokens until a full expresion is found.
-// Return the expr and how many tokens were used for it.
-fn parse_expr(tokens: &[Token]) -> Result<(ExprMeta, usize), String> {
-	if tokens.len() == 0 {
-		return Err("parse_expr: no tokens".into());
-	}
-
-	let result = match tokens[0] {
-		Token::LParen => find_closing_delim(Token::LParen, &tokens[1..])
-			.map(|delim_i| delim_i + 1)
-			.ok_or("parse_exprs: failed to find closing paren".into())
-			.and_then(|delim_i| parenthesized_to_expr(&tokens[1..delim_i])
-				.map(|expr| (expr, delim_i + 1))),
-		Token::RParen => Err("parse_expr: unexpected right paren".into()),
-		Token::LBracket => panic!("NOT YET IMPLEMENTED"),
-		Token::RBracket => Err("parse_expr: unexpected right bracket".into()),
-		Token::LBrace => panic!("NOT YET IMPLEMENTED"),
-		Token::RBrace => Err("parse_expr: unexpected right brace".into()),
-		Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
-		Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
-		Token::Ident(ident) =>
-			if tokens.get(1) == Some(&Token::Colon) && tokens.get(2) == Some(&Token::Colon)
-		{
-			if let Ok((ExprMeta{ value: box Expr::Binding(i2), .. }, i2l)) =
-				parse_expr(&tokens[3..])
-			{
-				Ok((Expr::Binding(format!("{}::{}", ident, i2)), 3 + i2l))
-			} else {
-				Err("parse_expr: two colons were not followed by ident".into())
-			}
-		} else {
-			Ok((Expr::Binding(ident.into()), 1))
-		},
-		Token::LT => Ok((Expr::Binding("<".into()), 1)),
-		Token::GT => Ok((Expr::Binding(">".into()), 1)),
-		Token::Eq => Ok((Expr::Binding("=".into()), 1)),
-		Token::Exclamation => Ok((Expr::Binding("!".into()), 1)),
-		Token::Amp => Ok((Expr::Binding("&".into()), 1)),
-		Token::Colon => Err("parse_expr: unexpected colon".into()),
-	};
-
-	result.and_then(|(expr, expr_len)| {
-		let (maybe_type, type_len) = match tokens.get(expr_len) {
-			Some(&Token::Colon) => if let Ok((ty, tl)) = Type::parse(&tokens[expr_len + 1 ..]) {
-				(Some(ty), tl)
-			} else {
-				return Err("parse_expr: colon not followed by a type".into());
-			},
-			_ => (None, 0),
-		};
-		let tokens_used = expr_len + if type_len != 0 { 1 + type_len } else { 0 };
-		Ok((ExprMeta::new(expr, maybe_type), tokens_used))
-	}) 
-}
-
-/// Parse tokens to items of some expr.
-/// E.g. might be function binding and operands in a SExpr, might be clauses in a Cond
-fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
-	if tokens.len() == 0 {
-		return Err("parse_exprs: no tokens".into());
-	}
-
-	let mut exprs = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match parse_expr(&tokens[i..]) {
-			Ok((expr, len)) => {
-				exprs.push(expr);
-				i += len;
-			},
-			Err(e) => return Err(e),
-		}
-	}
-
-	Ok(exprs)
+/// Nodes are found in blocks. E.g. a function body with multiple things in it is a block.
+/// Therein can be `use` items, expressions, and more.
+pub enum Component {
+	Item(ItemMeta),
+	Expr(ExprMeta),
 }
 
 #[derive(Debug, Clone)]
 pub struct AST {
+	pub items: Vec<ItemMeta>,
 	pub exprs: Vec<ExprMeta>,
-}
-
-impl AST {
-	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		// TODO: Add support for non-expression items, like extern crate etc.
-		parse_exprs(tokens).map(|exprs| AST{ exprs: exprs })
-	}
 }

@@ -58,16 +58,60 @@ impl ToRustSrc for TypedBinding {
 	}
 }
 
-impl ToRustSrc for Cond {
+impl ToRustSrc for Use {
 	fn to_rust_src(&self) -> String {
-		format!("if {} {{ {} }}{}{}",
-			self.clauses[0].0.to_rust_src(),
-			self.clauses[0].1.to_rust_src(),
-			self.clauses.iter().fold(String::new(), |acc, &(ref cond, ref conseq)|
-				format!("{} else if {} {{ {} }}", acc, cond.to_rust_src(), conseq.to_rust_src())),
-			self.else_clause.as_ref().map(|conseq| format!(" else {{ {} }}", conseq.to_rust_src()))
+		self.paths.iter()
+			.fold(String::new(), |acc, ident| format!("{} use {};", acc, ident.to_rust_src()))
+	}
+}
+
+impl ToRustSrc for FnDef {
+	fn to_rust_src(&self) -> String {
+		format!("fn {}({}) -> {} {{ {} }}",
+			self.binding.ident,
+			self.arg_bindings.first()
+				.map(|first| self.arg_bindings[1..].iter()
+					.fold(first.to_rust_src(), |acc, bnd|
+						format!("{}, {}", acc, bnd.to_rust_src())))
 				.unwrap_or("".into()),
+			self.body.coerce_type.as_ref()
+				.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
+					self.binding.ident))
+				.to_rust_src(),
+			self.body.to_rust_src()
 		)
+	}
+}
+
+impl ToRustSrc for ConstDef {
+	fn to_rust_src(&self) -> String {
+		format!("const {}: {} = {};",
+			self.binding.ident,
+			self.binding.type_sig.as_ref()
+				.expect(&format!("ConstDef::to_rust_src: binding `{}` has no type",
+					self.binding.ident))
+				.to_rust_src(),
+			self.body.to_rust_src()
+		)
+	}
+}
+
+impl ToRustSrc for ItemMeta {
+	fn to_rust_src(&self) -> String {
+		match *self.item {
+			Item::Use(ref u) => u.to_rust_src(),
+			Item::FnDef(ref def) => def.to_rust_src(),
+			Item::ConstDef(ref def) => def.to_rust_src(),
+		}
+	}
+}
+
+impl ToRustSrc for Ident {
+	fn to_rust_src(&self) -> String {
+		match *self {
+			Ident::Name(ref s) => s.clone(),
+			Ident::Path(ref s, ref ident) => format!("{}::{}", s, ident.to_rust_src()),
+		}
 	}
 }
 
@@ -79,6 +123,29 @@ impl ToRustSrc for SExpr {
 				.map(|first| self.args[1..].iter()
 					.fold(first.to_rust_src(), |acc, bnd|
 						format!("{}, {}", acc, bnd.to_rust_src())))
+				.unwrap_or("".into()),
+		)
+	}
+}
+
+impl ToRustSrc for Block {
+	fn to_rust_src(&self) -> String {
+		self.exprs.first()
+			.map(|first| self.exprs[1..].iter()
+				.fold(format!("{{ {}", first.to_rust_src()), |acc, expr|
+					format!("{}; {}", acc, expr.to_rust_src())) + "}")
+			.unwrap_or("{ }".into())
+	}
+}
+
+impl ToRustSrc for Cond {
+	fn to_rust_src(&self) -> String {
+		format!("if {} {{ {} }}{}{}",
+			self.clauses[0].0.to_rust_src(),
+			self.clauses[0].1.to_rust_src(),
+			self.clauses.iter().fold(String::new(), |acc, &(ref cond, ref conseq)|
+				format!("{} else if {} {{ {} }}", acc, cond.to_rust_src(), conseq.to_rust_src())),
+			self.else_clause.as_ref().map(|conseq| format!(" else {{ {} }}", conseq.to_rust_src()))
 				.unwrap_or("".into()),
 		)
 	}
@@ -99,47 +166,20 @@ impl ToRustSrc for Lambda {
 	}
 }
 
-impl ToRustSrc for Block {
-	fn to_rust_src(&self) -> String {
-		self.exprs.first()
-			.map(|first| self.exprs[1..].iter()
-				.fold(format!("{{ {}", first.to_rust_src()), |acc, expr|
-					format!("{}; {}", acc, expr.to_rust_src())) + "}")
-			.unwrap_or("{ }".into())
-	}
-}
-
-impl ToRustSrc for Definition {
-	fn to_rust_src(&self) -> String {
-		format!("fn {}({}) -> {} {{ {} }}",
-			self.binding.ident,
-			self.arg_bindings.first()
-				.map(|first| self.arg_bindings[1..].iter()
-					.fold(first.to_rust_src(), |acc, bnd|
-						format!("{}, {}", acc, bnd.to_rust_src())))
-				.unwrap_or("".into()),
-			self.body.coerce_type.as_ref()
-				.expect(&format!("Definition::to_rust_src: function body of `{}` has no type",
-					self.binding.ident))
-				.to_rust_src(),
-			self.body.to_rust_src()
-		)
-	}
-}
-
 impl ToRustSrc for ExprMeta {
 	fn to_rust_src(&self) -> String {
 		let as_type = self.coerce_type.as_ref().map(|ty| format!(" as {}", ty.to_rust_src()));
+
 		match *self.value {
 			Expr::Cond(ref cond) => cond.to_rust_src(),
 			Expr::SExpr(ref sexpr) => sexpr.to_rust_src(),
 			Expr::NumLit(ref s) => as_type
 				.map(|as_type| format!("({}{})", s.clone(), as_type))
 				.unwrap_or(s.clone()),
-			Expr::Binding(ref s) | Expr::StrLit(ref s) => s.clone(),
+			Expr::Binding(ref ident) => ident.to_rust_src(),
+			Expr::StrLit(ref s) => s.clone(),
 			Expr::Lambda(ref λ) => λ.to_rust_src(),
 			Expr::Block(ref block) => block.to_rust_src(),
-			Expr::Definition(ref def) => def.to_rust_src(),
 			Expr::Nil => "()".into(),
 		}
 	}
@@ -148,6 +188,10 @@ impl ToRustSrc for ExprMeta {
 impl ToRustSrc for AST {
 	fn to_rust_src(&self) -> String {
 		let mut src = String::with_capacity(500);
+
+		for item in &self.items {
+			writeln!(src, "{}", item.to_rust_src()).unwrap();
+		}
 
 		for expr in &self.exprs {
 			writeln!(src, "{}", expr.to_rust_src()).unwrap();

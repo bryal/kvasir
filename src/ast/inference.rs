@@ -109,7 +109,7 @@ impl super::Block {
 	}
 }
 
-impl super::Definition {
+impl super::FnDef {
 	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
 		// TODO: inferral of function signature
 		binding_stack.extend(self.arg_bindings.iter().cloned());
@@ -118,6 +118,13 @@ impl super::Definition {
 
 		let old_len = binding_stack.len() - self.arg_bindings.len();
 		binding_stack.truncate(old_len);
+	}
+}
+
+impl super::ConstDef {
+	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
+		// TODO: infer type for binding and vice versa
+		self.body.infer_types(None, binding_stack);
 	}
 }
 
@@ -130,10 +137,10 @@ impl ExprMeta {
 			Expr::StrLit(_) => Some(Type::Basic("&'static str".into())),
 			Expr::Lambda(ref lambda) => lambda.get_type(binding_stack),
 			Expr::Block(ref block) => block.get_type(binding_stack),
-			Expr::Definition(_) | Expr::Nil => Some(Type::Nil),
+			Expr::Nil => Some(Type::Nil),
 			Expr::Binding(ref bnd) => binding_stack.iter()
 				.rev()
-				.find(|tb| tb.ident == *bnd)
+				.find(|tb| bnd == &tb.ident)
 				.map(|tb| tb.type_sig.clone())
 				.unwrap_or(None),
 
@@ -150,10 +157,9 @@ impl ExprMeta {
 				lambda.infer_types(self.coerce_type.as_ref(), binding_stack),
 			Expr::Block(ref mut block) =>
 				block.infer_types(self.coerce_type.as_ref(), binding_stack),
-			Expr::Definition(ref mut def) => def.infer_types(binding_stack),
 			Expr::Binding(ref bnd) => if let Some(stack_binding) = binding_stack.iter_mut()
 				.rev()
-				.find(|tb| tb.ident == *bnd)
+				.find(|tb| bnd == &tb.ident)
 			{
 				if self.coerce_type.is_none() {
 					self.coerce_type = stack_binding.type_sig.clone();

@@ -21,14 +21,9 @@
 // THE SOFTWARE.
 
 use super::find_closing_delim;
+use ast::Type;
 use lex::Token;
 
-#[derive(Debug, Clone)]
-pub enum Type {
-	Nil,
-	Basic(String),
-	Construct(String, Vec<Type>),
-}
 impl Type {
 	/// Parse a type from tokens. On success, return parsed type and number of tokens used
 	pub fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {

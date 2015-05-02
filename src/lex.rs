@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token<'a> {
 	LParen,
 	RParen,
@@ -108,7 +108,7 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 	if word.starts_with('"') || word.starts_with(r#"r""#) || word.starts_with("r#") {
 		// The word is a string
 		return Ok(vec![Token::String(word)]);
-	} 
+	}
 
 	let mut tokens = Vec::with_capacity((word.len() * 3) / 2);
 
