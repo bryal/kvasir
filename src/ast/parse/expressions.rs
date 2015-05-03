@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use super::{ find_closing_delim, parse_typed_bindings, parse_components };
+use super::{ parse_typed_bindings, parse_components, parse_brackets };
 use ast::*;
 use lex::Token;
 
@@ -40,36 +40,27 @@ impl Cond {
 
 		let mut i = 0;
 		while let Some(&token) = tokens.get(i) {
-			let result = match token {
-				Token::LParen => find_closing_delim(Token::LParen, &tokens[i + 1 ..])
-					.map(|delim_i| delim_i + i + 1)
-					.ok_or("Cond::parse: failed to find closing paren".into())
-					.and_then(|delim_i| parse_exprs(&tokens[i + 1 .. delim_i])
-						.map(|expr| (expr, delim_i + 1 - i))),
-				t => Err(format!("Cond::parse: unexpected token `{:?}`", t)),
-			};
-
-			if let Ok((items, used_tokens)) = result {
-				if items.len() == 2 {
-					let is_else = if let Expr::Binding(Ident::Name(ref b)) = *items[0].value {
-						b == "else"
+			println!("COND TOKENS: {:?}", &tokens[i..]);
+			if let Token::LParen = token {
+				match parse_brackets(&tokens[i..], parse_exprs) {
+					Ok((exprs, n_tokens)) => if exprs.len() == 2 {
+						if let Expr::Binding(Ident::Name(ref b)) = *exprs[0].value {
+							if b == "else" {
+								cond.else_clause = Some(exprs[1].clone());
+								return Ok(cond);
+							}
+						}
+						cond.clauses.push((exprs[0].clone(), exprs[1].clone()));
+						i += n_tokens;
 					} else {
-						false
-					};
-					if is_else {
-						cond.else_clause = Some(items[1].clone());
-
-						return Ok(cond);
-					}
-					cond.clauses.push((items[0].clone(), items[1].clone()));
-				} else {
-					return Err(
-						format!("Cond::parse: clause is not pair of expressions: `{:?}`", items)
-					);
+						return Err(format!(
+							"Cond::parse: clause is not a pair of expressions: `{:?}`",
+							exprs));
+					},
+					Err(e) => return Err(e)
 				}
-				i += used_tokens;
-			} else if let Err(e) = result {
-				return Err(e);
+			} else {
+				return Err(format!("Cond::parse: unexpected token `{:?}`", token));
 			}
 		}
 
@@ -79,18 +70,16 @@ impl Cond {
 
 impl Lambda {
 	fn parse(tokens: &[Token]) -> Result<Lambda, String> {
-		if let Some(&Token::LParen) = tokens.get(0) {
-			find_closing_delim(Token::LParen, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("Lambda::parse: failed to find closing paren".into())
-				.and_then(|delim_i| parse_typed_bindings(&tokens[1..delim_i])
-					.map(|binds| (binds, delim_i + 1)))
-				.and_then(|(binds, body_i)| ExprMeta::parse(&tokens[body_i..])
-					.map(|(body, _)| Lambda{ arg_bindings: binds, body: body }))
+		if tokens.len() == 0 {
+			Err("Lambda::parse: no tokens".into())
 		} else {
-			Err(format!("Lambda::parse: expected parenthesized bindings, found `{:?}`",
-				tokens.get(0)
-			))
+			if let Token::LParen = tokens[0] {
+				parse_brackets(tokens, parse_typed_bindings)
+					.and_then(|(binds, body_i)| ExprMeta::parse(&tokens[body_i..])
+						.map(|(body, _)| Lambda{ arg_bindings: binds, body: body }))
+			} else {
+				Err(format!("Lambda::parse: unexpected token `{:?}`", tokens[0]))
+			}
 		}
 	}
 }
@@ -115,38 +104,29 @@ impl Expr {
 impl ExprMeta {
 	pub fn parse(tokens: &[Token]) -> Result<(ExprMeta, usize), String> {
 		if tokens.len() == 0 {
-			return Err("ExprMeta::parse: no tokens".into());
-		}
-
-		let result = match tokens[0] {
-			Token::LParen => find_closing_delim(Token::LParen, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("ExprMeta::parse: failed to find closing paren".into())
-				.and_then(|delim_i| Expr::parse_parenthesized(&tokens[1..delim_i])
-					.map(|expr| (expr, delim_i + 1))),
-			Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
-			Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
-			Token::Ident(_) => Ident::parse(tokens).map(|(ident, len)| (Expr::Binding(ident), len)),
-			Token::LT => Ok((Expr::Binding(Ident::Name("<".into())), 1)),
-			Token::GT => Ok((Expr::Binding(Ident::Name(">".into())), 1)),
-			Token::Eq => Ok((Expr::Binding(Ident::Name("=".into())), 1)),
-			Token::Exclamation => Ok((Expr::Binding(Ident::Name("!".into())), 1)),
-			Token::Amp => Ok((Expr::Binding(Ident::Name("&".into())), 1)),
-			t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
-		};
-
-		result.and_then(|(expr, expr_len)| {
-			let (maybe_type, type_len) = match tokens.get(expr_len) {
-				Some(&Token::Colon) => if let Ok((ty, tl)) = Type::parse(&tokens[expr_len + 1 ..]) {
-					(Some(ty), tl)
+			Err("ExprMeta::parse: no tokens".into())
+		} else {
+			match tokens[0] {
+				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
+				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
+				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
+				Token::Ident(_) => Ident::parse(tokens)
+					.map(|(ident, len)| (Expr::Binding(ident), len)),
+				Token::LT => Ok((Expr::Binding(Ident::Name("<".into())), 1)),
+				Token::GT => Ok((Expr::Binding(Ident::Name(">".into())), 1)),
+				Token::Eq => Ok((Expr::Binding(Ident::Name("=".into())), 1)),
+				Token::Exclamation => Ok((Expr::Binding(Ident::Name("!".into())), 1)),
+				Token::Amp => Ok((Expr::Binding(Ident::Name("&".into())), 1)),
+				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
+			}.and_then(|(expr, n_tokens)| {
+				if n_tokens >= tokens.len() || tokens[n_tokens] != Token::Colon {
+					Ok((ExprMeta::new(expr, None), n_tokens))
 				} else {
-					return Err("parse_expr: colon not followed by a type".into());
-				},
-				_ => (None, 0),
-			};
-			let tokens_used = expr_len + if type_len != 0 { 1 + type_len } else { 0 };
-			Ok((ExprMeta::new(expr, maybe_type), tokens_used))
-		})
+					Type::parse(&tokens[n_tokens + 1 ..]).map(|(ty, tylen)|
+						(ExprMeta::new(expr, Some(ty)), n_tokens + 1 + tylen))
+				}
+			})
+		}
 	}
 }
 

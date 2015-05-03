@@ -59,6 +59,11 @@
 // TODO: Compile time execution. By marking functions as pure,
 // enable calculation of constants from these functions at compile time.
 
+// TODO: Higher Kinded Types. Like Functor which would provide map for a generic container
+
+// TODO: Find errors in code. When lexing, produce a map of token indices =>
+// line and col in source. When parsing, pass along token index.
+
 #![feature(non_ascii_idents, box_patterns, rustc_private)]
 
 extern crate getopts;

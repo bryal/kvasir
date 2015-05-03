@@ -60,13 +60,12 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 	let mut bindings = Vec::new();
 
 	let mut i = 0;
-	while let Some(token) = tokens.get(i) {
-		if let &Token::Ident(ident) = token {
+	while let Some(&token) = tokens.get(i) {
+		if let Token::Ident(ident) = token {
 			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
-				if let Ok((ty, tl)) = Type::parse(&tokens[i + 2 ..]) {
-					(Some(ty), tl)
-				} else {
-					return Err("parse_typed_bindings: colon not followed by a type".into());
+				match Type::parse(&tokens[i + 2 ..]) {
+					Ok((ty, tl)) => (Some(ty), tl),
+					Err(e) => return Err(e),
 				}
 			} else {
 				(None, 0)
@@ -103,6 +102,19 @@ fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 		}
 	}
 	None
+}
+
+/// Parse content within brackets using provided function.
+///
+/// Return parsed content and num of used tokens. The type of bracket is denoted by the first token.
+fn parse_brackets<F, T>(tokens: &[Token], content_parser: F) -> Result<(T, usize), String>
+	where F: Fn(&[Token]) -> Result<T, String>
+{
+	find_closing_delim(tokens[0], &tokens[1..])
+		.map(|delim_i| delim_i + 1)
+		.ok_or("parse_brackets: failed to find closing paren".into())
+		.and_then(|delim_i| content_parser(&tokens[1..delim_i])
+			.map(|paths| (paths, delim_i + 1)))
 }
 
 impl Component {

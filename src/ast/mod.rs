@@ -23,14 +23,14 @@
 mod parse;
 mod inference;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-	Nil,
 	Basic(String),
 	Construct(String, Vec<Type>),
+	Tuple(Vec<Type>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedBinding {
 	pub ident: String,
 	pub type_sig: Option<Type>,

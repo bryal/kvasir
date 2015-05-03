@@ -27,24 +27,22 @@ use super::{ AST, ExprMeta, Expr, Type, TypedBinding };
 // TODO: Add some way to check whether something was inferred
 // in order to loop while things are still happening
 
-impl super::Cond {
-	fn get_type(&self, binding_stack: &[TypedBinding]) -> Option<Type> {
-		self.clauses.iter()
-			.filter_map(|&(_, ref clause_expr)| clause_expr.get_type(binding_stack))
-			.next()
+impl super::FnDef {
+	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
+		// TODO: inferral of function signature
+		binding_stack.extend(self.arg_bindings.iter().cloned());
+
+		self.body.infer_types(None, binding_stack);
+
+		let old_len = binding_stack.len() - self.arg_bindings.len();
+		binding_stack.truncate(old_len);
 	}
+}
 
-	fn infer_types(&mut self, coerce_to: Option<&Type>, binding_stack: &mut Vec<TypedBinding>) {
-		let out_type = self.clauses.iter()
-			.filter_map(|&(_, ref clause_expr)| clause_expr.coerce_type.as_ref())
-			.next()
-			.or(coerce_to)
-			.map(|o| o.clone());
-
-		for clause in &mut self.clauses {
-			clause.0.infer_types(Some(&Type::Basic("bool".into())), binding_stack);
-			clause.1.infer_types(out_type.as_ref(), binding_stack);
-		}
+impl super::ConstDef {
+	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
+		// TODO: infer type for binding and vice versa
+		self.body.infer_types(None, binding_stack);
 	}
 }
 
@@ -73,6 +71,46 @@ impl super::SExpr {
 	}
 }
 
+impl super::Block {
+	fn get_type(&self, binding_stack: &[TypedBinding]) -> Option<Type> {
+		self.exprs.last().and_then(|expr| expr.get_type(binding_stack))
+	}
+
+	fn infer_types(&mut self, coerce_to: Option<&Type>, binding_stack: &mut Vec<TypedBinding>) {
+		let old_stack_len = binding_stack.len();
+
+		let all_but_last = self.exprs.len() - 1;
+		for expr in self.exprs[0..all_but_last].iter_mut() {
+			expr.infer_types(Some(&Type::Tuple(vec![])), binding_stack);
+		}
+
+		self.exprs.last_mut().unwrap().infer_types(coerce_to, binding_stack);
+
+		binding_stack.truncate(old_stack_len);
+	}
+}
+
+impl super::Cond {
+	fn get_type(&self, binding_stack: &[TypedBinding]) -> Option<Type> {
+		self.clauses.iter()
+			.filter_map(|&(_, ref clause_expr)| clause_expr.get_type(binding_stack))
+			.next()
+	}
+
+	fn infer_types(&mut self, coerce_to: Option<&Type>, binding_stack: &mut Vec<TypedBinding>) {
+		let out_type = self.clauses.iter()
+			.filter_map(|&(_, ref clause_expr)| clause_expr.coerce_type.as_ref())
+			.next()
+			.or(coerce_to)
+			.map(|o| o.clone());
+
+		for clause in &mut self.clauses {
+			clause.0.infer_types(Some(&Type::Basic("bool".into())), binding_stack);
+			clause.1.infer_types(out_type.as_ref(), binding_stack);
+		}
+	}
+}
+
 impl super::Lambda {
 	fn get_type(&self, _: &[TypedBinding]) -> Option<Type> {
 		// TODO: Fix this. Should be something like:
@@ -90,44 +128,6 @@ impl super::Lambda {
 	}
 }
 
-impl super::Block {
-	fn get_type(&self, binding_stack: &[TypedBinding]) -> Option<Type> {
-		self.exprs.last().and_then(|expr| expr.get_type(binding_stack))
-	}
-
-	fn infer_types(&mut self, coerce_to: Option<&Type>, binding_stack: &mut Vec<TypedBinding>) {
-		let old_stack_len = binding_stack.len();
-
-		let all_but_last = self.exprs.len() - 1;
-		for expr in self.exprs[0..all_but_last].iter_mut() {
-			expr.infer_types(Some(&Type::Nil), binding_stack);
-		}
-
-		self.exprs.last_mut().unwrap().infer_types(coerce_to, binding_stack);
-
-		binding_stack.truncate(old_stack_len);
-	}
-}
-
-impl super::FnDef {
-	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
-		// TODO: inferral of function signature
-		binding_stack.extend(self.arg_bindings.iter().cloned());
-
-		self.body.infer_types(None, binding_stack);
-
-		let old_len = binding_stack.len() - self.arg_bindings.len();
-		binding_stack.truncate(old_len);
-	}
-}
-
-impl super::ConstDef {
-	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
-		// TODO: infer type for binding and vice versa
-		self.body.infer_types(None, binding_stack);
-	}
-}
-
 impl ExprMeta {
 	fn get_type(&self, binding_stack: &[TypedBinding])-> Option<Type> {
 		self.coerce_type.clone().or(match *self.value {
@@ -137,7 +137,7 @@ impl ExprMeta {
 			Expr::StrLit(_) => Some(Type::Basic("&'static str".into())),
 			Expr::Lambda(ref lambda) => lambda.get_type(binding_stack),
 			Expr::Block(ref block) => block.get_type(binding_stack),
-			Expr::Nil => Some(Type::Nil),
+			Expr::Nil => Some(Type::Tuple(vec![])),
 			Expr::Binding(ref bnd) => binding_stack.iter()
 				.rev()
 				.find(|tb| bnd == &tb.ident)

@@ -24,4 +24,4 @@
 
 {_define_fn (main)
     (println! "{}" (fib_iter 80))
-    : Nil}
+    : ()}

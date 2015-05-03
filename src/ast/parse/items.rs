@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use super::{ find_closing_delim, parse_typed_bindings };
+use super::{ parse_typed_bindings, parse_brackets };
 use ast::*;
 use lex::Token;
 
@@ -48,15 +48,10 @@ fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Ident>, String> {
 				},
 				Err(e) => return Err(e)
 			},
-			Token::LParen => match find_closing_delim(Token::LParen, &tokens[i + 1 ..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("parse_use_paths: failed to find closing paren".into())
-				.and_then(|delim_i| parse_prefixed_paths(&tokens[i + 1 .. delim_i])
-					.map(|paths| (paths, delim_i)))
-			{
-				Ok((paths, delim_i)) => {
+			Token::LParen => match parse_brackets(tokens, parse_prefixed_paths) {
+				Ok((paths, n_used_tokens)) => {
 					all_paths.extend(paths);
-					i = delim_i + 1;
+					i += n_used_tokens;
 				},
 				Err(e) => return Err(e)
 			},
@@ -81,25 +76,23 @@ impl Use {
 
 impl FnDef {
 	fn parse(tokens: &[Token]) -> Result<FnDef, String> {
-		if let Some(&Token::LParen) = tokens.get(0) {
-			find_closing_delim(Token::LParen, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("FnDef::parse: failed to find closing paren".into())
-				.and_then(|delim_i| parse_typed_bindings(&tokens[1..delim_i])
-					.map(|binds| (binds.into_iter(), delim_i + 1)))
-				.and_then(|(mut binds, body_i)| ExprMeta::parse(&tokens[body_i..])
-					.and_then(|(body, _)| binds.next()
-						.map(|binding| FnDef{
-							binding: binding,
-							arg_bindings: binds.collect(),
-							body: body
-						})
-						.ok_or(format!("FnDef::parse: no function binding given"))))
-
+		if tokens.len() == 0 {
+			Err("FnDef::parse: no tokens".into())
 		} else {
-			Err(format!("FnDef::parse: expected parenthesized bindings, found `{:?}`",
-				tokens.get(0)
-			))
+			if let Token::LParen = tokens[0] {
+				parse_brackets(tokens, parse_typed_bindings)
+					.map(|(binds, n_used_tokens)| (binds.into_iter(), n_used_tokens))
+					.and_then(|(mut binds, body_i)| ExprMeta::parse(&tokens[body_i..])
+						.and_then(|(body, _)| binds.next()
+							.map(|binding| FnDef{
+								binding: binding,
+								arg_bindings: binds.collect(),
+								body: body
+							})
+							.ok_or(format!("FnDef::parse: no function binding given"))))
+			} else {
+				Err(format!("FnDef::parse: unexpected token `{:?}`", tokens[0]))
+			}
 		}
 	}
 }
@@ -131,17 +124,13 @@ impl ItemMeta {
 		}
 
 		match tokens[0] {
-			Token::LBrace => find_closing_delim(Token::LBrace, &tokens[1..])
-				.map(|delim_i| delim_i + 1)
-				.ok_or("ItemMeta::parse: failed to find closing brace".into())
-				.and_then(|delim_i| ItemMeta::parse_braced(&tokens[1..delim_i])
-					.map(|item| (ItemMeta{ item: Box::new(item) }, delim_i + 1))),
+			Token::LBrace => parse_brackets(tokens, ItemMeta::parse_braced),
 			t => Err(format!("ItemMeta::parse: unexpected token `{:?}`", t)),
 		}
 	}
 
 	/// Parse an expression from tokens within parentheses
-	fn parse_braced(tokens: &[Token]) -> Result<Item, String> {
+	fn parse_braced(tokens: &[Token]) -> Result<ItemMeta, String> {
 		if tokens.len() == 0 {
 			return Err("ItemMeta::parse_braced: no tokens".into());
 		}
@@ -152,6 +141,6 @@ impl ItemMeta {
 			Token::Ident("_define_const") => ConstDef::parse(&tokens[1..])
 				.map(|c| Item::ConstDef(c)),
 			t => Err(format!("ItemMeta::parse: unexpected token `{:?}`", t)),
-		}
+		}.map(|item| ItemMeta{ item: Box::new(item) })
 	}
 }

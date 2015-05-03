@@ -37,14 +37,14 @@ pub trait ToRustSrc {
 impl ToRustSrc for Type {
 	fn to_rust_src(&self) -> String {
 		match *self {
-			Type::Nil => "()".into(),
 			Type::Basic(ref ty) => ty.clone(),
-			Type::Construct(ref con, ref args) => format!("{}<{}>",
+			Type::Construct(ref con, ref args) => format!(
+				"{}<{}>",
 				con,
-				args[1..].iter()
-					.fold(args[0].to_rust_src(), |acc, ty|
-						format!("{}, {}", acc, ty.to_rust_src()))
-			),
+				args.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src()))),
+			Type::Tuple(ref types) => format!(
+				"({})",
+				types.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src())))
 		}
 	}
 }
@@ -61,7 +61,7 @@ impl ToRustSrc for TypedBinding {
 impl ToRustSrc for Use {
 	fn to_rust_src(&self) -> String {
 		self.paths.iter()
-			.fold(String::new(), |acc, ident| format!("{} use {};", acc, ident.to_rust_src()))
+			.fold(String::new(), |acc, ident| format!("{}use {};", acc, ident.to_rust_src()))
 	}
 }
 

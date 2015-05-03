@@ -20,33 +20,36 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use super::find_closing_delim;
+use super::parse_brackets;
 use ast::Type;
 use lex::Token;
 
 impl Type {
+	/// Parse construct type from tokens assumed to be within angle brackets
+	fn parse_construct(tokens: &[Token]) -> Result<Type, String> {
+		if tokens.len() == 0 {
+			return Err("Type::parse_construct: no tokens".into())
+		}
+		match tokens[0] {
+			Token::Ident(ident) => parse_types(&tokens[1..])
+				.map(|tys| Type::Construct(ident.into(), tys)),
+			t => Err(format!("Type::parse_construct: unexpected token `{:?}`", t))
+		}
+	}
+
+	/// Parse tuple type from tokens assumed to be within parentheses
+	fn parse_tuple(tokens: &[Token]) -> Result<Type, String> {
+		parse_types(tokens).map(|tys| Type::Tuple(tys))
+	}
+
 	/// Parse a type from tokens. On success, return parsed type and number of tokens used
 	pub fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {
-		if tokens.len() == 0 {
-			return Err("Type::parse: no tokens".into())
-		}
-		match &tokens[0] {
-			&Token::Ident("Nil") => Ok((Type::Nil, 1)),
-			&Token::Ident(s) => Ok((Type::Basic(s.into()), 1)),
-			&Token::LT if tokens.len() > 2 => if let Token::Ident(ident) = tokens[1] {
-				find_closing_delim(Token::LT, &tokens[2..])
-					.map(|delim_i| delim_i + 2)
-					.ok_or("Type::parse: failed to find closing angle bracket".into())
-					.and_then(|delim_i| parse_types(&tokens[2..delim_i])
-						.map(|tys| (Type::Construct(ident.into(), tys), delim_i + 1)))
-			} else {
-				Err(format!(
-					"Type::parse: first token in angle brackets was not type ident: `{:?}`",
-					tokens[1]
-				))
-			},
-			_ => Err(format!("Type::parse: no valid type siganture in tokens: {:?}", tokens))
-		}
+		tokens.get(0).ok_or("Type::parse: no tokens".into()).and_then(|&token| match token {
+			Token::Ident(ident) => Ok((Type::Basic(ident.into()), 1)),
+			Token::LT => parse_brackets(tokens, Type::parse_construct),
+			Token::LParen => parse_brackets(tokens, Type::parse_tuple),
+			t => Err(format!("Type::parse: unexpected token `{:?}`", t))
+		})
 	}
 }
 
