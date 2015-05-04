@@ -64,7 +64,7 @@
 // TODO: Find errors in code. When lexing, produce a map of token indices =>
 // line and col in source. When parsing, pass along token index.
 
-#![feature(non_ascii_idents, box_patterns, rustc_private)]
+#![feature(non_ascii_idents, box_patterns, rustc_private, slice_patterns)]
 
 extern crate getopts;
 #[macro_use]
@@ -150,7 +150,9 @@ fn main() {
 	let tokens = lex::tokenize_string(&scr_code).unwrap();
 
 	let mut ast = ast::AST::parse(&tokens).unwrap();
+	println!("AST:\n{:?}\n", ast);
 	ast.infer_types();
+	println!("AST INFERED:\n{:?}\n", ast);
 
 	compile(&ast, out_file_name, sysroot, emissions);
 }

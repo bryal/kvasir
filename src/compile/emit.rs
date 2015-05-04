@@ -193,10 +193,6 @@ impl ToRustSrc for AST {
 			writeln!(src, "{}", item.to_rust_src()).unwrap();
 		}
 
-		for expr in &self.exprs {
-			writeln!(src, "{}", expr.to_rust_src()).unwrap();
-		}
-
 		src
 	}
 }

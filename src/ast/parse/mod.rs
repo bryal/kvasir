@@ -163,6 +163,6 @@ fn parse_components(tokens: &[Token]) -> Result<(Vec<ItemMeta>, Vec<ExprMeta>), 
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		parse_components(tokens).map(|(items, exprs)| AST{ items: items, exprs: exprs })
+		parse_components(tokens).map(|(items, _)| AST{ items: items })
 	}
 }

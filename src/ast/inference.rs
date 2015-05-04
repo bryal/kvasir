@@ -22,27 +22,75 @@
 
 //! Infer types where explicit type signatures are not available
 
-use super::{ AST, ExprMeta, Expr, Type, TypedBinding };
+use super::{ AST, ExprMeta, Expr, Item, Type, TypedBinding };
 
 // TODO: Add some way to check whether something was inferred
 // in order to loop while things are still happening
 
+/// returns [Arg types, Body type]
+fn extract_fn_sig(sig: &mut Type) -> Result<(&mut Vec<Type>, &mut Type), String> {
+	match sig {
+		&mut Type::Construct(ref mut constructor, ref mut construct_args) if constructor == "fn"
+			=> match &mut construct_args[..] {
+				[Type::Tuple(ref mut args), ref mut body] => Ok((args, body)),
+				args => Err(format!(
+					"FnDef::infer_types: Expected type `<fn (_) _>`, found `<fn {:?}>`",
+					args))
+			},
+		t => Err(format!("FnDef::infer_types: Expected type `<fn (_) _>`, found `{:?}`", t))
+	}
+}
+
 impl super::FnDef {
-	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
+	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) -> Result<(), String> {
 		// TODO: inferral of function signature
+		let old_stack_len = binding_stack.len();
+
+		let infer_body_to = if let Some(sig) = self.binding.type_sig.as_mut() {
+			match extract_fn_sig(sig) {
+				Ok((fn_arg_tys, fn_body_ty)) => {
+					for (fn_arg_ty, arg_bind) in fn_arg_tys.iter_mut()
+						.zip(self.arg_bindings.iter_mut())
+						.filter(|&(_, ref arg_bind)| arg_bind.type_sig.is_none())
+					{
+						arg_bind.type_sig = Some(fn_arg_ty.clone());
+					}
+					Some(fn_body_ty)
+				},
+				Err(e) => return Err(e)
+			}
+		} else {
+			None
+		};
+
 		binding_stack.extend(self.arg_bindings.iter().cloned());
 
-		self.body.infer_types(None, binding_stack);
+		self.body.infer_types(infer_body_to.map(|t| &*t), binding_stack);
 
-		let old_len = binding_stack.len() - self.arg_bindings.len();
-		binding_stack.truncate(old_len);
+		// TODO: Get binding types from stack
+
+		binding_stack.truncate(old_stack_len);
+		Ok(())
 	}
 }
 
 impl super::ConstDef {
-	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) {
+	fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) -> Result<(), String> {
 		// TODO: infer type for binding and vice versa
-		self.body.infer_types(None, binding_stack);
+		self.body.infer_types(self.binding.type_sig.as_ref(), binding_stack);
+
+		self.binding.type_sig = self.body.coerce_type.clone();
+		Ok(())
+	}
+}
+
+impl super::ItemMeta {
+	pub fn infer_types(&mut self, binding_stack: &mut Vec<TypedBinding>) -> Result<(), String> {
+		match *self.item {
+			Item::FnDef(ref mut def) => def.infer_types(binding_stack),
+			Item::ConstDef(ref mut def) => def.infer_types(binding_stack),
+			Item::Use(_) => Ok(()),
+		}
 	}
 }
 
@@ -208,8 +256,9 @@ impl ExprMeta {
 impl AST {
 	pub fn infer_types(&mut self) {
 		let mut binding_stack = Vec::with_capacity(10);
-		for expr in &mut self.exprs {
-			expr.infer_types(None, &mut binding_stack);
+
+		for item in &mut self.items {
+			item.infer_types(&mut binding_stack).unwrap();
 		}
 	}
 }

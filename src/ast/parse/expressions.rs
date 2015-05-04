@@ -40,7 +40,6 @@ impl Cond {
 
 		let mut i = 0;
 		while let Some(&token) = tokens.get(i) {
-			println!("COND TOKENS: {:?}", &tokens[i..]);
 			if let Token::LParen = token {
 				match parse_brackets(&tokens[i..], parse_exprs) {
 					Ok((exprs, n_tokens)) => if exprs.len() == 2 {

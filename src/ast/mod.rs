@@ -137,5 +137,4 @@ pub enum Component {
 #[derive(Debug, Clone)]
 pub struct AST {
 	pub items: Vec<ItemMeta>,
-	pub exprs: Vec<ExprMeta>,
 }
