@@ -43,8 +43,8 @@ impl Cond {
 			if let Token::LParen = token {
 				match parse_brackets(&tokens[i..], parse_exprs) {
 					Ok((exprs, n_tokens)) => if exprs.len() == 2 {
-						if let Expr::Binding(Ident::Name(ref b)) = *exprs[0].value {
-							if b == "else" {
+						if let Expr::Binding(ref path) = *exprs[0].value {
+							if path == "else" {
 								cond.else_clause = Some(exprs[1].clone());
 								return Ok(cond);
 							}
@@ -110,13 +110,10 @@ impl ExprMeta {
 				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
 				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
-				Token::Ident(_) => Ident::parse(tokens)
+				Token::Ident(_) => Path::parse(tokens)
 					.map(|ident| (Expr::Binding(ident), 1)),
-				Token::LT => Ok((Expr::Binding(Ident::Name("<".into())), 1)),
-				Token::GT => Ok((Expr::Binding(Ident::Name(">".into())), 1)),
-				Token::Eq => Ok((Expr::Binding(Ident::Name("=".into())), 1)),
-				Token::Exclamation => Ok((Expr::Binding(Ident::Name("!".into())), 1)),
-				Token::Amp => Ok((Expr::Binding(Ident::Name("&".into())), 1)),
+				Token::LT => Ok((Expr::Binding(Path::parse_str("<").unwrap()), 1)),
+				Token::GT => Ok((Expr::Binding(Path::parse_str(">").unwrap()), 1)),
 				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
 			}.and_then(|(expr, n_tokens)| {
 				if n_tokens >= tokens.len() || tokens[n_tokens] != Token::Colon {

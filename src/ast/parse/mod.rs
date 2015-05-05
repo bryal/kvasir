@@ -27,40 +27,52 @@ mod items;
 mod types;
 mod expressions;
 
-impl Ident {
+impl Path {
 	/// Parse an ident
-	fn parse(tokens: &[Token]) -> Result<Ident, String> {
+	fn parse(tokens: &[Token]) -> Result<Path, String> {
 		if tokens.len() == 0 {
 			return Err("Ident::parse: no tokens".into());
 		}
 		match tokens[0] {
-			Token::Ident("/") => Ok(Ident::Name("/".into())),
-			Token::Ident(s) => Ident::parse_path_str(s),
+			Token::Ident(s) => Path::parse_str(s),
 			t => Err(format!("Ident::parse: unexpexted token `{:?}`", t)),
 		}
 	}
 
-	fn parse_path_str(path_s: &str) -> Result<Ident, String> {
-		if path_s.starts_with('/') {
+	fn parse_str(path_s: &str) -> Result<Path, String> {
+		let (is_absolute, path_s) = if path_s.starts_with('/') {
 			if path_s.len() == 1 {
-				Err("Ident::parse_path_str: Path is a lone `/`".into())
+				return Err("Ident::parse_str: Path is a lone `/`".into());
 			} else {
-				Ident::parse_path_str(&path_s[1..]).map(|p| Ident::Root(Box::new(p)))
+				(true, &path_s[1..])
 			}
 		} else {
-			match path_s.find('/') {
-				Some(slash_i) => Ident::parse_path_str(&path_s[slash_i + 1 ..])
-					.map(|p| Ident::Path(path_s[..slash_i].into(), Box::new(p))),
-				None => Ok(Ident::Name(path_s.into())),
-			}
+			(false, path_s)
+		};
+
+		if path_s.ends_with("/") {
+			return Err("Path::parse_str: Path ends with `/`".into());
 		}
+
+		let mut parts = Vec::new();
+
+		for part in path_s.split('/') {
+			if part == "" {
+				return Err(format!("Path::parse_str: Invalid path `{}`", path_s));
+			}
+			parts.push(part.into());
+		}
+
+		Ok(Path::new(parts, is_absolute))
 	}
 
-	fn concat(self, other: Ident) -> Ident {
-		match self {
-			Ident::Name(name) => Ident::Path(name, Box::new(other)),
-			Ident::Path(name, box path) => Ident::Path(name, Box::new(path.concat(other))),
-			Ident::Root(box path) => Ident::Root(Box::new(path.concat(other))),
+	fn concat(self, other: &Path) -> Result<Path, String> {
+		if other.is_absolute {
+			Err(format!(
+				"Path::concat: `{}` is an absolute path",
+				other.to_str()))
+		} else {
+			Ok(Path::new(self.parts + &other.parts, self.is_absolute))
 		}
 	}
 }
@@ -134,7 +146,7 @@ impl Component {
 
 		match tokens[0] {
 			Token::LParen | Token::LBracket | Token::String(_) | Token::Number(_)
-			| Token::Ident(_) | Token::LT | Token::GT | Token::Exclamation | Token::Amp
+			| Token::Ident(_) | Token::LT | Token::GT
 				=> ExprMeta::parse(tokens).map(|(e, l)| (Component::Expr(e), l)),
 
 			Token::LBrace => ItemMeta::parse(tokens).map(|(i, l)| (Component::Item(i), l)),

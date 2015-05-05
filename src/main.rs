@@ -159,9 +159,9 @@ fn main() {
 	let tokens = lex::tokenize_string(&scr_code).unwrap();
 
 	let mut ast = ast::AST::parse(&tokens).unwrap();
-	println!("AST:\n{:?}\n", ast);
+	// println!("AST:\n{:?}\n", ast);
 	ast.infer_types();
-	println!("AST INFERED:\n{:?}\n", ast);
+	// println!("AST INFERED:\n{:?}\n", ast);
 
 	compile(&ast, out_file_name, sysroot, emissions);
 }

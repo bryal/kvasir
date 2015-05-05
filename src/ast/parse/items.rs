@@ -25,23 +25,32 @@ use ast::*;
 use lex::Token;
 
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
-fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Ident>, String> {
-	match Ident::parse(tokens) {
+fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
+	match Path::parse(tokens) {
 		Ok(head) => parse_use_paths(&tokens[1..])
-			.map(|tails| tails.into_iter()
-				.map(|tail| head.clone().concat(tail))
-				.collect()),
+			.and_then(|tails| {
+				let mut paths = Vec::new();
+
+				for path_result in tails.iter().map(|tail| head.clone().concat(tail)) {
+					match path_result {
+						Err(e) => return Err(e),
+						Ok(o) => paths.push(o),
+					}
+				}
+
+				Ok(paths)
+			}),
 		Err(e) => Err(e),
 	}
 }
 
-fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Ident>, String> {
+fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	let mut all_paths = Vec::new();
 
 	let mut i = 0;
 	while let Some(token) = tokens.get(i) {
 		match *token {
-			Token::Ident(_) => match Ident::parse(&tokens[i..]) {
+			Token::Ident(_) => match Path::parse(&tokens[i..]) {
 				Ok(path) => {
 					all_paths.push(path);
 					i += 1;

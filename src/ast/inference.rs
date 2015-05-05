@@ -188,7 +188,7 @@ impl ExprMeta {
 			Expr::Nil => Some(Type::Tuple(vec![])),
 			Expr::Binding(ref bnd) => binding_stack.iter()
 				.rev()
-				.find(|tb| bnd == &tb.ident)
+				.find(|tb| bnd == tb.ident.as_ref())
 				.map(|tb| tb.type_sig.clone())
 				.unwrap_or(None),
 
@@ -207,7 +207,7 @@ impl ExprMeta {
 				block.infer_types(self.coerce_type.as_ref(), binding_stack),
 			Expr::Binding(ref bnd) => if let Some(stack_binding) = binding_stack.iter_mut()
 				.rev()
-				.find(|tb| bnd == &tb.ident)
+				.find(|tb| bnd == tb.ident.as_ref())
 			{
 				if self.coerce_type.is_none() {
 					self.coerce_type = stack_binding.type_sig.clone();

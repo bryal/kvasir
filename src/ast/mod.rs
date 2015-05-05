@@ -36,24 +36,39 @@ pub struct TypedBinding {
 	pub type_sig: Option<Type>,
 }
 
-// TODO: Rename to path. An ident should just be a name.
-// TODO: Split into RootPath and RelativePath, both variant in the enum Path
-/// e.g. Path(fs, Path(File, Name(create))) == fs::File::create
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Ident {
-	Name(String),
-	Path(String, Box<Ident>),
-	Root(Box<Ident>),
+/// A path to an expression or item. Could be a path to a module in a use statement,
+/// of a path to a function or constant in an expression.
+#[derive(Debug, Clone)]
+pub struct Path {
+	parts: Vec<String>,
+	is_absolute: bool,
 }
-impl PartialEq<String> for Ident {
-	fn eq(&self, s: &String) -> bool {
-		&::compile::emit::ToRustSrc::to_rust_src(self) == s
+impl Path {
+	fn new(parts: Vec<String>, is_absolute: bool) -> Path {
+		Path{ parts: parts, is_absolute: is_absolute }
+	}
+
+	pub fn is_absolute(&self) -> bool { self.is_absolute }
+
+	pub fn parts(&self) -> &[String] { &self.parts }
+
+	pub fn to_str(&self) -> String {
+		format!(
+			"{}{}{}",
+			if self.is_absolute() { "/" } else { "" },
+			self.parts[0],
+			self.parts[1..].iter().fold(String::new(), |acc, p| acc + "/" + p))
+	}
+}
+impl PartialEq<str> for Path {
+	fn eq(&self, rhs: &str) -> bool {
+		self.to_str() == rhs
 	}
 }
 
 #[derive(Debug, Clone)]
 pub struct Use {
-	pub paths: Vec<Ident>,
+	pub paths: Vec<Path>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +125,7 @@ pub struct Lambda {
 pub enum Expr {
 	NumLit(String),
 	StrLit(String),
-	Binding(Ident),
+	Binding(Path),
 	SExpr(SExpr),
 	Block(Block),
 	Cond(Cond),

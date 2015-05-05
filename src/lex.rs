@@ -30,13 +30,10 @@ pub enum Token<'a> {
 	RBrace,
 	LT,
 	GT,
-	Eq,
 	Ident(&'a str),
 	Number(&'a str),
 	String(&'a str),
-	Exclamation,
 	Colon,
-	Amp,
 }
 
 // TODO: Handle comments. Both on own lines, and at end of lines. Should probably be renamed aswell
@@ -98,7 +95,7 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 
 fn is_ident_char(c: char) -> bool {
 	match c {
-		'_' | '?' | '/' | '+' | '-' | '*' => true,
+		'_' | '?' | '/' | '+' | '-' | '*' | '=' | '&' => true,
 		c if c.is_alphanumeric() => true,
 		_ => false,
 	}
@@ -123,10 +120,7 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 			'}' => { tokens.push(Token::RBrace); 1 },
 			'<' => { tokens.push(Token::LT); 1 },
 			'>' => { tokens.push(Token::GT); 1 },
-			'=' => { tokens.push(Token::Eq); 1 },
 			':' => { tokens.push(Token::Colon); 1 },
-			'!' => { tokens.push(Token::Exclamation); 1 },
-			'&' => { tokens.push(Token::Amp); 1 },
 			c if c.is_numeric() => {
 				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
 					.unwrap_or(word.len());
