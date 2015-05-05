@@ -36,11 +36,14 @@ pub struct TypedBinding {
 	pub type_sig: Option<Type>,
 }
 
+// TODO: Rename to path. An ident should just be a name.
+// TODO: Split into RootPath and RelativePath, both variant in the enum Path
 /// e.g. Path(fs, Path(File, Name(create))) == fs::File::create
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ident {
 	Name(String),
 	Path(String, Box<Ident>),
+	Root(Box<Ident>),
 }
 impl PartialEq<String> for Ident {
 	fn eq(&self, s: &String) -> bool {

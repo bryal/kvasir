@@ -27,7 +27,7 @@ use lex::Token;
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
 fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Ident>, String> {
 	match Ident::parse(tokens) {
-		Ok((head, head_len)) => parse_use_paths(&tokens[head_len..])
+		Ok(head) => parse_use_paths(&tokens[1..])
 			.map(|tails| tails.into_iter()
 				.map(|tail| head.clone().concat(tail))
 				.collect()),
@@ -42,9 +42,9 @@ fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Ident>, String> {
 	while let Some(token) = tokens.get(i) {
 		match *token {
 			Token::Ident(_) => match Ident::parse(&tokens[i..]) {
-				Ok((path, path_len)) => {
+				Ok(path) => {
 					all_paths.push(path);
-					i += path_len;
+					i += 1;
 				},
 				Err(e) => return Err(e)
 			},

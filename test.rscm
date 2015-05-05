@@ -1,10 +1,10 @@
-{use (std::ops Add Sub)}
+{use (/std/ops Add Sub)}
 
-{_define_fn (add a: u64 b: u64) (Add::add a b): u64}
-{_define_fn (sub: <fn (u64 u64) u64> a b) (Sub::sub a b)}
+{_define_fn (add a: u64 b: u64) (Add/add a b): u64}
+{_define_fn (sub: <fn (u64 u64) u64> a b) (Sub/sub a b)}
 
 {_define_fn (eq a: u64 b: u64)
-    (PartialEq::eq (& a) (& b)): bool}
+    (PartialEq/eq (& a) (& b)): bool}
 
 {_define_fn (inc x: u64) (add x 1): u64}
 {_define_fn (dec x: u64) (sub x 1): u64}
@@ -22,6 +22,6 @@
           (else (add (fib_rec (sub n 1)) (fib_rec (sub n 2)))))
     : u64}
 
-{_define_fn (main)
+{_define_fn (main) (block
     (println! "{}" (fib_iter 80))
-    : ()}
+    (println! "{}" (fib_iter 80))): ()}

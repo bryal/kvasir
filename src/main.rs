@@ -64,6 +64,15 @@
 // TODO: Find errors in code. When lexing, produce a map of token indices =>
 // line and col in source. When parsing, pass along token index.
 
+// TODO: In cases like:
+//     map f [] = []
+//     map f (first:rest) = f first : map f rest
+// do not try to infer type, instead, leave types of f, first, and rest as type variables
+
+// TODO: Implement something like
+// [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system)
+// for type inference
+
 #![feature(non_ascii_idents, box_patterns, rustc_private, slice_patterns)]
 
 extern crate getopts;

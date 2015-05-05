@@ -29,22 +29,30 @@ mod expressions;
 
 impl Ident {
 	/// Parse an ident
-	fn parse(tokens: &[Token]) -> Result<(Ident, usize), String> {
+	fn parse(tokens: &[Token]) -> Result<Ident, String> {
 		if tokens.len() == 0 {
 			return Err("Ident::parse: no tokens".into());
 		}
-		if let Token::Ident(head) = tokens[0] {
-			if (tokens.get(1), tokens.get(2)) == (Some(&Token::Colon), Some(&Token::Colon)) {
-				if let Ok((tail, n_tail_tokens)) = Ident::parse(&tokens[3..]) {
-					Ok((Ident::Path(head.into(), Box::new(tail)), 3 + n_tail_tokens))
-				} else {
-					Err("Ident::parse: two colons were not followed by ident".into())
-				}
+		match tokens[0] {
+			Token::Ident("/") => Ok(Ident::Name("/".into())),
+			Token::Ident(s) => Ident::parse_path_str(s),
+			t => Err(format!("Ident::parse: unexpexted token `{:?}`", t)),
+		}
+	}
+
+	fn parse_path_str(path_s: &str) -> Result<Ident, String> {
+		if path_s.starts_with('/') {
+			if path_s.len() == 1 {
+				Err("Ident::parse_path_str: Path is a lone `/`".into())
 			} else {
-				Ok((Ident::Name(head.into()), 1))
+				Ident::parse_path_str(&path_s[1..]).map(|p| Ident::Root(Box::new(p)))
 			}
 		} else {
-			Err("Ident::parse: first token is not an ident".into())
+			match path_s.find('/') {
+				Some(slash_i) => Ident::parse_path_str(&path_s[slash_i + 1 ..])
+					.map(|p| Ident::Path(path_s[..slash_i].into(), Box::new(p))),
+				None => Ok(Ident::Name(path_s.into())),
+			}
 		}
 	}
 
@@ -52,6 +60,7 @@ impl Ident {
 		match self {
 			Ident::Name(name) => Ident::Path(name, Box::new(other)),
 			Ident::Path(name, box path) => Ident::Path(name, Box::new(path.concat(other))),
+			Ident::Root(box path) => Ident::Root(Box::new(path.concat(other))),
 		}
 	}
 }
@@ -125,7 +134,7 @@ impl Component {
 
 		match tokens[0] {
 			Token::LParen | Token::LBracket | Token::String(_) | Token::Number(_)
-			| Token::Ident(_) | Token::LT | Token::GT | Token::Eq | Token::Exclamation | Token::Amp
+			| Token::Ident(_) | Token::LT | Token::GT | Token::Exclamation | Token::Amp
 				=> ExprMeta::parse(tokens).map(|(e, l)| (Component::Expr(e), l)),
 
 			Token::LBrace => ItemMeta::parse(tokens).map(|(i, l)| (Component::Item(i), l)),

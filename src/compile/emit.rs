@@ -111,6 +111,7 @@ impl ToRustSrc for Ident {
 		match *self {
 			Ident::Name(ref s) => s.clone(),
 			Ident::Path(ref s, ref ident) => format!("{}::{}", s, ident.to_rust_src()),
+			Ident::Root(ref path) => format!("::{}", path.to_rust_src()),
 		}
 	}
 }

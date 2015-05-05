@@ -39,6 +39,7 @@ pub enum Token<'a> {
 	Amp,
 }
 
+// TODO: Handle comments. Both on own lines, and at end of lines. Should probably be renamed aswell
 /// Split code string by whitespace. Preserve whitespace in string literals
 pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 	src = src.trim();
@@ -97,7 +98,7 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 
 fn is_ident_char(c: char) -> bool {
 	match c {
-		'_' | '?' => true,
+		'_' | '?' | '/' | '+' | '-' | '*' => true,
 		c if c.is_alphanumeric() => true,
 		_ => false,
 	}
@@ -145,7 +146,7 @@ fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 
 				end_i
 			},
-			c => return Err(format!("Unexpected character `{}`", c))
+			c => return Err(format!("tokenize_word:: Unexpected character `{}`", c))
 		};
 		word = &word[shift..];
 	}

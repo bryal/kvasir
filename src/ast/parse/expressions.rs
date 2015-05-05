@@ -106,11 +106,12 @@ impl ExprMeta {
 			Err("ExprMeta::parse: no tokens".into())
 		} else {
 			match tokens[0] {
+				// FIXME: Ident::parse should be used here
 				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
 				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
 				Token::Ident(_) => Ident::parse(tokens)
-					.map(|(ident, len)| (Expr::Binding(ident), len)),
+					.map(|ident| (Expr::Binding(ident), 1)),
 				Token::LT => Ok((Expr::Binding(Ident::Name("<".into())), 1)),
 				Token::GT => Ok((Expr::Binding(Ident::Name(">".into())), 1)),
 				Token::Eq => Ok((Expr::Binding(Ident::Name("=".into())), 1)),
