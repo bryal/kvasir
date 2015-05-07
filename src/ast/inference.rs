@@ -34,10 +34,10 @@ fn extract_fn_sig(sig: &mut Type) -> Result<(&mut Vec<Type>, &mut Type), String>
 			=> match &mut construct_args[..] {
 				[Type::Tuple(ref mut args), ref mut body] => Ok((args, body)),
 				args => Err(format!(
-					"FnDef::infer_types: Expected type `<fn (_) _>`, found `<fn {:?}>`",
+					"extract_fn_sig: Expected type `<fn (_) _>`, found `<fn {:?}>`",
 					args))
 			},
-		t => Err(format!("FnDef::infer_types: Expected type `<fn (_) _>`, found `{:?}`", t))
+		t => Err(format!("extract_fn_sig: Expected type `<fn (_) _>`, found `{:?}`", t))
 	}
 }
 

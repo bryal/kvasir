@@ -37,6 +37,7 @@ pub enum Token<'a> {
 }
 
 // TODO: Handle comments. Both on own lines, and at end of lines. Should probably be renamed aswell
+// TODO: This whole function is very ugly. Separate string-related logic.
 /// Split code string by whitespace. Preserve whitespace in string literals
 pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 	src = src.trim();
@@ -53,16 +54,27 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 
 		// `Some` if item att current index is a string literal
 		let maybe_start_len_and_delim = if let Some(0) = from_here.find('"') {
+			// It's a string. Do not split by space in a string, instead send whole string literal
+			// as a single token. Resume iterating from end of string.
 			Some((1, String::from("\"")))
 		} else if let Some(0) = from_here.find("r\"") {
+			// Same as above, but raw string literal.
 			Some((2, String::from("\"")))
 		} else if let Some(0) = from_here.find("r#") {
+			// Similar to above, but do not delimit by ", but rather "
+			// followed by same number of #'s as preceeding beginning "
 			from_here.find('"').and_then(|i| if from_here[1..i].bytes().all(|c| c == '#' as u8) {
 				let s = String::from("\"") + &from_here[1..i];
 				Some((s.len() + 1, s))
 			} else {
 				None
 			})
+		} else if from_here.starts_with(';') {
+			// Comment. We know from above that we are not in a string, so just skip rest of line
+			let comment_len = from_here.find('\n').map(|i| i + 1).unwrap_or(from_here.len());
+			src = &src[byte_i + comment_len ..];
+			char_iter = src.char_indices();
+			continue;
 		} else {
 			None
 		};

@@ -1,5 +1,7 @@
+; use std::ops::{ Add, Sub }
 {use (/std/ops Add Sub)}
 
+; fn add(a: u64, b: u64) -> u64 { Add::add(a, b) }
 {_define_fn (add a: u64 b: u64) (Add/add a b): u64}
 {_define_fn (sub: <fn (u64 u64) u64> a b) (Sub/sub a b)}
 
@@ -23,5 +25,4 @@
     : u64}
 
 {_define_fn (main) (block
-    (println! "{}" (fib_iter 80))
-    (println! "{}" (fib_iter 80))): ()}
+    (println! "{}" (fib_iter 80))): ()} ; println!("{}", fib_iter(80))
