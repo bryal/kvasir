@@ -28,16 +28,19 @@ use super::{ AST, ExprMeta, Expr, Item, Type, TypedBinding };
 // in order to loop while things are still happening
 
 /// returns [Arg types, Body type]
-fn extract_fn_sig(sig: &mut Type) -> Result<(&mut Vec<Type>, &mut Type), String> {
+fn extract_fn_sig(sig: &mut Type) -> Result<(&mut [Type], &mut Type), String> {
 	match sig {
-		&mut Type::Construct(ref mut constructor, ref mut construct_args) if constructor == "fn"
-			=> match &mut construct_args[..] {
-				[Type::Tuple(ref mut args), ref mut body] => Ok((args, body)),
-				args => Err(format!(
-					"extract_fn_sig: Expected type `<fn (_) _>`, found `<fn {:?}>`",
-					args))
-			},
-		t => Err(format!("extract_fn_sig: Expected type `<fn (_) _>`, found `{:?}`", t))
+		&mut Type::Construct(ref mut constructor, ref mut construct_args) if constructor == "fn" =>
+		{
+			let len = construct_args.len();
+			if len == 0 {
+				Err("extract_fn_sig: `fn` construct lacks arguments".into())
+			} else {
+				let (mut arg_types, mut return_type) = construct_args.split_at_mut(len - 1);
+				Ok((arg_types, &mut return_type[0]))
+			}
+		},
+		t => Err(format!("extract_fn_sig: Expected type `<fn _ ...>`, found `{:?}`", t))
 	}
 }
 
