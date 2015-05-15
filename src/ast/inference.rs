@@ -25,11 +25,14 @@
 // TODO: Check for mutual recursion when infering types. Maybe list of function call ancestry.
 // Like: foo calling bar calling baz calling foo => ERROR
 
-use super::{ Item, Type };
+// TODO: Consider redisigning this module. Maybe have an Inferer that takes expressions instead
+// of implementing inference for each expression type.
+
+use super::{ FnDef, Item, Type, TypedBinding, Expr };
 
 impl super::FnDef {
 	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
-	fn infer_types(&mut self, fn_stack: &mut [FnDef]) {
+	fn infer_types(&mut self, defs_in_scope: &mut [FnDef]) {
 		let mut arg_bindings = self.arg_bindings.clone();
 
 		if let Some((fn_arg_types, fn_body_type)) = self.extract_type_sig() {
@@ -38,26 +41,97 @@ impl super::FnDef {
 
 			self.set_arg_types(fn_arg_types);
 
-			self.body.infer_types(Some(fn_body_type), fn_stack, &mut arg_bindings, &mut Vec::new());
+			self.body.infer_types(Some(fn_body_type), defs_in_scope, &mut arg_bindings);
 		} else {
 			// No type signature for function binding. Pass arg bindings to body and infer types
 			// for body, then get function signature from updated arg types and body type
 
 			let arg_bindings_old_len = arg_bindings.len();
 
-			// args: type_to_infer_to, stack_of_available_functions, constants, vars
-			self.body.infer_types(Some(fn_body_type), fn_stack, &mut arg_bindings, &mut Vec::new());
+			// args: type_to_infer_to, defs_in_scope, binding_stack
+			self.body.infer_types(None, defs_in_scope, &mut arg_bindings);
 
 			if arg_bindings.len() != arg_bindings_old_len {
 				panic!("FnDef::infer_types: arg_bindings.len() != arg_bindings_old_len");
 			}
 
-			let arg_types = arg_bindings.into_iter().map(|b| b.type_sig);
-			self.set_arg_types();
+			let arg_types = arg_bindings.into_iter()
+				.map(|b| b.type_sig.expect("FnDef::infer_types: Arg has no type"))
+				.collect();
 
-			self.construct_fn_sig()
-			self.binding.type_sig = Some(construct_fn_type())
+			self.set_arg_types(&mut arg_types);
+
+			self.construct_fn_sig(
+				arg_types,
+				self.body.type_sig.expect("FnDef::infer_types: Body has no type"));
 		}
+	}
+}
+
+fn get_stack_binding<'a>(binding_stack: &'a mut [TypedBinding], bnd: &str) -> &'a mut TypedBinding {
+	binding_stack.iter_mut()
+		.rev()
+		.find(|stack_bnd| stack_bnd.ident == bnd)
+		.expect(format!("get_stack_binding: Binding not in stack, `{}`", bnd))
+}
+
+fn update_binding_stack(binding_stack: &mut [TypedBinding], bnd: &str, expected_ty: Type) {
+	let stack_bnd = get_stack_binding(binding_stack, bnd);
+
+	if stack_bnd.type_sig.is_none() {
+		stack_bnd.type_sig = Some(expected_ty)
+	}
+}
+
+// TODO: Shouldn't necessarily panic if types differ. Add some sort of coercion and polymorphism.
+/// Checks binding stack for the type of binding `bnd` and resolves conflicts.
+/// If expected type is None, return stack type. If stack type is None, update stack type
+/// with to expected type. If both are Some but differ in value, panic.
+fn resolve_binding_type(binding_stack: &mut [TypedBinding], bnd: &str, expected_ty: Option<Type>)
+	-> Option<Type>
+{
+	match expected_ty {
+		Some(ty) => update_binding_stack(binding_stack, bnd, ty),
+		None => get_stack_binding(binding_stack, bnd).clone(),
+	}
+}
+
+impl super::ExprMeta {
+	fn infer_types(
+		&mut self,
+		parent_expected_type: Option<&Type>,
+		defs_in_scope: &mut [FnDef],
+		binding_stack: &mut Vec<TypedBinding>)
+	{
+		let expected_type = self.coerce_type.or(parent_expected_type);
+
+		let found_type = match *self.value {
+			// Doesn't have children to infer types for
+			Expr::Nil => Type::nil(),
+			// TODO: This should be an internal, more general integer type
+			Expr::NumLit(_) => Type::basic("u64"),
+			// TODO: This should be a construct somehow
+			Expr::StrLit(_) => Type::basic("&str"),
+			Expr::Binding(ref bnd) => update_binding_stack(binding_stack, bnd, expected_type),
+			Expr::SExpr(ref mut sexpr) => {
+				sexpr.infer_types(expected_type, binding_stack);
+				sexpr.type_sig
+			},
+			Expr::Block(ref mut block) => {
+				block.infer_types(expected_type, binding_stack);
+				block.type_sig
+			},
+			Expr::Cond(ref mut cond) => {
+				cond.infer_types(expected_type, binding_stack);
+				cond.type_sig
+			},
+			Expr::Lambda(ref mut lambda) => {
+				lambda.infer_types(expected_type, binding_stack);
+				lambda.type_sig
+			},
+		};
+
+		self.set_type(found_type);
 	}
 }
 

@@ -29,6 +29,15 @@ pub enum Type {
 	Construct(String, Vec<Type>),
 	Tuple(Vec<Type>),
 }
+impl Type {
+	fn nil() -> Type {
+		Type::Tuple(vec![])
+	}
+
+	fn basic<T: Into<String>>(ts: T) -> Type {
+		Type::Basic(ts.into())
+	}
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedBinding {
@@ -71,6 +80,7 @@ pub struct Use {
 	pub paths: Vec<Path>,
 }
 
+// TODO: Make definitions expressions in order to more easily track changes on binding stack
 #[derive(Debug, Clone)]
 pub struct FnDef {
 	pub binding: TypedBinding,
@@ -123,6 +133,7 @@ pub struct Lambda {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
+	Nil,
 	NumLit(String),
 	StrLit(String),
 	Binding(Path),
@@ -130,7 +141,6 @@ pub enum Expr {
 	Block(Block),
 	Cond(Cond),
 	Lambda(Lambda),
-	Nil,
 }
 
 /// An expression with additional attributes such as type information

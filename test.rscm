@@ -1,31 +1,17 @@
-; use std::ops::{ Add, Sub }
-{use (/std/ops Add Sub)}
+{use /std/ops/Add}
 
 ; fn add(a: u64, b: u64) -> u64 { Add::add(a, b) }
 {_define_fn (add a: u64 b: u64) (Add/add a b): u64}
-{_define_fn (sub: <fn u64 u64 u64> a b) (Sub/sub a b)}
 
-; <fn a b c> would translate to haskell `a -> b -> c` and rust `fn(a, b) -> c`
-; <fn r> would translate not translate to some IO action in haskell and `fn() -> r` in rust
-
-{_define_fn (eq a: u64 b: u64)
-    (PartialEq/eq (& a) (& b)): bool}
-
-{_define_fn (inc x: u64) (add x 1): u64}
-{_define_fn (dec x: u64) (sub x 1): u64}
-
-{_define_fn (_fib_iter a: u64 b: u64 i: u64)
-    (cond ((eq i 0) b)
-          (else (_fib_iter b (add b a) (dec i))))
-    : u64}
-
-{_define_fn (fib_iter n: u64) (_fib_iter 0 1 (dec n)): u64}
-
-{_define_fn (fib_rec n: u64)
-    (cond ((eq n 0) 0)
-          ((eq n 1) 1)
-          (else (add (fib_rec (sub n 1)) (fib_rec (sub n 2)))))
-    : u64}
+{_define_fn (inc: <→ u64 u64> x) (add x 1)}
 
 {_define_fn (main) (block
-    (println! "{}" (fib_iter 80))): ()} ; println!("{}", fib_iter(80))
+    (inc 10)): ()}
+
+{fn (add: <fn u32 u32 u32> a b) ...}
+
+{fn (f a) (g a)}
+
+{fn (g a) (+ 1 a): u32}
+
+{fn (main) (f 1)}
