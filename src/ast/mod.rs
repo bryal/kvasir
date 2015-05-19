@@ -37,12 +37,25 @@ impl Type {
 	fn basic<T: Into<String>>(ts: T) -> Type {
 		Type::Basic(ts.into())
 	}
+
+	fn construct<T: Into<String>>(constructor: T, args: Vec<Type>) -> Type {
+		Type::Construct(constructor.into(), args)
+	}
+
+	fn bool() -> Type {
+		Type::Basic("bool".into())
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedBinding {
 	pub ident: String,
 	pub type_sig: Option<Type>,
+}
+impl TypedBinding {
+	fn has_type(&self) -> bool {
+		self.type_sig.is_some()
+	}
 }
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
@@ -136,11 +149,22 @@ pub enum Expr {
 	Nil,
 	NumLit(String),
 	StrLit(String),
+	Bool(bool),
 	Binding(Path),
 	SExpr(SExpr),
 	Block(Block),
 	Cond(Cond),
 	Lambda(Lambda),
+	VarDef(VarDef),
+}
+impl Expr {
+	fn is_var_def(&self) -> bool {
+		if let Expr::VarDef(_) = *self {
+			true
+		} else {
+			false
+		}
+	}
 }
 
 /// An expression with additional attributes such as type information
@@ -150,8 +174,20 @@ pub struct ExprMeta {
 	pub coerce_type: Option<Type>
 }
 impl ExprMeta {
-	fn new(value: Expr, coerce_type: Option<Type>) -> ExprMeta {
-		ExprMeta{ value: Box::new(value), coerce_type: coerce_type }
+	fn new(value: Expr, type_sig: Option<Type>) -> ExprMeta {
+		ExprMeta{ value: Box::new(value), type_sig: coerce_type }
+	}
+
+	fn new_true() -> ExprMeta {
+		ExprMeta::new(Expr::Bool(true), Some(Type::bool()))
+	}
+
+	fn new_false() -> ExprMeta {
+		ExprMeta::new(Expr::Bool(false), Some(Type::bool()))
+	}
+
+	fn expr(&mut self) -> &mut Expr {
+		&mut self.value
 	}
 }
 
