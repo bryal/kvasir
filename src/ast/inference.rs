@@ -28,8 +28,9 @@
 // TODO: Consider redisigning this module. Maybe have an Inferer that takes expressions instead
 // of implementing inference for each expression type.
 
-use std::collections::HashMap;
-use super::{ FnDef, Item, Type, TypedBinding, Expr };
+use std::collections::{ HashMap, HashSet };
+use std::hash::Hash;
+use super::{ FnDef, Item, Type, TypedBinding, Expr, ExprMeta };
 
 impl super::FnDef {
 	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
@@ -69,9 +70,17 @@ impl super::FnDef {
 	}
 }
 
+/// Extract a function type signature in the form of <→ arg1 arg2 body> to (&[arg1, arg2], body)
+fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
+	match sig {
+		&Type::Construct(ref c, ref ts) if c == "fn" || c == "→" => (ts.init(), ts.last()),
+		t => panic!("extract_fn_sig: `{:?}` is not a function type", t),
+	}
+}
+
 impl super::SExpr {
 	fn body_type(&self) -> Option<&Type> {
-		extract_fn_sig(self.func.type_sig).map(|(_, fn_body_type)| fn_body_type)
+		self.func.type_sig.as_ref().map(extract_fn_sig).map(|(_, body_t)| body_t)
 	}
 
 	fn infer_types(
@@ -114,6 +123,37 @@ impl super::SExpr {
 	}
 }
 
+/// Moves all values in `rhs` to `main`, creating a union of the two maps.
+/// If a key from `rhs` already exists in `main`, return `rhs` as an error.
+/// On success, return the HashSet of the keys of `rhs`
+fn join_map<K: Hash+Eq, V, S>(main: &mut HashMap<K, V, S>, rhs: HashMap<K, V, S>)
+	-> Result(HashSet<K>, HashMap<K, V, S>)
+{
+	if rhs.keys().all(|key| main.contains_key(key)) {
+		let mut set = HashSet::with_capacity(rhs.len());
+
+		for (key, val) in rhs {
+			main.insert(key, val);
+			set.insert(key);
+		}
+
+		Ok(set)
+	} else {
+		Err(rhs)
+	}
+}
+
+/// Subtract all entries in `map` of keys in `keys` and return the difference.
+fn subtract_map<K: Hash+Eq, V, S>(map: &mut HashMap<K, V, S>, keys: &HashSet<K>)
+	-> Option<HashMap<K, V>>
+{
+	if keys.iter().all(|key| map.contains_key(key)) {
+		Some(HashMap::from_iter(keys.iter().map(|key| (key, map.remove(key).unwrap()))))
+	} else {
+		None
+	}
+}
+
 impl super::Block {
 	fn get_type(&self) -> Option<&Type> {
 		self.exprs.last().type_sig.as_ref()
@@ -124,7 +164,7 @@ impl super::Block {
 		def_map: &mut HashMap<&str, FnDef>,
 		var_stack: &mut Vec<TypedBinding>)
 	{
-		join_map(def_map, self.constant_defs);
+		let constant_keys = join_map(def_map, self.constant_defs.drain());
 
 		let old_vars_len = var_stack.len();
 
@@ -165,7 +205,7 @@ impl super::Block {
 			self.exprs.last_mut().infer_types(parent_expected_type, def_map, var_stack);
 		}
 
-		subtract_map(def_map, self.constant_defs.keys());
+		self.constant_defs = subtract_map(def_map, constant_keys);
 	}
 }
 
@@ -232,7 +272,7 @@ fn resolve_var_type(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Opti
 	}
 }
 
-impl super::ExprMeta {
+impl ExprMeta {
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
