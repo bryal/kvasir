@@ -30,11 +30,14 @@
 
 use std::collections::{ HashMap, HashSet };
 use std::hash::Hash;
-use super::{ FnDef, Item, Type, TypedBinding, Expr, ExprMeta };
+use super::{ FnDef, Item, Type, TypedBinding, Expr, ExprMeta, Path };
+
+/// A map of constant definitions
+type ConstDefMap = HashMap<&Path, FnDef>;
 
 impl super::FnDef {
 	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
-	fn infer_types(&mut self, def_map: HashMap<&str, FnDef>) {
+	fn infer_types(&mut self, const_defs: ConstDefMap) {
 		let mut arg_bindings = self.arg_bindings.clone();
 
 		if let Some((fn_arg_types, fn_body_type)) = self.extract_type_sig() {
@@ -43,15 +46,15 @@ impl super::FnDef {
 
 			self.set_arg_types(fn_arg_types);
 
-			self.body.infer_types(Some(fn_body_type), def_map, &mut arg_bindings);
+			self.body.infer_types(Some(fn_body_type), const_defs, &mut arg_bindings);
 		} else {
 			// No type signature for function binding. Pass arg bindings to body and infer types
 			// for body, then get function signature from updated arg types and body type
 
 			let arg_bindings_old_len = arg_bindings.len();
 
-			// args: type_to_infer_to, def_map, var_stack
-			self.body.infer_types(None, def_map, &mut arg_bindings);
+			// args: type_to_infer_to, const_defs, var_stack
+			self.body.infer_types(None, const_defs, &mut arg_bindings);
 
 			if arg_bindings.len() != arg_bindings_old_len {
 				panic!("FnDef::infer_types: arg_bindings.len() != arg_bindings_old_len");
@@ -86,10 +89,10 @@ impl super::SExpr {
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
-		def_map: &mut HashMap<&str, FnDef>,
+		const_defs: &mut ConstDefMap,
 		var_stack: &mut Vec<TypedBinding>)
 	{
-		self.infer_arg_types(None, def_map, var_stack);
+		self.infer_arg_types(None, const_defs, var_stack);
 
 		// TODO: Partial inference when not all bindings have type signatures
 		let expected_fn_type = if self.args.iter().all(TypedBinding::has_type)
@@ -100,7 +103,7 @@ impl super::SExpr {
 			None
 		};
 
-		self.func.infer_types(expected_fn_type, def_map, var_stack);
+		self.func.infer_types(expected_fn_type, const_defs, var_stack);
 
 		let found_fn_type = self.func.type_sig;
 
@@ -108,7 +111,7 @@ impl super::SExpr {
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 		if found_fn_type.is_some() && expected_fn_type.is_none() {
 			if let Type::Construct(_, ref fn_arg_types) = found_fn_type {
-				self.infer_arg_types(Some(fn_arg_types), def_map, var_stack);
+				self.infer_arg_types(Some(fn_arg_types), const_defs, var_stack);
 			} else {
 				panic!("SExpr::infer_types: `{:?}` is not a function type", found_fn_type);
 			}
@@ -161,28 +164,28 @@ impl super::Block {
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
-		def_map: &mut HashMap<&str, FnDef>,
+		const_defs: &mut ConstDefMap,
 		var_stack: &mut Vec<TypedBinding>)
 	{
-		let constant_keys = join_map(def_map, self.constant_defs.drain());
+		let constant_keys = join_map(const_defs, self.constant_defs.drain());
 
 		let old_vars_len = var_stack.len();
 
 		// First pass. If possible, all vars defined in block should have types infered.
 		for expr in self.exprs.init_mut() {
 			if let Expr::VarDef(ref mut var_def) = *expr {
-				var_def.infer_types(def_map, var_stack);
+				var_def.infer_types(const_defs, var_stack);
 
 				var_stack.push(var_def.binding);
 			} else {
-				expr.infer_types(None, def_map, var_stack);
+				expr.infer_types(None, const_defs, var_stack);
 			}
 		}
 
 		if self.exprs.last_mut().expr().is_var_def() {
 			panic!("Block::infer_types: Last expression in block is var definition")
 		} else {
-			self.exprs.last_mut().infer_types(parent_expected_type, def_map, var_stack);
+			self.exprs.last_mut().infer_types(parent_expected_type, const_defs, var_stack);
 		}
 
 		let block_defined_vars = var_stack.split_off(old_vars_len).into_iter();
@@ -191,21 +194,21 @@ impl super::Block {
 		// are, if possible, known.
 		for expr in self.exprs.init_mut() {
 			if let Expr::VarDef(ref mut var_def) = *expr {
-				var_def.infer_types(def_map, var_stack);
+				var_def.infer_types(const_defs, var_stack);
 
 				var_stack.push(block_defined_vars.next().unwrap());
 			} else {
-				expr.infer_types(None, def_map, var_stack);
+				expr.infer_types(None, const_defs, var_stack);
 			}
 		}
 
 		if self.exprs.last_mut().expr().is_var_def() {
 			panic!("Block::infer_types: Last expression in block is var definition")
 		} else {
-			self.exprs.last_mut().infer_types(parent_expected_type, def_map, var_stack);
+			self.exprs.last_mut().infer_types(parent_expected_type, const_defs, var_stack);
 		}
 
-		self.constant_defs = subtract_map(def_map, constant_keys);
+		self.constant_defs = subtract_map(const_defs, constant_keys);
 	}
 }
 
@@ -213,7 +216,7 @@ impl super::Cond {
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
-		def_map: &mut HashMap<&str, FnDef>,
+		const_defs: &mut ConstDefMap,
 		var_stack: &mut Vec<TypedBinding>,
 		caller_stack: &mut Vec<&str>)
 	{
@@ -221,8 +224,8 @@ impl super::Cond {
 			.map(|&mut (ref mut p, ref mut c)| (p, c))
 			.chain(self.else_clause.iter_mut().map(|c| (&mut ExprMeta::new_true(), c)))
 		{
-			predicate.infer_types(Some(&Type::bool()), def_map, var_stack, caller_stack);
-			consequence.infer_types(parent_expected_type, def_map, var_stack, caller_stack);
+			predicate.infer_types(Some(&Type::bool()), const_defs, var_stack, caller_stack);
+			consequence.infer_types(parent_expected_type, const_defs, var_stack, caller_stack);
 		}
 
 		if parent_expected_type.is_none() {
@@ -236,7 +239,7 @@ impl super::Cond {
 					.chain(self.else_clause.iter())
 					.all(|clause| clause.type_sig.is_some())
 				{
-					self.infer_types(expected_type.as_ref(), def_map, var_stack, caller_stack)
+					self.infer_types(expected_type.as_ref(), const_defs, var_stack, caller_stack)
 				},
 				None => panic!("Cond::infer_types: Could not infer type for any clause"),
 			}
@@ -244,31 +247,57 @@ impl super::Cond {
 	}
 }
 
-fn get_stack_binding<'a>(var_stack: &'a mut [TypedBinding], bnd: &str) -> &'a mut TypedBinding {
-	var_stack.iter_mut()
-		.rev()
-		.find(|stack_bnd| stack_bnd.ident == bnd)
-		.expect(format!("get_stack_binding: Binding not in stack, `{}`", bnd))
-}
-
-fn update_binding_stack(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Type) {
-	let stack_bnd = get_stack_binding(var_stack, bnd);
-
-	if stack_bnd.type_sig.is_none() {
-		stack_bnd.type_sig = Some(expected_ty)
-	}
-}
-
-// TODO: Shouldn't necessarily panic if types differ. Add some sort of coercion and polymorphism.
 /// Checks binding stack for the type of binding `bnd` and resolves conflicts.
 /// If expected type is None, return stack type. If stack type is None, update stack type
 /// with to expected type. If both are Some but differ in value, panic.
-fn resolve_var_type(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Option<Type>)
-	-> Option<Type>
+fn resolve_var_type(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Option<&Type>)
+	-> Option<&Type>
 {
+	fn get_stack_binding_type<'a>(var_stack: &mut [TypedBinding], bnd: &str) -> &mut Option<Type> {
+		&mut var_stack.iter_mut()
+			.rev()
+			.find(|stack_bnd| stack_bnd.ident == bnd)
+			.expect(format!("get_stack_binding_type: Binding not in stack, `{}`", bnd))
+			.type_sig
+	}
+
+	fn update_binding_stack(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: &Type) {
+		let stack_bnd_ty = get_stack_binding_type(var_stack, bnd);
+
+		if stack_bnd_ty.is_none() {
+			*stack_bnd_ty = Some(expected_ty.clone())
+		} else if stack_bnd_ty.as_ref() != Some(expected_ty) {
+			// TODO: Shouldn't necessarily panic if types differ. Add some sort of coercion and polymorphism.
+			panic!(
+				"update_binding_stack: Tried to set type of binding on stack to `{:?}` \
+					when it already had type `{:?}`",
+				expected_ty,
+				stack_bnd_ty.as_ref().unwrap())
+		}
+	}
+
 	match expected_ty {
-		Some(ty) => update_binding_stack(var_stack, bnd, ty),
-		None => get_stack_binding(var_stack, bnd).clone(),
+		Some(ty) => {
+			update_binding_stack(var_stack, bnd, ty);
+			expected_ty
+		},
+		None => get_stack_binding_type(var_stack, bnd).as_ref(),
+	}
+}
+
+fn resolve_const_type(const_defs: &mut ConstDefMap, path: &Path, expected_type: Option<&Type>)
+	-> Option<&Type>
+{
+	fn get_const_def(const_defs: &mut ConstDefMap, path: &Path) -> &mut FnDef {
+		const_defs.get_mut(path).expect(format!("get_const_def: No entry exists for `{}`", path))
+	}
+
+	match expected_type {
+		Some(ty) => {
+			get_const_def(const_defs, path).set_type(ty);
+			expected_type
+		},
+		None => get_const_def(const_defs, path).get_type(),
 	}
 }
 
@@ -276,35 +305,35 @@ impl ExprMeta {
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
-		def_map: &mut HashMap<&str, FnDef>,
+		const_defs: &mut ConstDefMap,
 		var_stack: &mut Vec<TypedBinding>)
 	{
-		let expected_type = self.coerce_type.or(parent_expected_type);
+		let expected_type = self.coerce_type.as_ref().or(parent_expected_type);
 
 		let found_type = match *self.value {
 			// Doesn't have children to infer types for
-			Expr::Nil => Type::nil(),
+			Expr::Nil => Some(&Type::nil()),
 			// TODO: This should be an internal, more general integer type
-			Expr::NumLit(_) => Type::basic("u64"),
+			Expr::NumLit(_) => Some(&Type::basic("u64")),
 			// TODO: This should be a construct somehow
-			Expr::StrLit(_) => Type::basic("&str"),
-			Expr::Binding(ref bnd) => resolve_var_type(var_stack, bnd, expected_type)
-				.or(resolve_def_type(def_map, bnd, expected_type)),
+			Expr::StrLit(_) => Some(&Type::basic("&str")),
+			Expr::Binding(ref path) => resolve_var_type(var_stack, path, expected_type)
+				.or(resolve_const_type(const_defs, path, expected_type)),
 			Expr::SExpr(ref mut sexpr) => {
 				sexpr.infer_types(expected_type, var_stack);
 				sexpr.body_type()
 			},
 			Expr::Block(ref mut block) => {
 				block.infer_types(expected_type, var_stack);
-				block.type_sig
+				block.type_sig.as_ref()
 			},
 			Expr::Cond(ref mut cond) => {
 				cond.infer_types(expected_type, var_stack);
-				cond.type_sig
+				cond.type_sig.as_ref()
 			},
 			Expr::Lambda(ref mut lambda) => {
 				lambda.infer_types(expected_type, var_stack);
-				lambda.type_sig
+				lambda.type_sig.as_ref()
 			},
 		};
 
