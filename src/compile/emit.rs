@@ -65,43 +65,30 @@ impl ToRustSrc for Use {
 	}
 }
 
-impl ToRustSrc for FnDef {
-	fn to_rust_src(&self) -> String {
-		format!("fn {}({}) -> {} {{ {} }}",
-			self.binding.ident,
-			self.arg_bindings.first()
-				.map(|first| self.arg_bindings[1..].iter()
-					.fold(first.to_rust_src(), |acc, bnd|
-						format!("{}, {}", acc, bnd.to_rust_src())))
-				.unwrap_or("".into()),
-			self.body.type_.as_ref()
-				.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
-					self.binding.ident))
-				.to_rust_src(),
-			self.body.to_rust_src()
-		)
-	}
-}
-
 impl ToRustSrc for ConstDef {
 	fn to_rust_src(&self) -> String {
-		format!("const {}: {} = {};",
-			self.binding.ident,
-			self.binding.type_sig.as_ref()
-				.expect(&format!("ConstDef::to_rust_src: binding `{}` has no type",
-					self.binding.ident))
-				.to_rust_src(),
-			self.body.to_rust_src()
-		)
-	}
-}
-
-impl ToRustSrc for ItemMeta {
-	fn to_rust_src(&self) -> String {
-		match *self.item {
-			Item::Use(ref u) => u.to_rust_src(),
-			Item::FnDef(ref def) => def.to_rust_src(),
-			Item::ConstDef(ref def) => def.to_rust_src(),
+		if let Expr::Lambda(ref lambda) = *self.body.expr() {
+			format!("fn {}({}) -> {} {{ {} }}",
+				self.binding.ident,
+				lambda.arg_bindings.first()
+					.map(|first| lambda.arg_bindings.tail()
+						.iter()
+						.fold(first.to_rust_src(), |acc, bnd|
+							format!("{}, {}", acc, bnd.to_rust_src())))
+					.unwrap_or("".into()),
+				lambda.body.type_.as_ref()
+					.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
+						self.binding.ident))
+					.to_rust_src(),
+				lambda.body.to_rust_src())
+		} else {
+			format!("const {}: {} = {};",
+				self.binding.ident,
+				self.binding.type_sig.as_ref()
+					.expect(&format!("ConstDef::to_rust_src: binding `{}` has no type",
+						self.binding.ident))
+					.to_rust_src(),
+				self.body.to_rust_src())
 		}
 	}
 }

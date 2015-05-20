@@ -99,28 +99,14 @@ pub struct Use {
 }
 
 #[derive(Debug, Clone)]
-pub struct FnDef {
-	pub binding: TypedBinding,
-	pub arg_bindings: Vec<TypedBinding>,
-	pub body: ExprMeta,
-}
-
-#[derive(Debug, Clone)]
 pub struct ConstDef {
 	pub binding: TypedBinding,
 	pub body: ExprMeta,
 }
 
-#[derive(Debug, Clone)]
-pub enum Item {
-	Use(Use),
-	FnDef(FnDef),
-	ConstDef(ConstDef),
-}
-
-#[derive(Debug, Clone)]
-pub struct ItemMeta {
-	pub item: Box<Item>,
+pub struct Items {
+	pub uses: Vec<Use>,
+	pub constant_defs: Vec<ConstDef>,
 	// pub attributes: Vec<Attribute>
 }
 
@@ -132,7 +118,7 @@ pub struct SExpr {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-	pub items: Vec<ItemMeta>,
+	pub items: Items,
 	pub exprs: Vec<ExprMeta>,
 }
 
@@ -202,14 +188,13 @@ impl ExprMeta {
 	}
 }
 
-/// Nodes are found in blocks. E.g. a function body with multiple things in it is a block.
-/// Therein can be `use` items, expressions, and more.
-pub enum Component {
-	Item(ItemMeta),
+pub enum Item {
+	Use(Use),
+	ConstDef(ConstDef),
 	Expr(ExprMeta),
 }
 
 #[derive(Debug, Clone)]
 pub struct AST {
-	pub items: Vec<ItemMeta>,
+	pub items: Vec<Item>,
 }

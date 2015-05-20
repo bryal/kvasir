@@ -32,10 +32,10 @@ use std::collections::{ HashMap, HashSet };
 use std::collections::hash_state::HashState;
 use std::hash::Hash;
 use std::iter::{ repeat, FromIterator };
-use super::{ FnDef, Item, Type, TypedBinding, Expr, ExprMeta, Path };
+use super::{ ConstDef, Type, TypedBinding, Item, Expr, ExprMeta, Path };
 
 /// A map of constant definitions
-type ConstDefMap<'a> = HashMap<&'a Path, FnDef>;
+type ConstDefMap<'a> = HashMap<&'a Path, ConstDef>;
 
 /// Extract a function type signature in the form of <→ arg1 arg2 body> to (&[arg1, arg2], body)
 fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
@@ -45,7 +45,7 @@ fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
 	}
 }
 
-impl super::FnDef {
+impl super::ConstDef {
 	fn extract_type_sig(&self) -> Option<(&[Type], &Type)> {
 		self.binding.type_sig.map(|ref ty| extract_fn_sig(ty))
 	}
@@ -58,7 +58,7 @@ impl super::FnDef {
 			match *arg_type_sig {
 				None => *arg_type_sig = Some(set_type.clone()),
 				Some(ref ty) if ty != set_type => panic!(
-					"FnDef::set_arg_types: Tried to assign type `{:?}` to arg `{}`, \
+					"ConstDef::set_arg_types: Tried to assign type `{:?}` to arg `{}`, \
 						but it was already of type `{:?}`",
 					set_type,
 					arg_name,
@@ -71,9 +71,9 @@ impl super::FnDef {
 		self.binding.type_sig = Some(Type::fn_sig(
 			self.arg_bindings.iter()
 				.cloned()
-				.map(|tb| tb.type_sig.expect("FnDef::construct_type_sig: Arg lacks type"))
+				.map(|tb| tb.type_sig.expect("ConstDef::construct_type_sig: Arg lacks type"))
 				.collect(),
-			self.body.type_.clone().expect("FnDef::construct_type_sig: Body has no type")));
+			self.body.type_.clone().expect("ConstDef::construct_type_sig: Body has no type")));
 	}
 
 	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
@@ -327,7 +327,7 @@ fn resolve_const_type<'a>(
 	path: &Path,
 	expected_type: Option<&'a Type>) -> Option<&'a Type>
 {
-	fn get_const_def<'a>(const_defs: &'a mut ConstDefMap, path: &Path) -> &'a mut FnDef {
+	fn get_const_def<'a>(const_defs: &'a mut ConstDefMap, path: &Path) -> &'a mut ConstDef {
 		const_defs.get_mut(path).expect(format!("get_const_def: No entry exists for `{}`", path))
 	}
 
@@ -383,7 +383,7 @@ impl ExprMeta {
 impl super::AST {
 	pub fn infer_types(&mut self) {
 		if let Some(main_def) = self.items.iter_mut()
-			.find(|meta| if let Item::FnDef(ref def) = *meta.item {
+			.find(|meta| if let Item::ConstDef(ref def) = *meta.item {
 				def.binding.ident == "main"
 			} else {
 				false
