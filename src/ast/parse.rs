@@ -319,7 +319,7 @@ impl Lambda {
 	}
 }
 
-fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<Expr>) {
+fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<ExprMeta>) {
 	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), Vec::new(), Vec::new());
 
 	for item in items {
@@ -350,31 +350,45 @@ impl Expr {
 			_ => SExpr::parse(tokens).map(|se| Expr::SExpr(se)),
 		}
 	}
+
+	pub fn parse(tokens: &[Token]) -> Result<(Expr, usize), String> {
+		if tokens.len() == 0 {
+			Err("Expr::parse: No tokens".into())
+		} else {
+			match tokens[0] {
+				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
+				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
+				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
+				Token::Ident(_) => Path::parse(tokens).map(|ident| (Expr::Binding(ident), 1)),
+				Token::LT => Ok((Expr::Binding(Path::parse_str("<").unwrap()), 1)),
+				Token::GT => Ok((Expr::Binding(Path::parse_str(">").unwrap()), 1)),
+				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
+			}
+		}
+	}
 }
 
 impl ExprMeta {
+	fn parse_parenthesized(tokens: &[Token]) -> Result<ExprMeta, String> {
+		if tokens.len() > 0 && tokens[0] == Token::Colon {
+			// Type ascription
+			Type::parse(tokens.tail())
+				.and_then(|(ty, len)| Expr::parse(&tokens.tail()[len..])
+					.map(|(expr, _)| ExprMeta::new(expr, Some(ty))))
+		} else {
+			Expr::parse_parenthesized(tokens).map(|e| ExprMeta::new(e, None))
+		}
+	}
+
 	pub fn parse(tokens: &[Token]) -> Result<(ExprMeta, usize), String> {
 		if tokens.len() == 0 {
 			Err("ExprMeta::parse: no tokens".into())
 		} else {
 			match tokens[0] {
-				// FIXME: Ident::parse should be used here
-				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
-				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
-				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
-				Token::Ident(_) => Path::parse(tokens)
-					.map(|ident| (Expr::Binding(ident), 1)),
-				Token::LT => Ok((Expr::Binding(Path::parse_str("<").unwrap()), 1)),
-				Token::GT => Ok((Expr::Binding(Path::parse_str(">").unwrap()), 1)),
-				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
-			}.and_then(|(expr, n_tokens)| {
-				if n_tokens >= tokens.len() || tokens[n_tokens] != Token::Colon {
-					Ok((ExprMeta::new(expr, None), n_tokens))
-				} else {
-					Type::parse(&tokens[n_tokens + 1 ..]).map(|(ty, tylen)|
-						(ExprMeta::new(expr, Some(ty)), n_tokens + 1 + tylen))
-				}
-			})
+				Token::LParen => parse_brackets(tokens, ExprMeta::parse_parenthesized),
+				_ => Expr::parse(tokens)
+					.map(|(expr, n_tokens)| (ExprMeta::new(expr, None), n_tokens)),
+			}
 		}
 	}
 }
@@ -403,9 +417,9 @@ fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
 
 impl Item {
 	/// Parse an expression from tokens within parentheses
-	fn parse_parenthesized(tokens: &[Token]) -> Result<Expr, String> {
+	fn parse_parenthesized(tokens: &[Token]) -> Result<Item, String> {
 		if tokens.len() == 0 {
-			return Ok(Expr::Nil);
+			return Ok(Item::Expr(ExprMeta::nil()));
 		}
 
 		let tail = &tokens.tail();
@@ -424,7 +438,7 @@ impl Item {
 
 		match tokens[0] {
 			Token::LParen => parse_brackets(tokens, Item::parse_parenthesized),
-			_ => ExprMeta::parse(tokens),
+			_ => ExprMeta::parse(tokens).map(|(e, len)| (Item::Expr(e), len)),
 		}
 	}
 }

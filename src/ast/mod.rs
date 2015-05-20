@@ -118,7 +118,8 @@ pub struct SExpr {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-	pub items: Items,
+	pub uses: Vec<Use>,
+	pub const_defs: Vec<ConstDef>,
 	pub exprs: Vec<ExprMeta>,
 }
 
@@ -181,6 +182,10 @@ impl ExprMeta {
 
 	fn new_false() -> ExprMeta {
 		ExprMeta::new(Expr::Bool(false), Some(Type::bool()))
+	}
+
+	fn nil() -> ExprMeta {
+		ExprMeta::new(Expr::Nil, Some(Type::nil()))
 	}
 
 	fn expr(&mut self) -> &mut Expr {

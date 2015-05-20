@@ -156,19 +156,25 @@ impl ToRustSrc for Lambda {
 
 impl ToRustSrc for ExprMeta {
 	fn to_rust_src(&self) -> String {
-		let as_type = self.type_.as_ref().map(|ty| format!(" as {}", ty.to_rust_src()));
-
 		match *self.value {
 			Expr::Cond(ref cond) => cond.to_rust_src(),
 			Expr::SExpr(ref sexpr) => sexpr.to_rust_src(),
-			Expr::NumLit(ref s) => as_type
-				.map(|as_type| format!("({}{})", s.clone(), as_type))
-				.unwrap_or(s.clone()),
+			Expr::NumLit(ref s) => s.clone(),
 			Expr::Binding(ref ident) => ident.to_rust_src(),
 			Expr::StrLit(ref s) => s.clone(),
 			Expr::Lambda(ref λ) => λ.to_rust_src(),
 			Expr::Block(ref block) => block.to_rust_src(),
 			Expr::Nil => "()".into(),
+		}
+	}
+}
+
+impl ToRustSrc for Item {
+	fn to_rust_src(&self) -> String {
+		match *self {
+			Item::Use(ref u) => u.to_rust_src(),
+			Item::ConstDef(ref def) => def.to_rust_src(),
+			Item::Expr(ref e) => e.to_rust_src(),
 		}
 	}
 }
