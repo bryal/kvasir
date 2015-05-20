@@ -1,17 +1,17 @@
 {use /std/ops/Add}
 
 ; fn add(a: u64, b: u64) -> u64 { Add::add(a, b) }
-{_define_fn (add a: u64 b: u64) (Add/add a b): u64}
+{_define_fn (add (:u64 a) (:u64 b) (:u64 (Add/add a b))}
 
-{_define_fn (inc: <→ u64 u64> x) (add x 1)}
+{_define_fn ((:<→ u64 u64> inc)  x) (add x 1)}
 
-{_define_fn (main) (block
-    (inc 10)): ()}
+{_define_fn (main) (:() (block
+    (inc 10)))}
 
-{fn (add: <fn u32 u32 u32> a b) ...}
+{fn ((:<→ u32 u32 u32> add) a b) ...}
 
 {fn (f a) (g a)}
 
-{fn (g a) (+ 1 a): u32}
+{fn (g a) (:u32 )(+ 1 a))}
 
 {fn (main) (f 1)}

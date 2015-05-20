@@ -66,13 +66,14 @@ impl Path {
 		Ok(Path::new(parts, is_absolute))
 	}
 
-	fn concat(self, other: &Path) -> Result<Path, String> {
+	fn concat(self, other: Path) -> Result<Path, String> {
 		if other.is_absolute {
 			Err(format!(
 				"Path::concat: `{}` is an absolute path",
 				other.to_str()))
 		} else {
-			Ok(Path::new(self.parts + &other.parts, self.is_absolute))
+			self.parts.extend(other.parts);
+			Ok(self)
 		}
 	}
 }

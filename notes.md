@@ -66,9 +66,14 @@ Constant: `(define c <body>)`
 Function: `(define (f x) <body>)`
 	A function definition is actually a constant definition of a function pointer.
 Variable: `(var x <body>)`
-	Similar to constant definition, but only available after statement. Can be overwritten.
+	Similar to constant definition, but only available after statement. An already defined
+	variable can be overwritten by a new definition of possibly different type.
+	Actually shorthand for declaration + assignment
 Mutable variable: `(var mut x <body>)`
 	To `var` as `let mut` is to `let` in Rust.
+Type ascription:
+	Types of expressions can be described explicitly to help with type inference and to create a
+	coerce site. Syntax is `(:TYPE EXPR)` e.g. `(:u32 5)`
 
 ## Idéas
 

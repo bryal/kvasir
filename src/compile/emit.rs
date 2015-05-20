@@ -74,7 +74,7 @@ impl ToRustSrc for FnDef {
 					.fold(first.to_rust_src(), |acc, bnd|
 						format!("{}, {}", acc, bnd.to_rust_src())))
 				.unwrap_or("".into()),
-			self.body.coerce_type.as_ref()
+			self.body.type_.as_ref()
 				.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
 					self.binding.ident))
 				.to_rust_src(),
@@ -160,7 +160,7 @@ impl ToRustSrc for Lambda {
 					.fold(first.to_rust_src(), |acc, bnd|
 						format!("{}, {}", acc, bnd.to_rust_src())))
 				.unwrap_or("".into()),
-			self.body.coerce_type.as_ref().map(|body| format!("-> {}", body.to_rust_src()))
+			self.body.type_.as_ref().map(|body| format!("-> {}", body.to_rust_src()))
 				.unwrap_or("".into()),
 			self.body.to_rust_src()
 		)
@@ -169,7 +169,7 @@ impl ToRustSrc for Lambda {
 
 impl ToRustSrc for ExprMeta {
 	fn to_rust_src(&self) -> String {
-		let as_type = self.coerce_type.as_ref().map(|ty| format!(" as {}", ty.to_rust_src()));
+		let as_type = self.type_.as_ref().map(|ty| format!(" as {}", ty.to_rust_src()));
 
 		match *self.value {
 			Expr::Cond(ref cond) => cond.to_rust_src(),

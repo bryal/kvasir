@@ -31,7 +31,7 @@ fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 			.and_then(|tails| {
 				let mut paths = Vec::new();
 
-				for path_result in tails.iter().map(|tail| head.clone().concat(tail)) {
+				for path_result in tails.into_iter().map(|tail| head.concat(tail)) {
 					match path_result {
 						Err(e) => return Err(e),
 						Ok(o) => paths.push(o),

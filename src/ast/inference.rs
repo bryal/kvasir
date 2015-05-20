@@ -29,61 +29,98 @@
 // of implementing inference for each expression type.
 
 use std::collections::{ HashMap, HashSet };
+use std::collections::hash_state::HashState;
 use std::hash::Hash;
+use std::iter::{ repeat, FromIterator };
 use super::{ FnDef, Item, Type, TypedBinding, Expr, ExprMeta, Path };
 
 /// A map of constant definitions
-type ConstDefMap = HashMap<&Path, FnDef>;
+type ConstDefMap<'a> = HashMap<&'a Path, FnDef>;
+
+/// Extract a function type signature in the form of <→ arg1 arg2 body> to (&[arg1, arg2], body)
+fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
+	match sig {
+		&Type::Construct(ref c, ref ts) if c == "fn" || c == "→" => (ts.init(), ts.last().unwrap()),
+		t => panic!("extract_fn_sig: `{:?}` is not a function type", t),
+	}
+}
 
 impl super::FnDef {
-	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
-	fn infer_types(&mut self, const_defs: ConstDefMap) {
-		let mut arg_bindings = self.arg_bindings.clone();
+	fn extract_type_sig(&self) -> Option<(&[Type], &Type)> {
+		self.binding.type_sig.map(|ref ty| extract_fn_sig(ty))
+	}
 
+	fn set_arg_types(&mut self, arg_types: &[Type]) {
+		for ((arg_name, arg_type_sig), set_type) in self.arg_bindings.iter_mut()
+			.map(|tb| (&tb.ident, &mut tb.type_sig))
+			.zip(arg_types)
+		{
+			match *arg_type_sig {
+				None => *arg_type_sig = Some(set_type.clone()),
+				Some(ref ty) if ty != set_type => panic!(
+					"FnDef::set_arg_types: Tried to assign type `{:?}` to arg `{}`, \
+						but it was already of type `{:?}`",
+					set_type,
+					arg_name,
+					ty)
+			}
+		}
+	}
+
+	fn construct_type_sig(&mut self) {
+		self.binding.type_sig = Some(Type::fn_sig(
+			self.arg_bindings.iter()
+				.cloned()
+				.map(|tb| tb.type_sig.expect("FnDef::construct_type_sig: Arg lacks type"))
+				.collect(),
+			self.body.type_.clone().expect("FnDef::construct_type_sig: Body has no type")));
+	}
+
+	// TODO: Infer types for incomplete function sig. E.g. inc: <→ u32 _> => inc: <→ u32 u32>
+	fn infer_types(&mut self, const_defs: &mut ConstDefMap) {
 		if let Some((fn_arg_types, fn_body_type)) = self.extract_type_sig() {
 			// Type signature already exists. Just infer types for body and make sure
 			// there are no collisions
 
 			self.set_arg_types(fn_arg_types);
 
-			self.body.infer_types(Some(fn_body_type), const_defs, &mut arg_bindings);
+			self.body.infer_types(Some(fn_body_type), const_defs, &mut self.arg_bindings);
 		} else {
 			// No type signature for function binding. Pass arg bindings to body and infer types
 			// for body, then get function signature from updated arg types and body type
 
-			let arg_bindings_old_len = arg_bindings.len();
+			let arg_bindings_old_len = self.arg_bindings.len();
 
 			// args: type_to_infer_to, const_defs, var_stack
-			self.body.infer_types(None, const_defs, &mut arg_bindings);
+			self.body.infer_types(None, const_defs, &mut self.arg_bindings);
 
-			if arg_bindings.len() != arg_bindings_old_len {
-				panic!("FnDef::infer_types: arg_bindings.len() != arg_bindings_old_len");
-			}
+			assert_eq!(self.arg_bindings.len(), arg_bindings_old_len);
 
-			let arg_types = arg_bindings.into_iter()
-				.map(|b| b.type_sig.expect("FnDef::infer_types: Arg has no type"))
-				.collect();
-
-			self.set_arg_types(&mut arg_types);
-
-			self.construct_fn_sig(
-				arg_types,
-				self.body.type_sig.expect("FnDef::infer_types: Body has no type"));
+			self.construct_type_sig();
 		}
-	}
-}
-
-/// Extract a function type signature in the form of <→ arg1 arg2 body> to (&[arg1, arg2], body)
-fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
-	match sig {
-		&Type::Construct(ref c, ref ts) if c == "fn" || c == "→" => (ts.init(), ts.last()),
-		t => panic!("extract_fn_sig: `{:?}` is not a function type", t),
 	}
 }
 
 impl super::SExpr {
 	fn body_type(&self) -> Option<&Type> {
-		self.func.type_sig.as_ref().map(extract_fn_sig).map(|(_, body_t)| body_t)
+		self.func.type_.as_ref().map(extract_fn_sig).map(|(_, body_t)| body_t)
+	}
+
+	fn infer_arg_types(
+		&mut self,
+		expected_types: Option<&[Type]>,
+		const_defs: &mut ConstDefMap,
+		var_stack: &mut Vec<TypedBinding>)
+	{
+		if let Some(expected_types) = expected_types {
+			for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
+				arg.infer_types(Some(expect_ty), const_defs, var_stack);
+			}
+		} else {
+			for arg in self.args.iter_mut() {
+				arg.infer_types(None, const_defs, var_stack);
+			}
+		}
 	}
 
 	fn infer_types(
@@ -95,33 +132,30 @@ impl super::SExpr {
 		self.infer_arg_types(None, const_defs, var_stack);
 
 		// TODO: Partial inference when not all bindings have type signatures
-		let expected_fn_type = if self.args.iter().all(TypedBinding::has_type)
+		let expected_fn_type = if self.args.iter().all(|arg| arg.type_.is_some())
 			&& parent_expected_type.is_some()
 		{
-			Some(Type::construct("→", self.args.iter().map(|tb| tb.type_sig).collect()))
+			Some(Type::construct(
+				"→",
+				self.args.iter().map(|tb| tb.type_.clone().unwrap()).collect()))
 		} else {
 			None
 		};
 
-		self.func.infer_types(expected_fn_type, const_defs, var_stack);
-
-		let found_fn_type = self.func.type_sig;
+		self.func.infer_types(expected_fn_type.as_ref(), const_defs, var_stack);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
-		if found_fn_type.is_some() && expected_fn_type.is_none() {
-			if let Type::Construct(_, ref fn_arg_types) = found_fn_type {
-				self.infer_arg_types(Some(fn_arg_types), const_defs, var_stack);
-			} else {
-				panic!("SExpr::infer_types: `{:?}` is not a function type", found_fn_type);
-			}
-		} else if found_fn_type.is_none() {
-			panic!("SExpr::infer_types: Could not infer type for function");
-		} else if found_fn_type != expected_fn_type {
-			panic!(
+		match (self.func.type_, expected_fn_type) {
+			(Some(Type::Construct(_, ref fn_arg_types)), None) =>
+				self.infer_arg_types(Some(fn_arg_types), const_defs, var_stack),
+			(Some(found_ty), None) =>
+				panic!("SExpr::infer_types: `{:?}` is not a function type", found_ty),
+			(Some(found_ty), Some(expected_ty)) if found_ty != expected_ty => panic!(
 				"SExpr::infer_types: Function type mismatch. Expected `{:?}`, found `{:?}`",
-				expected_fn_type,
-				found_fn_type);
+				expected_ty,
+				found_ty),
+			(None, None) => panic!("SExpr::infer_types: Could not infer type for function"),
 		}
 	}
 }
@@ -129,10 +163,10 @@ impl super::SExpr {
 /// Moves all values in `rhs` to `main`, creating a union of the two maps.
 /// If a key from `rhs` already exists in `main`, return `rhs` as an error.
 /// On success, return the HashSet of the keys of `rhs`
-fn join_map<K: Hash+Eq, V, S>(main: &mut HashMap<K, V, S>, rhs: HashMap<K, V, S>)
-	-> Result(HashSet<K>, HashMap<K, V, S>)
+fn join_map<K: Hash+Eq, V, S: HashState>(main: &mut HashMap<K, V, S>, rhs: HashMap<K, V, S>)
+	-> Result<HashSet<K>, HashMap<K, V, S>>
 {
-	if rhs.keys().all(|key| main.contains_key(key)) {
+	if (&rhs).keys().all(|key| main.contains_key(key)) {
 		let mut set = HashSet::with_capacity(rhs.len());
 
 		for (key, val) in rhs {
@@ -147,11 +181,11 @@ fn join_map<K: Hash+Eq, V, S>(main: &mut HashMap<K, V, S>, rhs: HashMap<K, V, S>
 }
 
 /// Subtract all entries in `map` of keys in `keys` and return the difference.
-fn subtract_map<K: Hash+Eq, V, S>(map: &mut HashMap<K, V, S>, keys: &HashSet<K>)
+fn subtract_map<K: Hash+Eq, V, S: HashState+Default>(map: &mut HashMap<K, V, S>, keys: HashSet<K>)
 	-> Option<HashMap<K, V>>
 {
 	if keys.iter().all(|key| map.contains_key(key)) {
-		Some(HashMap::from_iter(keys.iter().map(|key| (key, map.remove(key).unwrap()))))
+		Some(HashMap::from_iter(keys.into_iter().map(|key| (key, map.remove(&key).unwrap()))))
 	} else {
 		None
 	}
@@ -159,8 +193,9 @@ fn subtract_map<K: Hash+Eq, V, S>(map: &mut HashMap<K, V, S>, keys: &HashSet<K>)
 
 impl super::Block {
 	fn get_type(&self) -> Option<&Type> {
-		self.exprs.last().type_sig.as_ref()
+		self.exprs.last().expect("Block::get_type: No expressions in block").type_.as_ref()
 	}
+
 	fn infer_types(
 		&mut self,
 		parent_expected_type: Option<&Type>,
@@ -173,10 +208,10 @@ impl super::Block {
 
 		// First pass. If possible, all vars defined in block should have types infered.
 		for expr in self.exprs.init_mut() {
-			if let Expr::VarDef(ref mut var_def) = *expr {
-				var_def.infer_types(const_defs, var_stack);
+			if let Expr::VarDecl(ref mut var_decl) = *expr {
+				var_decl.infer_types(const_defs, var_stack);
 
-				var_stack.push(var_def.binding);
+				var_stack.push(var_decl.binding);
 			} else {
 				expr.infer_types(None, const_defs, var_stack);
 			}
@@ -193,8 +228,8 @@ impl super::Block {
 		// Second pass. Infer types for all expressions in block now that types for all bindings
 		// are, if possible, known.
 		for expr in self.exprs.init_mut() {
-			if let Expr::VarDef(ref mut var_def) = *expr {
-				var_def.infer_types(const_defs, var_stack);
+			if let Expr::VarDecl(ref mut var_decl) = *expr {
+				var_decl.infer_types(const_defs, var_stack);
 
 				var_stack.push(block_defined_vars.next().unwrap());
 			} else {
@@ -250,10 +285,12 @@ impl super::Cond {
 /// Checks binding stack for the type of binding `bnd` and resolves conflicts.
 /// If expected type is None, return stack type. If stack type is None, update stack type
 /// with to expected type. If both are Some but differ in value, panic.
-fn resolve_var_type(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Option<&Type>)
-	-> Option<&Type>
+fn resolve_var_type<'a>(var_stack: &'a mut [TypedBinding], bnd: &str, expected_ty: Option<&'a Type>)
+	-> Option<&'a Type>
 {
-	fn get_stack_binding_type<'a>(var_stack: &mut [TypedBinding], bnd: &str) -> &mut Option<Type> {
+	fn get_stack_binding_type<'a>(var_stack: &'a mut [TypedBinding], bnd: &str)
+		-> &'a mut Option<Type>
+	{
 		&mut var_stack.iter_mut()
 			.rev()
 			.find(|stack_bnd| stack_bnd.ident == bnd)
@@ -285,10 +322,12 @@ fn resolve_var_type(var_stack: &mut [TypedBinding], bnd: &str, expected_ty: Opti
 	}
 }
 
-fn resolve_const_type(const_defs: &mut ConstDefMap, path: &Path, expected_type: Option<&Type>)
-	-> Option<&Type>
+fn resolve_const_type<'a>(
+	const_defs: &'a mut ConstDefMap,
+	path: &Path,
+	expected_type: Option<&'a Type>) -> Option<&'a Type>
 {
-	fn get_const_def(const_defs: &mut ConstDefMap, path: &Path) -> &mut FnDef {
+	fn get_const_def<'a>(const_defs: &'a mut ConstDefMap, path: &Path) -> &'a mut FnDef {
 		const_defs.get_mut(path).expect(format!("get_const_def: No entry exists for `{}`", path))
 	}
 

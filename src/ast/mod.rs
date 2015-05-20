@@ -42,6 +42,11 @@ impl Type {
 		Type::Construct(constructor.into(), args)
 	}
 
+	fn fn_sig(arg_tys: Vec<Type>, return_ty: Type) -> Type {
+		arg_tys.push(return_ty);
+		Type::Construct("→".into(), arg_tys)
+	}
+
 	fn bool() -> Type {
 		Type::Basic("bool".into())
 	}
@@ -93,7 +98,6 @@ pub struct Use {
 	pub paths: Vec<Path>,
 }
 
-// TODO: Make definitions expressions in order to more easily track changes on binding stack
 #[derive(Debug, Clone)]
 pub struct FnDef {
 	pub binding: TypedBinding,
@@ -145,6 +149,12 @@ pub struct Lambda {
 }
 
 #[derive(Debug, Clone)]
+pub struct Assignment {
+	pub lvalue: TypedBinding,
+	pub rvalue: ExprMeta,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
 	Nil,
 	NumLit(String),
@@ -155,7 +165,8 @@ pub enum Expr {
 	Block(Block),
 	Cond(Cond),
 	Lambda(Lambda),
-	VarDef(VarDef),
+	VarDecl(TypedBinding),
+	Assignment(Assignment)
 }
 impl Expr {
 	fn is_var_def(&self) -> bool {
@@ -171,11 +182,11 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub struct ExprMeta {
 	pub value: Box<Expr>,
-	pub coerce_type: Option<Type>
+	pub type_: Option<Type>
 }
 impl ExprMeta {
-	fn new(value: Expr, type_sig: Option<Type>) -> ExprMeta {
-		ExprMeta{ value: Box::new(value), type_sig: coerce_type }
+	fn new(value: Expr, ty: Option<Type>) -> ExprMeta {
+		ExprMeta{ value: Box::new(value), type_sig: ty }
 	}
 
 	fn new_true() -> ExprMeta {
