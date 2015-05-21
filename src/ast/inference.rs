@@ -35,6 +35,10 @@ use super::{ ConstDef, ConstDefMap, Type, TypedBinding, Item, Expr, ExprMeta, Pa
 
 impl super::ConstDef {
 	fn infer_types(&mut self, const_defs: &mut ConstDefMap, caller_stack: &mut Vec<&str>) {
+		if let Some(f) = caller_stack.iter().find(|&f| &self.binding.ident == f) {
+			panic!("ConstDef::infer_types: Inference loop. `{}` depends on self", f);
+		}
+
 		self.body.infer_types(
 			self.binding.type_sig.as_ref(),
 			const_defs,
@@ -216,28 +220,24 @@ impl super::Cond {
 		var_stack: &mut Vec<TypedBinding>,
 		caller_stack: &mut Vec<&str>)
 	{
-		for (predicate, consequence) in self.clauses.iter_mut()
-			.map(|&mut (ref mut p, ref mut c)| (p, c))
-			.chain(self.else_clause.iter_mut().map(|c| (&mut ExprMeta::new_true(), c)))
-		{
-			predicate.infer_types(Some(&Type::bool()), const_defs, var_stack, caller_stack);
-			consequence.infer_types(parent_expected_type, const_defs, var_stack, caller_stack);
-		}
-
 		if parent_expected_type.is_none() {
-			match self.clauses.iter()
-				.map(|&(_, ref c)| c)
-				.chain(self.else_clause.iter())
-				.find(|clause| clause.type_sig.is_some())
-				.map(|t| t.cloned())
+			match self.iter_consequences_mut()
+				.find(|c| c.type_.is_some() || {
+					c.infer_types(None, const_defs, var_stack, caller_stack);
+					c.type_.is_some()
+				})
+				.map(|c| c.type_.as_ref())
 			{
-				Some(expected_type) => if !self.clauses.iter().map(|&(_, ref c)| c)
-					.chain(self.else_clause.iter())
-					.all(|clause| clause.type_sig.is_some())
-				{
-					self.infer_types(expected_type.as_ref(), const_defs, var_stack, caller_stack)
-				},
+				Some(expected_type) =>
+					self.infer_types(expected_type, const_defs, var_stack, caller_stack),
 				None => panic!("Cond::infer_types: Could not infer type for any clause"),
+			}
+		} else {
+			let t_bool = Some(&Type::bool());
+
+			for (predicate, consequence) in self.iter_clauses_mut() {
+				predicate.infer_types(t_bool, const_defs, var_stack, caller_stack);
+				consequence.infer_types(parent_expected_type, const_defs, var_stack, caller_stack);
 			}
 		}
 	}
@@ -261,7 +261,7 @@ impl super::Lambda {
 		}
 	}
 
-	fn get_type(&self) -> Option<&Type> {
+	fn get_type(&self) -> Option<Type> {
 		Some(Type::fn_sig(
 			self.arg_bindings.iter()
 				.cloned()
@@ -282,7 +282,7 @@ impl super::Lambda {
 
 			self.set_arg_types(fn_arg_types);
 
-			self.body.infer_types(Some(fn_body_type), const_defs, &mut self.arg_bindings);
+			self.body.infer_types(Some(fn_body_type), const_defs, &mut self.arg_bindings, caller_stack);
 		} else {
 			// No type signature for function binding. Pass arg bindings to body and infer types
 			// for body, then get function signature from updated arg types and body type
@@ -290,7 +290,7 @@ impl super::Lambda {
 			let arg_bindings_old_len = self.arg_bindings.len();
 
 			// args: type_to_infer_to, const_defs, var_stack
-			self.body.infer_types(None, const_defs, &mut self.arg_bindings);
+			self.body.infer_types(None, const_defs, &mut self.arg_bindings, caller_stack);
 
 			assert_eq!(self.arg_bindings.len(), arg_bindings_old_len);
 		}
@@ -298,21 +298,22 @@ impl super::Lambda {
 }
 
 impl super::VarDef {
+	// NOTE: This is very similar to ConstDef::infer_types, DRY?
 	fn infer_types(
 		&mut self,
 		const_defs: &mut ConstDefMap,
 		var_stack: &mut Vec<TypedBinding>,
 		caller_stack: &mut Vec<&str>)
 	{
-		self.body.infer_types(self.binding.type_sig.as_ref(), const_defs, &mut Vec::new());
+		self.body.infer_types(self.binding.type_sig.as_ref(), const_defs, var_stack, caller_stack);
 
 		match (self.binding.type_sig, self.body.type_) {
 			(Some(expected), Some(found)) if expected != found => panic!(
-				"ConstDef::infer_types: Type mismatch. Expected `{:?}`, found `{:?}`",
+				"VarDef::infer_types: Type mismatch. Expected `{:?}`, found `{:?}`",
 				expected,
 				found),
 			(None, Some(found)) => self.binding.type_sig = Some(found),
-			(None, None) => panic!("ConstDef::infer_types: No type could be infered"),
+			(None, None) => panic!("VarDef::infer_types: No type could be infered"),
 		}
 	}
 }
@@ -329,7 +330,9 @@ fn resolve_var_type<'a>(var_stack: &'a mut [TypedBinding], bnd: &str, expected_t
 		&mut var_stack.iter_mut()
 			.rev()
 			.find(|stack_bnd| stack_bnd.ident == bnd)
-			.expect(format!("get_stack_binding_type: Binding not in stack, `{}`", bnd))
+			.expect(&format!(
+				"resolve_var_type::get_stack_binding_type: Binding not in stack, `{}`",
+				bnd))
 			.type_sig
 	}
 
@@ -363,12 +366,12 @@ fn resolve_const_type<'a>(
 	expected_type: Option<&'a Type>) -> Option<&'a Type>
 {
 	fn get_const_def<'a>(const_defs: &'a mut ConstDefMap, path: &Path) -> &'a mut ConstDef {
-		const_defs.get_mut(path).expect(format!("get_const_def: No entry exists for `{}`", path))
+		const_defs.get_mut(path).expect(&format!("get_const_def: No entry exists for `{}`", path))
 	}
 
 	match expected_type {
 		Some(ty) => {
-			get_const_def(const_defs, path).set_type(ty);
+			get_const_def(const_defs, path).set_type(Some(ty.clone()));
 			expected_type
 		},
 		None => get_const_def(const_defs, path).get_type(),
@@ -382,32 +385,34 @@ impl ExprMeta {
 		var_stack: &mut Vec<TypedBinding>,
 		caller_stack: &mut Vec<&str>)
 	{
-		let expected_type = self.coerce_type.as_ref().or(parent_expected_type);
+		let expected_type = self.type_.as_ref().or(parent_expected_type);
 
 		let found_type = match *self.value {
 			// Doesn't have children to infer types for
-			Expr::Nil => Some(&Type::nil()),
+			Expr::Nil => Some(Type::nil()),
 			// TODO: This should be an internal, more general integer type
-			Expr::NumLit(_) => Some(&Type::basic("u64")),
+			Expr::NumLit(_) => Some(Type::basic("u64")),
 			// TODO: This should be a construct somehow
-			Expr::StrLit(_) => Some(&Type::basic("&str")),
-			Expr::Binding(ref path) => resolve_var_type(var_stack, path, expected_type)
-				.or_else(resolve_const_type(const_defs, path, expected_type)),
+			Expr::StrLit(_) => Some(Type::basic("&str")),
+			Expr::Binding(ref path) => resolve_const_type(const_defs, path, expected_type)
+				.or(path.ident()
+					.and_then(|ident| resolve_var_type(var_stack, ident, expected_type)))
+				.cloned(),
 			Expr::SExpr(ref mut sexpr) => {
-				sexpr.infer_types(expected_type, var_stack);
-				sexpr.body_type()
+				sexpr.infer_types(expected_type, const_defs, var_stack, caller_stack);
+				sexpr.body_type().cloned()
 			},
 			Expr::Block(ref mut block) => {
-				block.infer_types(expected_type, var_stack);
-				block.type_sig.as_ref()
+				block.infer_types(expected_type, const_defs, var_stack, caller_stack);
+				block.get_type().cloned()
 			},
 			Expr::Cond(ref mut cond) => {
-				cond.infer_types(expected_type, var_stack);
-				cond.type_sig.as_ref()
+				cond.infer_types(expected_type, const_defs, var_stack, caller_stack);
+				cond.get_type().cloned()
 			},
 			Expr::Lambda(ref mut lambda) => {
-				lambda.infer_types(expected_type, var_stack);
-				lambda.type_sig.as_ref()
+				lambda.infer_types(expected_type, const_defs, caller_stack);
+				lambda.get_type()
 			},
 		};
 

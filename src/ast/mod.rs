@@ -23,7 +23,7 @@
 mod parse;
 mod inference;
 
-use std::collections::{ HashMap, HashSet };
+use std::collections::HashMap;
 
 /// A map of constant definitions
 type ConstDefMap<'a> = HashMap<&'a Path, ConstDef>;
@@ -84,6 +84,15 @@ impl Path {
 
 	pub fn parts(&self) -> &[String] { &self.parts }
 
+	/// If self is just a simple ident, return it as Some
+	fn ident(&self) -> Option<&str> {
+		if self.parts.len() == 1 && !self.is_absolute {
+			Some(&self.parts[0])
+		} else {
+			None
+		}
+	}
+
 	pub fn to_str(&self) -> String {
 		format!(
 			"{}{}{}",
@@ -113,6 +122,15 @@ pub struct ConstDef {
 	pub binding: TypedBinding,
 	pub body: ExprMeta,
 }
+impl ConstDef {
+	fn get_type(&self) -> Option<&Type> {
+		self.binding.type_sig.as_ref()
+	}
+
+	fn set_type(&mut self, ty: Option<Type>) {
+		self.binding.type_sig = ty
+	}
+}
 
 #[derive(Debug, Clone)]
 pub struct SExpr {
@@ -131,6 +149,33 @@ pub struct Block {
 pub struct Cond {
 	pub clauses: Vec<(ExprMeta, ExprMeta)>,
 	pub else_clause: Option<ExprMeta>
+}
+impl Cond {
+	/// Iterate over all clauses of self, including the else clause
+	fn iter_clauses(&self) -> Box<Iterator<Item=(&ExprMeta, &ExprMeta)>> {
+		Box::new(self.clauses.iter()
+			.map(|&(ref p, ref c)| (p, c))
+			.chain(self.else_clause.iter().map(|c| (&ExprMeta::new_true(), c))))
+	}
+	/// Iterate over all clauses of self, including the else clause
+	fn iter_clauses_mut(&self) -> Box<Iterator<Item=(&mut ExprMeta, &mut ExprMeta)>> {
+		Box::new(self.clauses.iter_mut()
+			.map(|&mut (ref mut p, ref mut c)| (p, c))
+			.chain(self.else_clause.iter_mut().map(|c| (&mut ExprMeta::new_true(), c))))
+	}
+
+	/// Iterate over all clauses of self, including the else clause
+	fn iter_consequences(&self) -> Box<Iterator<Item=&ExprMeta>> {
+		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))
+	}
+	/// Iterate over all clauses of self, including the else clause
+	fn iter_consequences_mut(&self) -> Box<Iterator<Item=&mut ExprMeta>> {
+		Box::new(self.clauses.iter_mut().map(|&(_, ref c)| c).chain(self.else_clause.iter_mut()))
+	}
+
+	fn get_type(&self) -> Option<&Type> {
+		self.iter_consequences().map(|c| c.type_.as_ref()).find(|ty| ty.is_some())
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +246,16 @@ impl ExprMeta {
 
 	fn expr(&mut self) -> &mut Expr {
 		&mut self.value
+	}
+
+	fn set_type(&mut self, ty: Option<Type>) {
+		match (self.type_, ty) {
+			(Some(expected), Some(found)) if expected != found => panic!(
+				"ExprMeta::set_type: Type mismatch. Expected `{:?}`, found `{:?}`",
+				expected,
+				found),
+			(None, Some(found)) => self.type_ = Some(found),
+		}
 	}
 }
 
