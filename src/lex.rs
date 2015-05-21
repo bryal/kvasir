@@ -107,6 +107,7 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 
 fn is_ident_char(c: char) -> bool {
 	match c {
+		// TODO: Instead of allowing certain chars, just allow all non-reserved chars
 		'_' | '?' | '/' | '+' | '-' | '*' | '=' | '&' | '→' => true,
 		c if c.is_alphanumeric() => true,
 		_ => false,

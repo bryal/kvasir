@@ -86,4 +86,5 @@ function before inserting new code.
 Default type for numbers is u64/f64, but type can be specified with :
 
 Log:
-inference::ExprMeta::infer_types
+Not sure what to do with const defs and maps. Should ConstDef contain a TypedBinding
+(String, not Path), or only Type?

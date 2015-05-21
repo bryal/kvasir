@@ -23,6 +23,11 @@
 mod parse;
 mod inference;
 
+use std::collections::{ HashMap, HashSet };
+
+/// A map of constant definitions
+type ConstDefMap<'a> = HashMap<&'a Path, ConstDef>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
 	Basic(String),
@@ -65,7 +70,7 @@ impl TypedBinding {
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
 /// of a path to a function or constant in an expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Path {
 	parts: Vec<String>,
 	is_absolute: bool,
@@ -92,6 +97,11 @@ impl PartialEq<str> for Path {
 		self.to_str() == rhs
 	}
 }
+impl ::std::fmt::Display for Path {
+	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+		f.write_str(self.to_str)
+	}
+}
 
 #[derive(Debug, Clone)]
 pub struct Use {
@@ -102,12 +112,6 @@ pub struct Use {
 pub struct ConstDef {
 	pub binding: TypedBinding,
 	pub body: ExprMeta,
-}
-
-pub struct Items {
-	pub uses: Vec<Use>,
-	pub constant_defs: Vec<ConstDef>,
-	// pub attributes: Vec<Attribute>
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +140,13 @@ pub struct Lambda {
 }
 
 #[derive(Debug, Clone)]
+pub struct VarDef {
+	pub binding: TypedBinding,
+	pub mutable: bool,
+	pub body: ExprMeta,
+}
+
+#[derive(Debug, Clone)]
 pub struct Assignment {
 	pub lvalue: TypedBinding,
 	pub rvalue: ExprMeta,
@@ -152,7 +163,7 @@ pub enum Expr {
 	Block(Block),
 	Cond(Cond),
 	Lambda(Lambda),
-	VarDecl(TypedBinding),
+	VarDef(VarDef),
 	Assignment(Assignment)
 }
 impl Expr {
