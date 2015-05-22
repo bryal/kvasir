@@ -99,11 +99,15 @@ Notes:
 Not sure what to do with const defs and maps. Should ConstDef contain a TypedBinding
 (String, not Path), or only Type?
 
-Compile time evaluation, how to make sure there are no infinite loops.
-Wouldn't want the compiler to hang.
-http://stackoverflow.com/questions/19259114/why-are-constant-expressions-not-evaluated-at-compile-time-in-haskell
-Maybe keep a caller stack in interpreter, and if same function is called to many times, abort.
-Maybe allow different modes for the compiler:
-	* Strictly no CTE
-	* No CTE unless explicitly allowed, `(#prefer-cte ...)` or `(#cte ...)` or maybe `(#allow-cte ...)`
-	* CTE unless explicitly disallowed, `(#no-cte ...)`
+* Compile time evaluation, how to make sure there are no infinite loops.
+  Wouldn't want the compiler to hang.
+  http://stackoverflow.com/questions/19259114/why-are-constant-expressions-not-evaluated-at-compile-time-in-haskell
+  Maybe keep a caller stack in interpreter, and if same function is called to many times, abort.
+* Maybe allow different modes for the compiler:
+  * Strictly no CTE
+  * No CTE unless explicitly allowed, `(#prefer-cte ...)` or `(#cte ...)` or maybe `(#allow-cte ...)`
+  * CTE unless explicitly disallowed, `(#no-cte ...)`
+* Add pattern matching for bindings. Would for example allow both `(lambda x ...)` and `(lambda (a b) ...)`
+* Let definitions take symbol instead of binding. This would allow for easier pattern matching.
+  symbol => bind, expression => compare. E.g:
+    `(match x ('(a ,(@ b (+ 3 2)) ,PI) ...))` would correspond to `match x { [a, b, c] if b == 3 + 2 && c == PI => ..., }`

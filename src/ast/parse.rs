@@ -23,6 +23,8 @@
 // TODO: Maybe instead of having special cases while parsing, parse all parens equaly and handle
 //       special cases later separately
 
+// TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
+
 use ast::*;
 use lex::Token;
 
@@ -123,6 +125,41 @@ fn parse_types(tokens: &[Token]) -> Result<Vec<Type>, String> {
 	Ok(tys)
 }
 
+impl TypedBinding {
+	fn parse_parenthesized(tokens: &[Token]) -> Result<TypedBinding, String> {
+		if tokens.len() == 0 {
+			Err("TypedBinding::parse_parenthesized: No tokens".into())
+		} else {
+			if let Token::Colon = tokens[0] {
+				// Type ascription
+				Type::parse(tokens.tail())
+					.and_then(|(ty, len)| if tokens.tail().len() - len != 1 {
+						Err("TypedBinding::parse_parenthesized: \
+							Type ascription not followed by single ident".into())
+					} else if let Token::Ident(ident) = tokens.tail()[len] {
+						Ok(TypedBinding{ ident: ident.into(), type_sig: Some(ty) })
+					} else {
+						Err("TypedBinding::parse_parenthesized: \
+							Type ascription not followed by ident".into())
+					})
+			} else {
+				Err("TypedBinding::parse_parenthesized: First token is not colon".into())
+			}
+		}
+	}
+
+	fn parse(tokens: &[Token]) -> Result<(TypedBinding, usize), String> {
+		if tokens.len() == 0 {
+			Err("TypedBinding::parse: No tokens".into())
+		} else {
+			match tokens[0] {
+				Token::LParen => parse_brackets(tokens, TypedBinding::parse_parenthesized),
+				Token::Ident(ident) => Ok((TypedBinding{ ident: ident.into(), type_sig: None }, 1)),
+				t => Err(format!("TypedBinding::parse: Unexpected token `{:?}`", t))
+			}
+		}
+	}
+}
 
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
 fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
@@ -185,20 +222,16 @@ impl Use {
 
 impl ConstDef {
 	fn parse(tokens: &[Token]) -> Result<ConstDef, String> {
-		if let Some(&Token::Ident(ident)) = tokens.get(0) {
-			if let Some(&Token::Colon) = tokens.get(1) {
-				Type::parse(&tokens[2..]).map(|(ty, tl)| (Some(ty), tl))
-			} else {
-				Ok((None, 0))
-			}.and_then(|(ty, used_tokens)| {
-				let body_i = 1 + if used_tokens != 0 { 1 + used_tokens } else { 0 };
-				ExprMeta::parse(&tokens[body_i..]).map(|(body, _)| ConstDef{
-					binding: TypedBinding{ ident: ident.into(), type_sig: ty },
-					body: body
-				})
-			})
+		if tokens.len() == 0 {
+			Err("ConstDef::parse: No tokens".into())
 		} else {
-			Err(format!("ConstDef::parse: unexpected token `{:?}`", tokens.get(0)))
+			TypedBinding::parse(tokens).and_then(|(bnd, bnd_len)|
+				ExprMeta::parse(&tokens[bnd_len..])
+					.and_then(|(body, body_len)| if body_len + bnd_len == tokens.len() {
+						Ok(ConstDef{ binding: bnd, body: body })
+					} else {
+						Err("ConstDef::parse: Tokens remained after parsing body".into())
+					}))
 		}
 	}
 }
