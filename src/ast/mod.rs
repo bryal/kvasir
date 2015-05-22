@@ -24,9 +24,10 @@ mod parse;
 mod inference;
 
 use std::collections::HashMap;
+use std::borrow::Cow;
 
 /// A map of constant definitions
-type ConstDefMap<'a> = HashMap<&'a Path, ConstDef>;
+type ConstDefMap = HashMap<Path, ConstDef>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -47,7 +48,7 @@ impl Type {
 		Type::Construct(constructor.into(), args)
 	}
 
-	fn fn_sig(arg_tys: Vec<Type>, return_ty: Type) -> Type {
+	fn fn_sig(mut arg_tys: Vec<Type>, return_ty: Type) -> Type {
 		arg_tys.push(return_ty);
 		Type::Construct("→".into(), arg_tys)
 	}
@@ -61,11 +62,6 @@ impl Type {
 pub struct TypedBinding {
 	pub ident: String,
 	pub type_sig: Option<Type>,
-}
-impl TypedBinding {
-	fn has_type(&self) -> bool {
-		self.type_sig.is_some()
-	}
 }
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
@@ -108,7 +104,7 @@ impl PartialEq<str> for Path {
 }
 impl ::std::fmt::Display for Path {
 	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
-		f.write_str(self.to_str)
+		f.write_str(&self.to_str())
 	}
 }
 
@@ -152,29 +148,28 @@ pub struct Cond {
 }
 impl Cond {
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_clauses(&self) -> Box<Iterator<Item=(&ExprMeta, &ExprMeta)>> {
+	fn iter_clauses<'a>(&'a self) -> Box<Iterator<Item=(Cow<ExprMeta>, &ExprMeta)> + 'a> {
 		Box::new(self.clauses.iter()
-			.map(|&(ref p, ref c)| (p, c))
-			.chain(self.else_clause.iter().map(|c| (&ExprMeta::new_true(), c))))
-	}
-	/// Iterate over all clauses of self, including the else clause
-	fn iter_clauses_mut(&self) -> Box<Iterator<Item=(&mut ExprMeta, &mut ExprMeta)>> {
-		Box::new(self.clauses.iter_mut()
-			.map(|&mut (ref mut p, ref mut c)| (p, c))
-			.chain(self.else_clause.iter_mut().map(|c| (&mut ExprMeta::new_true(), c))))
+			.map(|&(ref p, ref c)| (Cow::Borrowed(p), c))
+			.chain(self.else_clause.iter().map(|c| (Cow::Owned(ExprMeta::new_true()), c))))
 	}
 
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_consequences(&self) -> Box<Iterator<Item=&ExprMeta>> {
+	fn iter_consequences<'a>(&'a self) -> Box<Iterator<Item=&ExprMeta> + 'a> {
 		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))
 	}
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_consequences_mut(&self) -> Box<Iterator<Item=&mut ExprMeta>> {
-		Box::new(self.clauses.iter_mut().map(|&(_, ref c)| c).chain(self.else_clause.iter_mut()))
+	fn iter_consequences_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
+		Box::new(self.clauses.iter_mut()
+			.map(|&mut (_, ref mut c)| c)
+			.chain(self.else_clause.iter_mut()))
 	}
 
 	fn get_type(&self) -> Option<&Type> {
-		self.iter_consequences().map(|c| c.type_.as_ref()).find(|ty| ty.is_some())
+		match self.iter_consequences().map(|c| c.type_.as_ref()).find(|ty| ty.is_some()) {
+			Some(found) => found,
+			None => panic!("Cond::get_type: Could not get type from any clause")
+		}
 	}
 }
 
@@ -184,6 +179,7 @@ pub struct Lambda {
 	pub body: ExprMeta
 }
 
+// TODO: Separate into declaration and assignment. Let VarDecl create an l-value
 #[derive(Debug, Clone)]
 pub struct VarDef {
 	pub binding: TypedBinding,
@@ -192,7 +188,7 @@ pub struct VarDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Assignment {
+pub struct Assign {
 	pub lvalue: TypedBinding,
 	pub rvalue: ExprMeta,
 }
@@ -209,7 +205,7 @@ pub enum Expr {
 	Cond(Cond),
 	Lambda(Lambda),
 	VarDef(VarDef),
-	Assignment(Assignment)
+	Assign(Assign)
 }
 impl Expr {
 	fn is_var_def(&self) -> bool {
@@ -229,7 +225,7 @@ pub struct ExprMeta {
 }
 impl ExprMeta {
 	fn new(value: Expr, ty: Option<Type>) -> ExprMeta {
-		ExprMeta{ value: Box::new(value), type_sig: ty }
+		ExprMeta{ value: Box::new(value), type_: ty }
 	}
 
 	fn new_true() -> ExprMeta {
@@ -244,21 +240,23 @@ impl ExprMeta {
 		ExprMeta::new(Expr::Nil, Some(Type::nil()))
 	}
 
-	fn expr(&mut self) -> &mut Expr {
+	pub fn expr(&mut self) -> &mut Expr {
 		&mut self.value
 	}
 
 	fn set_type(&mut self, ty: Option<Type>) {
-		match (self.type_, ty) {
-			(Some(expected), Some(found)) if expected != found => panic!(
+		match (&mut self.type_, ty) {
+			(&mut Some(ref expected), Some(ref found)) if expected != found => panic!(
 				"ExprMeta::set_type: Type mismatch. Expected `{:?}`, found `{:?}`",
 				expected,
 				found),
-			(None, Some(found)) => self.type_ = Some(found),
+			(t @ &mut None, Some(found)) => *t = Some(found),
+			_ => (),
 		}
 	}
 }
 
+#[derive(Debug)]
 pub enum Item {
 	Use(Use),
 	ConstDef(ConstDef),
@@ -267,5 +265,6 @@ pub enum Item {
 
 #[derive(Debug, Clone)]
 pub struct AST {
-	pub items: Vec<Item>,
+	pub uses: Vec<Use>,
+	pub const_defs: Vec<ConstDef>,
 }

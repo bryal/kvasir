@@ -74,6 +74,16 @@ Mutable variable: `(var mut x <body>)`
 Type ascription:
 	Types of expressions can be described explicitly to help with type inference and to create a
 	coerce site. Syntax is `(:TYPE EXPR)` e.g. `(:u32 5)`
+Pragmas:
+	Compiler attributes for items.
+	Examples:
+		* Platform specific code:
+			`(#cfg ((platform windows)) (const FOO 0)) (#cfg ((platform unix)) (const FOO 1))`
+		* Disallow CTE:
+			`(#no-cte (fn (foo) (foo)))`
+		* Prefer CTE:
+			`(#prefer-cte (fn (! n) (* n (! (dec n)))))`
+
 
 ## Idéas
 
@@ -85,6 +95,15 @@ function before inserting new code.
 
 Default type for numbers is u64/f64, but type can be specified with :
 
-Log:
+Notes:
 Not sure what to do with const defs and maps. Should ConstDef contain a TypedBinding
 (String, not Path), or only Type?
+
+Compile time evaluation, how to make sure there are no infinite loops.
+Wouldn't want the compiler to hang.
+http://stackoverflow.com/questions/19259114/why-are-constant-expressions-not-evaluated-at-compile-time-in-haskell
+Maybe keep a caller stack in interpreter, and if same function is called to many times, abort.
+Maybe allow different modes for the compiler:
+	* Strictly no CTE
+	* No CTE unless explicitly allowed, `(#prefer-cte ...)` or `(#cte ...)` or maybe `(#allow-cte ...)`
+	* CTE unless explicitly disallowed, `(#no-cte ...)`

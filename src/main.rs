@@ -76,7 +76,7 @@
 // Per default, expect that all functions are pure, but make it possible to explicitly mark them as
 // unpure. Similar to unsafe in Rust.
 
-#![feature(non_ascii_idents, box_patterns, rustc_private)]
+#![feature(non_ascii_idents, box_patterns, rustc_private, collections, collections_drain)]
 
 extern crate getopts;
 #[macro_use]

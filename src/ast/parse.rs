@@ -20,6 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// TODO: Maybe instead of having special cases while parsing, parse all parens equaly and handle
+//       special cases later separately
+
 use ast::*;
 use lex::Token;
 
@@ -62,7 +65,7 @@ impl Path {
 		Ok(Path::new(parts, is_absolute))
 	}
 
-	fn concat(self, other: Path) -> Result<Path, String> {
+	fn concat(mut self, other: Path) -> Result<Path, String> {
 		if other.is_absolute {
 			Err(format!(
 				"Path::concat: `{}` is an absolute path",
@@ -120,6 +123,7 @@ fn parse_types(tokens: &[Token]) -> Result<Vec<Type>, String> {
 	Ok(tys)
 }
 
+
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
 fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	match Path::parse(tokens) {
@@ -127,8 +131,8 @@ fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 			.and_then(|tails| {
 				let mut paths = Vec::new();
 
-				for path_result in tails.into_iter().map(|tail| head.concat(tail)) {
-					match path_result {
+				for tail in tails.into_iter() {
+					match head.clone().concat(tail) {
 						Err(e) => return Err(e),
 						Ok(o) => paths.push(o),
 					}
@@ -467,6 +471,17 @@ fn parse_items(tokens: &[Token]) -> Result<Vec<Item>, String> {
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		parse_items(tokens).map(|items| AST{ items: items })
+		parse_items(tokens).and_then(|items| {
+			let mut ast = AST{ uses: Vec::new(), const_defs: Vec::new() };
+			for item in items {
+				match item {
+					Item::Use(u) => ast.uses.push(u),
+					Item::ConstDef(d) => ast.const_defs.push(d),
+					_ => return Err(format!("AST::parse: Unexpected item `{:?}`", item)),
+				}
+			}
+
+			Ok(ast)
+		})
 	}
 }

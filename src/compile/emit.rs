@@ -28,10 +28,19 @@
 //! 	* LLVM something ☐
 
 use ast::*;
-use std::fmt::Write;
 
 pub trait ToRustSrc {
 	fn to_rust_src(&self) -> String;
+}
+
+impl ToRustSrc for Path {
+	fn to_rust_src(&self) -> String {
+		format!(
+			"{}{}{}",
+			if self.is_absolute() { "::" } else { "" },
+			self.parts()[0],
+			self.parts()[1..].iter().fold(String::new(), |acc, s| format!("{}::{}", acc, s)))
+	}
 }
 
 impl ToRustSrc for Type {
@@ -67,7 +76,7 @@ impl ToRustSrc for Use {
 
 impl ToRustSrc for ConstDef {
 	fn to_rust_src(&self) -> String {
-		if let Expr::Lambda(ref lambda) = *self.body.expr() {
+		if let Expr::Lambda(ref lambda) = *self.body.value {
 			format!("fn {}({}) -> {} {{ {} }}",
 				self.binding.ident,
 				lambda.arg_bindings.first()
@@ -90,16 +99,6 @@ impl ToRustSrc for ConstDef {
 					.to_rust_src(),
 				self.body.to_rust_src())
 		}
-	}
-}
-
-impl ToRustSrc for Path {
-	fn to_rust_src(&self) -> String {
-		format!(
-			"{}{}{}",
-			if self.is_absolute() { "::" } else { "" },
-			self.parts()[0],
-			self.parts()[1..].iter().fold(String::new(), |acc, s| format!("{}::{}", acc, s)))
 	}
 }
 
@@ -154,17 +153,51 @@ impl ToRustSrc for Lambda {
 	}
 }
 
+impl ToRustSrc for VarDef {
+	fn to_rust_src(&self) -> String {
+		format!("let{} {}: {} = {}",
+			if self.mutable { " mut" } else { "" },
+			self.binding.ident,
+			self.binding.type_sig.as_ref().map(|ty| ty.to_rust_src()).unwrap_or("".into()),
+			if let Expr::Lambda(ref lambda) = *self.body.value {
+				format!("|{}| -> {} {{ {} }}",
+					lambda.arg_bindings.first()
+						.map(|first| lambda.arg_bindings.tail()
+							.iter()
+							.fold(first.to_rust_src(), |acc, bnd|
+								format!("{}, {}", acc, bnd.to_rust_src())))
+						.unwrap_or("".into()),
+					lambda.body.type_.as_ref()
+						.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
+							self.binding.ident))
+						.to_rust_src(),
+					lambda.body.to_rust_src())
+			} else {
+				self.body.to_rust_src()
+			})
+	}
+}
+
+impl ToRustSrc for Assign {
+	fn to_rust_src(&self) -> String {
+		format!("{} = {}", self.lvalue.ident, self.rvalue.to_rust_src())
+	}
+}
+
 impl ToRustSrc for ExprMeta {
 	fn to_rust_src(&self) -> String {
 		match *self.value {
-			Expr::Cond(ref cond) => cond.to_rust_src(),
-			Expr::SExpr(ref sexpr) => sexpr.to_rust_src(),
-			Expr::NumLit(ref s) => s.clone(),
-			Expr::Binding(ref ident) => ident.to_rust_src(),
-			Expr::StrLit(ref s) => s.clone(),
-			Expr::Lambda(ref λ) => λ.to_rust_src(),
-			Expr::Block(ref block) => block.to_rust_src(),
 			Expr::Nil => "()".into(),
+			Expr::NumLit(ref s) => s.clone(),
+			Expr::StrLit(ref s) => s.clone(),
+			Expr::Bool(b) => if b { "true" } else { "false" }.into(),
+			Expr::Binding(ref ident) => ident.to_rust_src(),
+			Expr::SExpr(ref sexpr) => sexpr.to_rust_src(),
+			Expr::Block(ref block) => block.to_rust_src(),
+			Expr::Cond(ref cond) => cond.to_rust_src(),
+			Expr::Lambda(ref λ) => λ.to_rust_src(),
+			Expr::VarDef(ref def) => def.to_rust_src(),
+			Expr::Assign(ref a) => a.to_rust_src(),
 		}
 	}
 }
@@ -181,13 +214,11 @@ impl ToRustSrc for Item {
 
 impl ToRustSrc for AST {
 	fn to_rust_src(&self) -> String {
-		let mut src = String::with_capacity(500);
-
-		for item in &self.items {
-			writeln!(src, "{}", item.to_rust_src()).unwrap();
-		}
-
-		src
+		format!("{}{}",
+			self.uses.iter()
+				.fold(String::new(), |acc, u| format!("{}{};\n", acc, u.to_rust_src())),
+			self.const_defs.iter()
+				.fold(String::new(), |acc, def| format!("{}{}\n", acc, def.to_rust_src())))
 	}
 }
 
