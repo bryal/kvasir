@@ -32,31 +32,15 @@
 
 use std::mem::replace;
 use super::{ ConstDef, ConstDefOrType, ConstDefScope, ConstDefScopeStack,
-	Type, TypedBinding, Expr, ExprMeta, Path };
-
-struct Env {
-	const_defs: ConstDefScopeStack,
-	var_types: Vec<TypedBinding>
-}
-impl Env {
-	fn get_var_type(&self, ident: &str) -> Option<Option<&Type>> {
-		self.var_types.iter()
-			.rev()
-			.find(|stack_tb| stack_tb.ident == ident)
-			.map(|stack_tb| stack_tb.type_sig.as_ref())
-	}
-	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Option<Type>> {
-		self.var_types.iter_mut()
-			.rev()
-			.find(|stack_tb| stack_tb.ident == bnd)
-			.map(|stack_tb| &mut stack_tb.type_sig)
-	}
-}
+	Type, TypedBinding, Expr, ExprMeta, Path, Env };
+use super::core_lib::core_consts;
 
 impl Path {
 	fn get_type<'a>(&self, env: &'a Env) -> Option<&'a Type> {
 		if let Some(ident) = self.ident() {
-			if let Some((def, _)) = env.const_defs.get(ident) {
+			if let Some(ty) = env.core_consts.get(ident) {
+				Some(ty)
+			} else if let Some((def, _)) = env.const_defs.get(ident) {
 				def.get_type()
 			} else if let Some(var_stack_ty) = env.get_var_type(ident) {
 				var_stack_ty
@@ -70,7 +54,10 @@ impl Path {
 
 	fn infer_types(&self, expected_type: Option<&Type>, env: &mut Env) {
 		if let Some(ident) = self.ident() {
-			if let Some(height) = env.const_defs.get_height(ident) {
+			if env.core_consts.get(ident).is_some() {
+				// Don't try to infer types for internal functions
+				()
+			} else if let Some(height) = env.const_defs.get_height(ident) {
 				// Path is a constant
 				let above = env.const_defs.split_from(height + 1);
 
@@ -160,9 +147,10 @@ impl super::SExpr {
 		let expected_fn_type = if self.args.iter().all(|arg| arg.type_.is_some())
 			&& parent_expected_type.is_some()
 		{
-			Some(Type::construct(
-				"→",
-				self.args.iter().map(|tb| tb.type_.clone().unwrap()).collect()))
+			Some(Type::fn_sig(self.args.iter()
+				.map(|tb| tb.type_.clone().unwrap())
+				.collect(),
+				parent_expected_type.unwrap().clone()))
 		} else {
 			None
 		};
@@ -413,7 +401,11 @@ impl super::AST {
 			None => panic!("AST::infer_types: No main function found")
 		};
 
-		let mut env = Env{ const_defs: const_defs, var_types: Vec::new() };
+		let mut env = Env{
+			core_consts: core_consts(),
+			const_defs: const_defs,
+			var_types: Vec::new()
+		};
 
 		main.infer_types(&mut env);
 

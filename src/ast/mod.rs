@@ -22,10 +22,31 @@
 
 mod parse;
 mod inference;
+mod core_lib;
 
 use std::collections::HashMap;
 use std::borrow::Cow;
 use std::mem::replace;
+
+struct Env {
+	core_consts: HashMap<&'static str, Type>,
+	const_defs: ConstDefScopeStack,
+	var_types: Vec<TypedBinding>
+}
+impl Env {
+	fn get_var_type(&self, ident: &str) -> Option<Option<&Type>> {
+		self.var_types.iter()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == ident)
+			.map(|stack_tb| stack_tb.type_sig.as_ref())
+	}
+	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Option<Type>> {
+		self.var_types.iter_mut()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == bnd)
+			.map(|stack_tb| &mut stack_tb.type_sig)
+	}
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {

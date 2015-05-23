@@ -1,1 +1,1 @@
-(--def-const (:<→ u64> main) (lambda () 1337))
+(--def-const (:<→ ()> main) (lambda () (println! "Number {}" 1337)))
