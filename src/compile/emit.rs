@@ -46,6 +46,7 @@ impl ToRustSrc for Path {
 impl ToRustSrc for Type {
 	fn to_rust_src(&self) -> String {
 		match *self {
+			Type::Inferred => "_".to_string(),
 			Type::Basic(ref ty) => ty.clone(),
 			Type::Construct(ref con, ref args) => format!(
 				"{}<{}>",
@@ -60,10 +61,7 @@ impl ToRustSrc for Type {
 
 impl ToRustSrc for TypedBinding {
 	fn to_rust_src(&self) -> String {
-		format!("{}{}",
-			self.ident,
-			self.type_sig.as_ref().map(|ty| format!(": {}", ty.to_rust_src())).unwrap_or("".into())
-		)
+		format!("{}{}", self.ident, self.type_sig.to_rust_src())
 	}
 }
 
@@ -85,18 +83,12 @@ impl ToRustSrc for ConstDef {
 						.fold(first.to_rust_src(), |acc, bnd|
 							format!("{}, {}", acc, bnd.to_rust_src())))
 					.unwrap_or("".into()),
-				lambda.body.type_.as_ref()
-					.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
-						self.binding.ident))
-					.to_rust_src(),
+				lambda.body.type_.to_rust_src(),
 				lambda.body.to_rust_src())
 		} else {
 			format!("const {}: {} = {};",
 				self.binding.ident,
-				self.binding.type_sig.as_ref()
-					.expect(&format!("ConstDef::to_rust_src: binding `{}` has no type",
-						self.binding.ident))
-					.to_rust_src(),
+				self.binding.type_sig.to_rust_src(),
 				self.body.to_rust_src())
 		}
 	}
@@ -147,14 +139,13 @@ impl ToRustSrc for Cond {
 
 impl ToRustSrc for Lambda {
 	fn to_rust_src(&self) -> String {
-		format!("|{}| {} {{ {} }}",
+		format!("|{}| -> {} {{ {} }}",
 			self.arg_bindings.first()
 				.map(|first| self.arg_bindings[1..].iter()
 					.fold(first.to_rust_src(), |acc, bnd|
 						format!("{}, {}", acc, bnd.to_rust_src())))
 				.unwrap_or("".into()),
-			self.body.type_.as_ref().map(|body| format!("-> {}", body.to_rust_src()))
-				.unwrap_or("".into()),
+			self.body.type_.to_rust_src(),
 			self.body.to_rust_src()
 		)
 	}
@@ -165,7 +156,7 @@ impl ToRustSrc for VarDef {
 		format!("let{} {}: {} = {}",
 			if self.mutable { " mut" } else { "" },
 			self.binding.ident,
-			self.binding.type_sig.as_ref().map(|ty| ty.to_rust_src()).unwrap_or("".into()),
+			self.binding.type_sig.to_rust_src(),
 			if let Expr::Lambda(ref lambda) = *self.body.value {
 				format!("|{}| -> {} {{ {} }}",
 					lambda.arg_bindings.first()
@@ -174,10 +165,7 @@ impl ToRustSrc for VarDef {
 							.fold(first.to_rust_src(), |acc, bnd|
 								format!("{}, {}", acc, bnd.to_rust_src())))
 						.unwrap_or("".into()),
-					lambda.body.type_.as_ref()
-						.expect(&format!("FnDef::to_rust_src: function body of `{}` has no type",
-							self.binding.ident))
-						.to_rust_src(),
+					lambda.body.type_.to_rust_src(),
 					lambda.body.to_rust_src())
 			} else {
 				self.body.to_rust_src()

@@ -34,13 +34,13 @@ struct Env {
 	var_types: Vec<TypedBinding>
 }
 impl Env {
-	fn get_var_type(&self, ident: &str) -> Option<Option<&Type>> {
+	fn get_var_type(&self, ident: &str) -> Option<&Type> {
 		self.var_types.iter()
 			.rev()
 			.find(|stack_tb| stack_tb.ident == ident)
-			.map(|stack_tb| stack_tb.type_sig.as_ref())
+			.map(|stack_tb| &stack_tb.type_sig)
 	}
-	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Option<Type>> {
+	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Type> {
 		self.var_types.iter_mut()
 			.rev()
 			.find(|stack_tb| stack_tb.ident == bnd)
@@ -50,6 +50,7 @@ impl Env {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
+	Inferred,
 	Basic(String),
 	Construct(String, Vec<Type>),
 	Tuple(Vec<Type>),
@@ -75,12 +76,39 @@ impl Type {
 	fn bool() -> Type {
 		Type::Basic("bool".into())
 	}
+
+	fn is_inferred(&self) -> bool {
+		match self {
+			&Type::Inferred => true,
+			_ => false
+		}
+	}
+
+	fn is_specified(&self) -> bool {
+		!self.is_inferred()
+	}
+
+	fn or<'a>(&'a self, other: &'a Type) -> &Type {
+		if self.is_specified() { self } else { other }
+	}
+}
+
+/// If `lhs` is Inferred, assign to it `rhs`. If types conflict, panic. Ignore other cases
+fn assign_type(lhs: &mut Type, rhs: &Type) {
+	match (lhs, rhs) {
+		(lhs @ &mut Type::Inferred, found) => *lhs = found.clone(),
+		(&mut ref expected, found) if expected != found => panic!(
+			"assign_type: Type mismatch. Expected `{:?}`, found `{:?}`",
+			expected,
+			found),
+		_ => ()
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedBinding {
 	pub ident: String,
-	pub type_sig: Option<Type>,
+	pub type_sig: Type,
 }
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
@@ -142,24 +170,24 @@ pub struct ConstDef {
 	pub body: ExprMeta,
 }
 impl ConstDef {
-	fn get_type(&self) -> Option<&Type> {
-		self.binding.type_sig.as_ref()
+	fn get_type(&self) -> &Type {
+		&self.binding.type_sig
 	}
 
-	fn set_type(&mut self, ty: Option<Type>) {
+	fn set_type(&mut self, ty: Type) {
 		self.binding.type_sig = ty
 	}
 }
 
 enum ConstDefOrType {
 	Def(ConstDef),
-	Type(Option<Type>),
+	Type(Type),
 }
 impl ConstDefOrType {
-	fn get_type(&self) -> Option<&Type> {
+	fn get_type(&self) -> &Type {
 		match self {
-			&ConstDefOrType::Def(ref def) => def.binding.type_sig.as_ref(),
-			&ConstDefOrType::Type(ref ty) => ty.as_ref()
+			&ConstDefOrType::Def(ref def) => &def.binding.type_sig,
+			&ConstDefOrType::Type(ref ty) => &ty
 		}
 	}
 
@@ -315,10 +343,10 @@ impl Cond {
 			.chain(self.else_clause.iter_mut()))
 	}
 
-	fn get_type(&self) -> Option<&Type> {
-		match self.iter_consequences().map(|c| c.type_.as_ref()).find(|ty| ty.is_some()) {
+	fn get_type(&self) -> &Type {
+		match self.iter_consequences().map(|c| &c.type_).find(|ty| ty.is_specified()) {
 			Some(found) => found,
-			None => panic!("Cond::get_type: Could not get type from any clause")
+			None => &self.iter_consequences().next().unwrap().type_
 		}
 	}
 }
@@ -371,39 +399,23 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub struct ExprMeta {
 	pub value: Box<Expr>,
-	pub type_: Option<Type>
+	pub type_: Type
 }
 impl ExprMeta {
-	fn new(value: Expr, ty: Option<Type>) -> ExprMeta {
+	fn new(value: Expr, ty: Type) -> ExprMeta {
 		ExprMeta{ value: Box::new(value), type_: ty }
 	}
 
-	fn new_true() -> ExprMeta {
-		ExprMeta::new(Expr::Bool(true), Some(Type::bool()))
-	}
+	fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::bool()) }
+	fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::bool()) }
 
-	fn new_false() -> ExprMeta {
-		ExprMeta::new(Expr::Bool(false), Some(Type::bool()))
-	}
+	fn nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::nil()) }
 
-	fn nil() -> ExprMeta {
-		ExprMeta::new(Expr::Nil, Some(Type::nil()))
-	}
+	pub fn expr(&mut self) -> &mut Expr { &mut self.value }
 
-	pub fn expr(&mut self) -> &mut Expr {
-		&mut self.value
-	}
-
-	fn set_type(&mut self, ty: Option<Type>) {
+	fn set_type(&mut self, ty: Type) {
 		// TODO: Try using Cow for speedup
-		match (&mut self.type_, ty) {
-			(&mut Some(ref expected), Some(ref found)) if expected != found => panic!(
-				"ExprMeta::set_type: Type mismatch. Expected `{:?}`, found `{:?}`",
-				expected,
-				found),
-			(t @ &mut None, Some(found)) => *t = Some(found),
-			_ => (),
-		}
+		assign_type(&mut self.type_, &ty)
 	}
 }
 

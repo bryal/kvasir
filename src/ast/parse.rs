@@ -100,6 +100,7 @@ impl Type {
 	/// Parse a type from tokens. On success, return parsed type and number of tokens used
 	pub fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {
 		tokens.get(0).ok_or("Type::parse: no tokens".into()).and_then(|&token| match token {
+			Token::Ident("_") => Ok((Type::Inferred, 1)),
 			Token::Ident(ident) => Ok((Type::Basic(ident.into()), 1)),
 			Token::LT => parse_brackets(tokens, Type::parse_construct),
 			Token::LParen => parse_brackets(tokens, Type::parse_tuple),
@@ -137,7 +138,7 @@ impl TypedBinding {
 						Err("TypedBinding::parse_parenthesized: \
 							Type ascription not followed by single ident".into())
 					} else if let Token::Ident(ident) = tokens.tail()[len] {
-						Ok(TypedBinding{ ident: ident.into(), type_sig: Some(ty) })
+						Ok(TypedBinding{ ident: ident.into(), type_sig: ty })
 					} else {
 						Err("TypedBinding::parse_parenthesized: \
 							Type ascription not followed by ident".into())
@@ -154,7 +155,11 @@ impl TypedBinding {
 		} else {
 			match tokens[0] {
 				Token::LParen => parse_brackets(tokens, TypedBinding::parse_parenthesized),
-				Token::Ident(ident) => Ok((TypedBinding{ ident: ident.into(), type_sig: None }, 1)),
+				Token::Ident(ident) => Ok((TypedBinding{
+						ident: ident.into(),
+						type_sig: Type::Inferred
+					},
+					1)),
 				t => Err(format!("TypedBinding::parse: Unexpected token `{:?}`", t))
 			}
 		}
@@ -244,11 +249,11 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 		if let Token::Ident(ident) = token {
 			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
 				match Type::parse(&tokens[i + 2 ..]) {
-					Ok((ty, tl)) => (Some(ty), tl),
+					Ok((ty, tl)) => (ty, tl),
 					Err(e) => return Err(e),
 				}
 			} else {
-				(None, 0)
+				(Type::Inferred, 0)
 			};
 
 			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
@@ -411,9 +416,9 @@ impl ExprMeta {
 			// Type ascription
 			Type::parse(tokens.tail())
 				.and_then(|(ty, len)| Expr::parse(&tokens.tail()[len..])
-					.map(|(expr, _)| ExprMeta::new(expr, Some(ty))))
+					.map(|(expr, _)| ExprMeta::new(expr, ty)))
 		} else {
-			Expr::parse_parenthesized(tokens).map(|e| ExprMeta::new(e, None))
+			Expr::parse_parenthesized(tokens).map(|e| ExprMeta::new(e, Type::Inferred))
 		}
 	}
 
@@ -424,7 +429,7 @@ impl ExprMeta {
 			match tokens[0] {
 				Token::LParen => parse_brackets(tokens, ExprMeta::parse_parenthesized),
 				_ => Expr::parse(tokens)
-					.map(|(expr, n_tokens)| (ExprMeta::new(expr, None), n_tokens)),
+					.map(|(expr, n_tokens)| (ExprMeta::new(expr, Type::Inferred), n_tokens)),
 			}
 		}
 	}

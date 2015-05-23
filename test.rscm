@@ -9,7 +9,7 @@
           (else b))))
 
 (--def-const if_then (lambda (i c e)
-    (cond (i a)
+    (cond (i c)
           (else e))))
 
 (--def-const (:<→ ()> main) (lambda () (println! "Number {}" (if_then true 1 0))))

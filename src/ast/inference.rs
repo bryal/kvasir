@@ -31,15 +31,17 @@
 //       Maybe encapsulate this using some kind of State object
 
 use std::mem::replace;
+use std::iter::repeat;
+use std::borrow::Cow;
 use super::{ ConstDef, ConstDefOrType, ConstDefScope, ConstDefScopeStack,
-	Type, TypedBinding, Expr, ExprMeta, Path, Env };
+	Type, TypedBinding, Expr, ExprMeta, Path, Env, assign_type };
 use super::core_lib::core_consts;
 
 impl Path {
-	fn get_type<'a>(&self, env: &'a Env) -> Option<&'a Type> {
+	fn get_type<'a>(&self, env: &'a Env) -> &'a Type {
 		if let Some(ident) = self.ident() {
 			if let Some(ty) = env.core_consts.get(ident) {
-				Some(ty)
+				ty
 			} else if let Some((def, _)) = env.const_defs.get(ident) {
 				def.get_type()
 			} else if let Some(var_stack_ty) = env.get_var_type(ident) {
@@ -52,7 +54,7 @@ impl Path {
 		}
 	}
 
-	fn infer_types(&self, expected_type: Option<&Type>, env: &mut Env) {
+	fn infer_types(&self, expected_type: &Type, env: &mut Env) {
 		if let Some(ident) = self.ident() {
 			if env.core_consts.get(ident).is_some() {
 				// Don't try to infer types for internal functions
@@ -71,19 +73,19 @@ impl Path {
 				}
 
 				env.const_defs.extend(above);
-			} else if expected_type.is_some() {
+			} else if expected_type.is_specified() {
 				if let Some(stack_bnd_ty) = env.get_var_type_mut(ident) {
 					// Path is a var
-					if stack_bnd_ty.is_none() {
-						*stack_bnd_ty = expected_type.cloned()
-					} else if stack_bnd_ty.as_ref() != expected_type {
+					if stack_bnd_ty.is_inferred() {
+						*stack_bnd_ty = expected_type.clone()
+					} else if stack_bnd_ty != expected_type {
 						// TODO: Shouldn't necessarily panic if types differ.
 						//       Add some kind of coercion and polymorphism.
 						panic!(
 							"Path::infer_types: Tried to set type of binding on stack to `{:?}` \
 								when it already had type `{:?}`",
-								expected_type.unwrap(),
-							stack_bnd_ty.as_ref().unwrap())
+							expected_type,
+							stack_bnd_ty)
 					}
 				} else {
 					panic!("Path::infer_types: Binding not on stack")
@@ -99,19 +101,11 @@ impl super::ConstDef {
 	fn infer_types(&mut self, env: &mut Env) {
 		let prev_var_types = replace(&mut env.var_types, Vec::new());
 
-		self.body.infer_types(self.binding.type_sig.as_ref(), env);
+		self.body.infer_types(&self.binding.type_sig, env);
 
 		env.var_types = prev_var_types;
 
-		match (&mut self.binding.type_sig, self.body.type_.as_ref()) {
-			(&mut Some(ref expected), Some(found)) if expected != found => panic!(
-				"ConstDef::infer_types: Type mismatch. Expected `{:?}`, found `{:?}`",
-				expected,
-				found),
-			(b @ &mut None, Some(found)) => *b = Some(found.clone()),
-			(&mut None, None) => panic!("ConstDef::infer_types: No type could be infered"),
-			_ => ()
-		}
+		assign_type(&mut self.binding.type_sig, &self.body.type_)
 	}
 }
 
@@ -124,60 +118,46 @@ fn extract_fn_sig(sig: &Type) -> (&[Type], &Type) {
 }
 
 impl super::SExpr {
-	fn body_type(&self) -> Option<&Type> {
-		self.func.type_.as_ref().map(extract_fn_sig).map(|(_, body_t)| body_t)
+	fn body_type(&self) -> &Type {
+		extract_fn_sig(&self.func.type_).1
 	}
 
-	fn infer_arg_types(&mut self, expected_types: Option<&[Type]>, env: &mut Env) {
-		if let Some(expected_types) = expected_types {
-			if self.args.len() != expected_types.len() {
-				panic!("SExpr::infer_arg_types: Arity mismatch. Expected {}, found {}",
-					expected_types.len(),
-					self.args.len())
-			}
-
-			for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
-				arg.infer_types(Some(expect_ty), env);
-			}
+	fn infer_arg_types(&mut self, env: &mut Env) {
+		let inferreds = if self.func.type_.is_inferred() {
+			vec![Type::Inferred; self.args.len()]
 		} else {
-			for arg in self.args.iter_mut() {
-				arg.infer_types(None, env);
-			}
+			vec![]
+		};
+		let expected_types = if self.func.type_.is_specified() {
+			extract_fn_sig(&self.func.type_).0
+		} else {
+			inferreds.as_ref()
+		};
+
+		if self.args.len() != expected_types.len() {
+			panic!("SExpr::infer_arg_types: Arity mismatch. Expected {}, found {}",
+				expected_types.len(),
+				self.args.len())
+		}
+
+		for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
+			arg.infer_types(expect_ty, env);
 		}
 	}
 
-	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
-		self.infer_arg_types(None, env);
+	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
+		self.infer_arg_types(env);
 
-		// TODO: Partial inference when not all bindings have type signatures
-		let expected_fn_type = if self.args.iter().all(|arg| arg.type_.is_some())
-			&& parent_expected_type.is_some()
-		{
-			Some(Type::fn_sig(self.args.iter()
-				.map(|tb| tb.type_.clone().unwrap())
-				.collect(),
-				parent_expected_type.unwrap().clone()))
-		} else {
-			None
-		};
+		let expected_fn_type = Type::fn_sig(
+			self.args.iter().map(|tb| tb.type_.clone()).collect(),
+			parent_expected_type.clone());
 
-		println!("Inferring {:?}, expects {:?}", self.func, expected_fn_type);
-
-		self.func.infer_types(expected_fn_type.as_ref(), env);
+		self.func.infer_types(&expected_fn_type, env);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
-		match (self.func.type_.clone(), expected_fn_type) {
-			(Some(Type::Construct(_, fn_arg_types)), None) =>
-				// `init` because last arg in fn sig is return type
-				self.infer_arg_types(Some(fn_arg_types.init()), env),
-			(Some(ty), None) => panic!("SExpr::infer_types: `{:?}` is not a function type", ty),
-			(Some(ref found_ty), Some(ref expected_ty)) if found_ty != expected_ty => panic!(
-				"SExpr::infer_types: Function type mismatch. Expected `{:?}`, found `{:?}`",
-				expected_ty,
-				found_ty),
-			(None, None) => panic!("SExpr::infer_types: Could not infer type for function"),
-			_ => ()
+		if self.func.type_.is_specified() {
+			self.infer_arg_types(env);
 		}
 	}
 }
@@ -199,11 +179,11 @@ fn def_scope_to_vec(scope: ConstDefScope) -> Vec<ConstDef> {
 }
 
 impl super::Block {
-	fn get_type(&self) -> Option<&Type> {
-		self.exprs.last().expect("Block::get_type: No expressions in block").type_.as_ref()
+	fn get_type(&self) -> &Type {
+		&self.exprs.last().expect("Block::get_type: No expressions in block").type_
 	}
 
-	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
+	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
 		if self.exprs.len() == 0 {
 			return;
 		}
@@ -219,7 +199,7 @@ impl super::Block {
 					var_def.infer_types(env);
 					env.var_types.push(var_def.binding.clone());
 				},
-				_ => expr.infer_types(None, env)
+				_ => expr.infer_types(&Type::Inferred, env)
 			}
 		}
 
@@ -240,7 +220,7 @@ impl super::Block {
 
 				env.var_types.push(block_defined_vars.next().unwrap());
 			} else {
-				expr.infer_types(None, env);
+				expr.infer_types(&Type::Inferred, env);
 			}
 		}
 
@@ -257,36 +237,34 @@ impl super::Block {
 }
 
 impl super::Cond {
-	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
+	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
 		// TODO: Use predicates to infer var types
 
-		if parent_expected_type.is_none() {
+		if parent_expected_type.is_inferred() {
 			let mut found_type = None;
 
 			for predicate in self.iter_predicates_mut() {
-				predicate.infer_types(Some(&Type::bool()), env);
+				predicate.infer_types(&Type::bool(), env);
 			}
 			for consequence in self.iter_consequences_mut() {
-				if consequence.type_.is_some() || {
-					consequence.infer_types(None, env);
-					consequence.type_.is_some()
+				if consequence.type_.is_specified() || {
+					consequence.infer_types(&Type::Inferred, env);
+					consequence.type_.is_specified()
 				} {
 					found_type = Some(consequence.type_.clone());
 				}
 			}
 
 			match found_type {
-				Some(expected_type) =>
-					self.infer_types(expected_type.as_ref(), env),
+				Some(ref expected_type) =>
+					self.infer_types(expected_type, env),
 				// TODO: Shouldn't panic here. Even if type can't be infered now,
 				//       parent might return later with an expected type.
 				None => panic!("Cond::infer_types: Could not infer type for any clause"),
 			}
 		} else {
-			let t_bool = &Type::bool();
-
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(Some(t_bool), env);
+				predicate.infer_types(&Type::bool(), env);
 				consequence.infer_types(parent_expected_type, env);
 			}
 			if let Some(ref mut else_clause) = self.else_clause {
@@ -297,50 +275,38 @@ impl super::Cond {
 }
 
 impl super::Lambda {
-	fn set_arg_types(&mut self, arg_types: &[Type]) {
-		for ((arg_name, arg_type_sig), set_type) in self.arg_bindings.iter_mut()
-			.map(|tb| (&tb.ident, &mut tb.type_sig))
-			.zip(arg_types)
+	fn set_arg_types(&mut self, set_arg_types: &[Type]) {
+		for (arg_type, set_type) in self.arg_bindings.iter_mut()
+			.map(|tb| &mut tb.type_sig)
+			.zip(set_arg_types)
 		{
-			match *arg_type_sig {
-				None => *arg_type_sig = Some(set_type.clone()),
-				Some(ref ty) if ty != set_type => panic!(
-					"ConstDef::set_arg_types: Tried to assign type `{:?}` to arg `{}`, \
-						but it was already of type `{:?}`",
-					set_type,
-					arg_name,
-					ty),
-				_ => ()
-			}
+			assign_type(arg_type, set_type)
 		}
 	}
 
-	fn get_type(&self) -> Option<Type> {
-		if self.arg_bindings.iter().all(|tb| tb.type_sig.is_some()) {
-			self.body.type_.as_ref().map(|body_ty| Type::fn_sig(
-				self.arg_bindings.iter()
-					.cloned()
-					.map(|tb| tb.type_sig.unwrap())
-					.collect(),
-				body_ty.clone()))
-		} else {
-			None
-		}
+	fn get_type(&self) -> Type {
+		Type::fn_sig(
+			self.arg_bindings.iter().map(|tb| tb.type_sig.clone()).collect(),
+			self.body.type_.clone())
 	}
 
 	// TODO: Add support for enviroment capturing closures
-	fn infer_types(&mut self, expected_type: Option<&Type>, env: &mut Env) {
-		let expected_body_type = expected_type.map(extract_fn_sig)
-			.map(|(fn_arg_types, fn_body_type)| {
-				self.set_arg_types(fn_arg_types);
-				fn_body_type
-			});
+	fn infer_types(&mut self, mut expected_type: Cow<Type>, env: &mut Env) {
+		if expected_type.is_inferred() {
+			expected_type = Cow::Owned(Type::fn_sig(
+				self.arg_bindings.iter().map(|tb| tb.type_sig.clone()).collect(),
+				self.body.type_.clone()));
+		}
+
+		let (fn_arg_types, fn_body_type) = extract_fn_sig(&expected_type);
+
+		self.set_arg_types(fn_arg_types);
 
 		let (vars_len, args_len) = (env.var_types.len(), self.arg_bindings.len());
 
 		env.var_types.extend(self.arg_bindings.drain(..));
 
-		self.body.infer_types(expected_body_type, env);
+		self.body.infer_types(fn_body_type, env);
 
 		assert_eq!(env.var_types.len(), vars_len + args_len);
 
@@ -351,54 +317,45 @@ impl super::Lambda {
 impl super::VarDef {
 	// NOTE: This is very similar to ConstDef::infer_types, DRY?
 	fn infer_types(&mut self, env: &mut Env) {
-		self.body.infer_types(self.binding.type_sig.as_ref(), env);
+		self.body.infer_types(&self.binding.type_sig, env);
 
-		match (&mut self.binding.type_sig, self.body.type_.as_ref()) {
-			(&mut Some(ref expected), Some(found)) if expected != found => panic!(
-				"VarDef::infer_types: Type mismatch. Expected `{:?}`, found `{:?}`",
-				expected,
-				found),
-			(b @ &mut None, Some(found)) => *b = Some(found.clone()),
-			(&mut None, None) => panic!("VarDef::infer_types: No type could be infered"),
-			_ => ()
-		}
+		assign_type(&mut self.binding.type_sig, &self.body.type_)
 	}
 }
 
 impl ExprMeta {
-	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
+	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
 		let found_type = {
-			let expected_type = self.type_.as_ref().or(parent_expected_type);
+			let expected_type = self.type_.or(parent_expected_type);
 
 			match *self.value {
 				// Doesn't have children to infer types for
-				Expr::Nil => Some(Type::nil()),
+				Expr::Nil => Type::nil(),
 				// TODO: This should be an internal, more general integer type
-				Expr::NumLit(_) => Some(Type::basic("u64")),
+				Expr::NumLit(_) | Expr::VarDef(_) | Expr::Assign(_) => Type::basic("u64"),
 				// TODO: This should be a construct somehow
-				Expr::StrLit(_) => Some(Type::basic("&str")),
-				Expr::Bool(_) => Some(Type::bool()),
+				Expr::StrLit(_) => Type::basic("&str"),
+				Expr::Bool(_) => Type::bool(),
 				Expr::Binding(ref path) => {
 					path.infer_types(expected_type, env);
-					path.get_type(env).cloned()
+					path.get_type(env).clone()
 				},
 				Expr::SExpr(ref mut sexpr) => {
 					sexpr.infer_types(expected_type, env);
-					sexpr.body_type().cloned()
+					sexpr.body_type().clone()
 				},
 				Expr::Block(ref mut block) => {
 					block.infer_types(expected_type, env);
-					block.get_type().cloned()
+					block.get_type().clone()
 				},
 				Expr::Cond(ref mut cond) => {
 					cond.infer_types(expected_type, env);
-					cond.get_type().cloned()
+					cond.get_type().clone()
 				},
 				Expr::Lambda(ref mut lambda) => {
-					lambda.infer_types(expected_type, env);
+					lambda.infer_types(Cow::Borrowed(expected_type), env);
 					lambda.get_type()
 				},
-				Expr::VarDef(_) | Expr::Assign(_) => Some(Type::nil()),
 			}
 		};
 
