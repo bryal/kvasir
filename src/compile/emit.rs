@@ -104,14 +104,21 @@ impl ToRustSrc for ConstDef {
 
 impl ToRustSrc for SExpr {
 	fn to_rust_src(&self) -> String {
-		format!("{}({})",
-			self.func.to_rust_src(),
-			self.args.first()
-				.map(|first| self.args[1..].iter()
-					.fold(first.to_rust_src(), |acc, bnd|
-						format!("{}, {}", acc, bnd.to_rust_src())))
-				.unwrap_or("".into()),
-		)
+		let func = self.func.to_rust_src();
+		match func.as_ref() {
+			"+" | "-" | "*" | "/" | ">" | "<" => format!("({}{}{})",
+				self.args[0].to_rust_src(),
+				func,
+				self.args[1].to_rust_src()),
+			"=" => format!("({} == {})", self.args[0].to_rust_src(), self.args[1].to_rust_src()),
+			_ => format!("{}({})",
+				self.func.to_rust_src(),
+				self.args.first()
+					.map(|first| self.args[1..].iter()
+						.fold(first.to_rust_src(), |acc, bnd|
+							format!("{}, {}", acc, bnd.to_rust_src())))
+					.unwrap_or("".into()))
+		}
 	}
 }
 
@@ -198,16 +205,6 @@ impl ToRustSrc for ExprMeta {
 			Expr::Lambda(ref λ) => λ.to_rust_src(),
 			Expr::VarDef(ref def) => def.to_rust_src(),
 			Expr::Assign(ref a) => a.to_rust_src(),
-		}
-	}
-}
-
-impl ToRustSrc for Item {
-	fn to_rust_src(&self) -> String {
-		match *self {
-			Item::Use(ref u) => u.to_rust_src(),
-			Item::ConstDef(ref def) => def.to_rust_src(),
-			Item::Expr(ref e) => e.to_rust_src(),
 		}
 	}
 }

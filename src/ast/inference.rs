@@ -130,6 +130,12 @@ impl super::SExpr {
 
 	fn infer_arg_types(&mut self, expected_types: Option<&[Type]>, env: &mut Env) {
 		if let Some(expected_types) = expected_types {
+			if self.args.len() != expected_types.len() {
+				panic!("SExpr::infer_arg_types: Arity mismatch. Expected {}, found {}",
+					expected_types.len(),
+					self.args.len())
+			}
+
 			for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
 				arg.infer_types(Some(expect_ty), env);
 			}
@@ -155,13 +161,16 @@ impl super::SExpr {
 			None
 		};
 
+		println!("Inferring {:?}, expects {:?}", self.func, expected_fn_type);
+
 		self.func.infer_types(expected_fn_type.as_ref(), env);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 		match (self.func.type_.clone(), expected_fn_type) {
 			(Some(Type::Construct(_, fn_arg_types)), None) =>
-				self.infer_arg_types(Some(&fn_arg_types), env),
+				// `init` because last arg in fn sig is return type
+				self.infer_arg_types(Some(fn_arg_types.init()), env),
 			(Some(ty), None) => panic!("SExpr::infer_types: `{:?}` is not a function type", ty),
 			(Some(ref found_ty), Some(ref expected_ty)) if found_ty != expected_ty => panic!(
 				"SExpr::infer_types: Function type mismatch. Expected `{:?}`, found `{:?}`",
@@ -249,8 +258,14 @@ impl super::Block {
 
 impl super::Cond {
 	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
+		// TODO: Use predicates to infer var types
+
 		if parent_expected_type.is_none() {
 			let mut found_type = None;
+
+			for predicate in self.iter_predicates_mut() {
+				predicate.infer_types(Some(&Type::bool()), env);
+			}
 			for consequence in self.iter_consequences_mut() {
 				if consequence.type_.is_some() || {
 					consequence.infer_types(None, env);
@@ -263,6 +278,8 @@ impl super::Cond {
 			match found_type {
 				Some(expected_type) =>
 					self.infer_types(expected_type.as_ref(), env),
+				// TODO: Shouldn't panic here. Even if type can't be infered now,
+				//       parent might return later with an expected type.
 				None => panic!("Cond::infer_types: Could not infer type for any clause"),
 			}
 		} else {

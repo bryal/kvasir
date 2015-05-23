@@ -1,1 +1,15 @@
-(--def-const (:<→ ()> main) (lambda () (println! "Number {}" 1337)))
+;(--def-const or (lambda (a b)
+;    (cond (a a)
+;          (b b)
+;          (else a))))
+
+(--def-const max (lambda (a b)
+    (cond ((> a b) a)
+          ((= a b) a)
+          (else b))))
+
+(--def-const if_then (lambda (i c e)
+    (cond (i a)
+          (else e))))
+
+(--def-const (:<→ ()> main) (lambda () (println! "Number {}" (if_then true 1 0))))

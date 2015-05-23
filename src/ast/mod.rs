@@ -298,6 +298,12 @@ impl Cond {
 			.chain(self.else_clause.iter().map(|c| (Cow::Owned(ExprMeta::new_true()), c))))
 	}
 
+	/// Iterate over predicates of clauses.
+	/// This excludes the else clause, since it contains no predicate
+	fn iter_predicates_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
+		Box::new(self.clauses.iter_mut().map(|&mut (ref mut p, _)| p))
+	}
+
 	/// Iterate over all clauses of self, including the else clause
 	fn iter_consequences<'a>(&'a self) -> Box<Iterator<Item=&ExprMeta> + 'a> {
 		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))

@@ -25,13 +25,16 @@ use std::collections::HashMap;
 use super::{ Type };
 
 pub fn core_consts() -> HashMap<&'static str, Type> {
-	let t_u64 = Type::basic("u64");
-
 	HashMap::from_iter(vec![
-		("+", Type::fn_sig(vec![t_u64.clone(), t_u64.clone()], t_u64.clone())),
-		("-", Type::fn_sig(vec![t_u64.clone(), t_u64.clone()], t_u64.clone())),
-		("*", Type::fn_sig(vec![t_u64.clone(), t_u64.clone()], t_u64.clone())),
-		("/", Type::fn_sig(vec![t_u64.clone(), t_u64.clone()], t_u64.clone())),
-		("println!", Type::fn_sig(vec![Type::basic("&str"), t_u64.clone()], Type::nil())),
+		("+", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
+		("-", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
+		("*", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
+		("/", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
+		("=", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
+		("<", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
+		(">", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
+		("true", Type::bool()),
+		("false", Type::bool()),
+		("println!", Type::fn_sig(vec![Type::basic("&str"), Type::basic("u64")], Type::nil())),
 	])
 }
