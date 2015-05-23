@@ -34,28 +34,31 @@ use std::mem::replace;
 use super::{ ConstDef, ConstDefOrType, ConstDefScope, ConstDefScopeStack,
 	Type, TypedBinding, Expr, ExprMeta, Path };
 
-fn get_var_stack_binding_type<'a>(var_stack: &'a [TypedBinding], bnd: &str)
-	-> Option<Option<&'a Type>>
-{
-	var_stack.iter().rev().find(|stack_bnd| stack_bnd.ident == bnd).map(|bnd| bnd.type_sig.as_ref())
+struct Env {
+	const_defs: ConstDefScopeStack,
+	var_types: Vec<TypedBinding>
 }
-fn get_var_stack_binding_type_mut<'a>(var_stack: &'a mut [TypedBinding], bnd: &str)
-	-> Option<&'a mut Option<Type>>
-{
-	var_stack.iter_mut()
-		.rev()
-		.find(|stack_bnd| stack_bnd.ident == bnd)
-		.map(|bnd| &mut bnd.type_sig)
+impl Env {
+	fn get_var_type(&self, ident: &str) -> Option<Option<&Type>> {
+		self.var_types.iter()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == ident)
+			.map(|stack_tb| stack_tb.type_sig.as_ref())
+	}
+	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Option<Type>> {
+		self.var_types.iter_mut()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == bnd)
+			.map(|stack_tb| &mut stack_tb.type_sig)
+	}
 }
 
 impl Path {
-	fn get_type<'a>(&self, const_def_scopes: &'a ConstDefScopeStack, var_stack: &'a [TypedBinding])
-		-> Option<&'a Type>
-	{
+	fn get_type<'a>(&self, env: &'a Env) -> Option<&'a Type> {
 		if let Some(ident) = self.ident() {
-			if let Some((def, _)) = const_def_scopes.get(ident) {
+			if let Some((def, _)) = env.const_defs.get(ident) {
 				def.get_type()
-			} else if let Some(var_stack_ty) = get_var_stack_binding_type(var_stack, ident) {
+			} else if let Some(var_stack_ty) = env.get_var_type(ident) {
 				var_stack_ty
 			} else {
 				panic!("Path::get_type: Unresolved path `{}`", ident)
@@ -65,28 +68,25 @@ impl Path {
 		}
 	}
 
-	fn infer_types(&self,
-		expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
+	fn infer_types(&self, expected_type: Option<&Type>, env: &mut Env) {
 		if let Some(ident) = self.ident() {
-			if let Some(height) = const_def_scopes.get_height(ident) {
-				//
-				let above = const_def_scopes.split_from(height + 1);
+			if let Some(height) = env.const_defs.get_height(ident) {
+				// Path is a constant
+				let above = env.const_defs.split_from(height + 1);
 
-				if let Some(mut def) = const_def_scopes.get_at_height_mut(ident, height)
+				if let Some(mut def) = env.const_defs.get_at_height_mut(ident, height)
 					.unwrap()
 					.replace_into_def()
 				{
-					def.infer_types(const_def_scopes);
+					def.infer_types(env);
 
-					const_def_scopes.get_at_height_mut(ident, height).unwrap().insert_def(def);
+					env.const_defs.get_at_height_mut(ident, height).unwrap().insert_def(def);
 				}
 
-				const_def_scopes.extend(above);
+				env.const_defs.extend(above);
 			} else if expected_type.is_some() {
-				if let Some(stack_bnd_ty) = get_var_stack_binding_type_mut(var_stack, ident) {
+				if let Some(stack_bnd_ty) = env.get_var_type_mut(ident) {
+					// Path is a var
 					if stack_bnd_ty.is_none() {
 						*stack_bnd_ty = expected_type.cloned()
 					} else if stack_bnd_ty.as_ref() != expected_type {
@@ -109,11 +109,12 @@ impl Path {
 }
 
 impl super::ConstDef {
-	fn infer_types(&mut self, const_def_scopes: &mut ConstDefScopeStack) {
-		self.body.infer_types(
-			self.binding.type_sig.as_ref(),
-			const_def_scopes,
-			&mut Vec::new());
+	fn infer_types(&mut self, env: &mut Env) {
+		let prev_var_types = replace(&mut env.var_types, Vec::new());
+
+		self.body.infer_types(self.binding.type_sig.as_ref(), env);
+
+		env.var_types = prev_var_types;
 
 		match (&mut self.binding.type_sig, self.body.type_.as_ref()) {
 			(&mut Some(ref expected), Some(found)) if expected != found => panic!(
@@ -140,28 +141,20 @@ impl super::SExpr {
 		self.func.type_.as_ref().map(extract_fn_sig).map(|(_, body_t)| body_t)
 	}
 
-	fn infer_arg_types(&mut self,
-		expected_types: Option<&[Type]>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
+	fn infer_arg_types(&mut self, expected_types: Option<&[Type]>, env: &mut Env) {
 		if let Some(expected_types) = expected_types {
 			for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
-				arg.infer_types(Some(expect_ty), const_def_scopes, var_stack);
+				arg.infer_types(Some(expect_ty), env);
 			}
 		} else {
 			for arg in self.args.iter_mut() {
-				arg.infer_types(None, const_def_scopes, var_stack);
+				arg.infer_types(None, env);
 			}
 		}
 	}
 
-	fn infer_types(&mut self,
-		parent_expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
-		self.infer_arg_types(None, const_def_scopes, var_stack);
+	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
+		self.infer_arg_types(None, env);
 
 		// TODO: Partial inference when not all bindings have type signatures
 		let expected_fn_type = if self.args.iter().all(|arg| arg.type_.is_some())
@@ -174,13 +167,13 @@ impl super::SExpr {
 			None
 		};
 
-		self.func.infer_types(expected_fn_type.as_ref(), const_def_scopes, var_stack);
+		self.func.infer_types(expected_fn_type.as_ref(), env);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 		match (self.func.type_.clone(), expected_fn_type) {
 			(Some(Type::Construct(_, fn_arg_types)), None) =>
-				self.infer_arg_types(Some(&fn_arg_types), const_def_scopes, var_stack),
+				self.infer_arg_types(Some(&fn_arg_types), env),
 			(Some(ty), None) => panic!("SExpr::infer_types: `{:?}` is not a function type", ty),
 			(Some(ref found_ty), Some(ref expected_ty)) if found_ty != expected_ty => panic!(
 				"SExpr::infer_types: Function type mismatch. Expected `{:?}`, found `{:?}`",
@@ -213,27 +206,23 @@ impl super::Block {
 		self.exprs.last().expect("Block::get_type: No expressions in block").type_.as_ref()
 	}
 
-	fn infer_types(&mut self,
-		parent_expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
+	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
 		if self.exprs.len() == 0 {
 			return;
 		}
 
-		const_def_scopes.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
+		env.const_defs.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
 
-		let old_vars_len = var_stack.len();
+		let old_vars_len = env.var_types.len();
 
 		// First pass. If possible, all vars defined in block should have types infered.
 		for expr in self.exprs.init_mut() {
 			match expr {
 				&mut ExprMeta{ value: box Expr::VarDef(ref mut var_def), .. } => {
-					var_def.infer_types(const_def_scopes, var_stack);
-					var_stack.push(var_def.binding.clone());
+					var_def.infer_types(env);
+					env.var_types.push(var_def.binding.clone());
 				},
-				_ => expr.infer_types(None, const_def_scopes, var_stack)
+				_ => expr.infer_types(None, env)
 			}
 		}
 
@@ -241,20 +230,20 @@ impl super::Block {
 			panic!("Block::infer_types: Last expression in block is var definition")
 		} else {
 			self.exprs.last_mut().unwrap()
-				.infer_types(parent_expected_type, const_def_scopes, var_stack);
+				.infer_types(parent_expected_type, env);
 		}
 
-		let mut block_defined_vars = var_stack.split_off(old_vars_len).into_iter();
+		let mut block_defined_vars = env.var_types.split_off(old_vars_len).into_iter();
 
 		// Second pass. Infer types for all expressions in block now that types for all bindings
 		// are, if possible, known.
 		for expr in self.exprs.init_mut() {
 			if let &mut ExprMeta{ value: box Expr::VarDef(ref mut var_def), .. } = expr {
-				var_def.infer_types(const_def_scopes, var_stack);
+				var_def.infer_types(env);
 
-				var_stack.push(block_defined_vars.next().unwrap());
+				env.var_types.push(block_defined_vars.next().unwrap());
 			} else {
-				expr.infer_types(None, const_def_scopes, var_stack);
+				expr.infer_types(None, env);
 			}
 		}
 
@@ -262,25 +251,21 @@ impl super::Block {
 			panic!("Block::infer_types: Last expression in block is var definition")
 		} else {
 			self.exprs.last_mut().unwrap()
-				.infer_types(parent_expected_type, const_def_scopes, var_stack);
+				.infer_types(parent_expected_type, env);
 		}
 
-		self.const_defs = def_scope_to_vec(const_def_scopes.pop()
+		self.const_defs = def_scope_to_vec(env.const_defs.pop()
 			.expect("Block::infer_types: Could not pop const def scope stack"));
 	}
 }
 
 impl super::Cond {
-	fn infer_types(&mut self,
-		parent_expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
+	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
 		if parent_expected_type.is_none() {
 			let mut found_type = None;
 			for consequence in self.iter_consequences_mut() {
 				if consequence.type_.is_some() || {
-					consequence.infer_types(None, const_def_scopes, var_stack);
+					consequence.infer_types(None, env);
 					consequence.type_.is_some()
 				} {
 					found_type = Some(consequence.type_.clone());
@@ -289,18 +274,18 @@ impl super::Cond {
 
 			match found_type {
 				Some(expected_type) =>
-					self.infer_types(expected_type.as_ref(), const_def_scopes, var_stack),
+					self.infer_types(expected_type.as_ref(), env),
 				None => panic!("Cond::infer_types: Could not infer type for any clause"),
 			}
 		} else {
 			let t_bool = &Type::bool();
 
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(Some(t_bool), const_def_scopes, var_stack);
-				consequence.infer_types(parent_expected_type, const_def_scopes, var_stack);
+				predicate.infer_types(Some(t_bool), env);
+				consequence.infer_types(parent_expected_type, env);
 			}
 			if let Some(ref mut else_clause) = self.else_clause {
-				else_clause.infer_types(parent_expected_type, const_def_scopes, var_stack);
+				else_clause.infer_types(parent_expected_type, env);
 			}
 		}
 	}
@@ -326,47 +311,42 @@ impl super::Lambda {
 	}
 
 	fn get_type(&self) -> Option<Type> {
-		Some(Type::fn_sig(
-			self.arg_bindings.iter()
-				.cloned()
-				.map(|tb| tb.type_sig.expect("Lambda::get_type: Arg lacks type"))
-				.collect(),
-			self.body.type_.clone().expect("Lambda::get_type: Body has no type")))
+		if self.arg_bindings.iter().all(|tb| tb.type_sig.is_some()) {
+			self.body.type_.as_ref().map(|body_ty| Type::fn_sig(
+				self.arg_bindings.iter()
+					.cloned()
+					.map(|tb| tb.type_sig.unwrap())
+					.collect(),
+				body_ty.clone()))
+		} else {
+			None
+		}
 	}
 
 	// TODO: Add support for enviroment capturing closures
-	fn infer_types(&mut self,
-		expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack)
-	{
-		if let Some((fn_arg_types, fn_body_type)) = expected_type.map(extract_fn_sig) {
-			// Type signature already exists. Just infer types for body and make sure
-			// there are no collisions
+	fn infer_types(&mut self, expected_type: Option<&Type>, env: &mut Env) {
+		let expected_body_type = expected_type.map(extract_fn_sig)
+			.map(|(fn_arg_types, fn_body_type)| {
+				self.set_arg_types(fn_arg_types);
+				fn_body_type
+			});
 
-			self.set_arg_types(fn_arg_types);
+		let (vars_len, args_len) = (env.var_types.len(), self.arg_bindings.len());
 
-			self.body.infer_types(Some(fn_body_type), const_def_scopes, &mut self.arg_bindings);
-		} else {
-			// No type signature for function binding. Pass arg bindings to body and infer types
-			// for body, then get function signature from updated arg types and body type
+		env.var_types.extend(self.arg_bindings.drain(..));
 
-			let arg_bindings_old_len = self.arg_bindings.len();
+		self.body.infer_types(expected_body_type, env);
 
-			// args: type_to_infer_to, const_def_scopes, var_stack
-			self.body.infer_types(None, const_def_scopes, &mut self.arg_bindings);
+		assert_eq!(env.var_types.len(), vars_len + args_len);
 
-			assert_eq!(self.arg_bindings.len(), arg_bindings_old_len);
-		}
+		self.arg_bindings.extend(env.var_types.drain(vars_len..));
 	}
 }
 
 impl super::VarDef {
 	// NOTE: This is very similar to ConstDef::infer_types, DRY?
-	fn infer_types(&mut self,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
-		self.body.infer_types(self.binding.type_sig.as_ref(), const_def_scopes, var_stack);
+	fn infer_types(&mut self, env: &mut Env) {
+		self.body.infer_types(self.binding.type_sig.as_ref(), env);
 
 		match (&mut self.binding.type_sig, self.body.type_.as_ref()) {
 			(&mut Some(ref expected), Some(found)) if expected != found => panic!(
@@ -381,11 +361,7 @@ impl super::VarDef {
 }
 
 impl ExprMeta {
-	fn infer_types(&mut self,
-		parent_expected_type: Option<&Type>,
-		const_def_scopes: &mut ConstDefScopeStack,
-		var_stack: &mut Vec<TypedBinding>)
-	{
+	fn infer_types(&mut self, parent_expected_type: Option<&Type>, env: &mut Env) {
 		let found_type = {
 			let expected_type = self.type_.as_ref().or(parent_expected_type);
 
@@ -398,23 +374,23 @@ impl ExprMeta {
 				Expr::StrLit(_) => Some(Type::basic("&str")),
 				Expr::Bool(_) => Some(Type::bool()),
 				Expr::Binding(ref path) => {
-					path.infer_types(expected_type, const_def_scopes, var_stack);
-					path.get_type(const_def_scopes, var_stack).cloned()
+					path.infer_types(expected_type, env);
+					path.get_type(env).cloned()
 				},
 				Expr::SExpr(ref mut sexpr) => {
-					sexpr.infer_types(expected_type, const_def_scopes, var_stack);
+					sexpr.infer_types(expected_type, env);
 					sexpr.body_type().cloned()
 				},
 				Expr::Block(ref mut block) => {
-					block.infer_types(expected_type, const_def_scopes, var_stack);
+					block.infer_types(expected_type, env);
 					block.get_type().cloned()
 				},
 				Expr::Cond(ref mut cond) => {
-					cond.infer_types(expected_type, const_def_scopes, var_stack);
+					cond.infer_types(expected_type, env);
 					cond.get_type().cloned()
 				},
 				Expr::Lambda(ref mut lambda) => {
-					lambda.infer_types(expected_type, const_def_scopes);
+					lambda.infer_types(expected_type, env);
 					lambda.get_type()
 				},
 				Expr::VarDef(_) | Expr::Assign(_) => Some(Type::nil()),
@@ -427,24 +403,26 @@ impl ExprMeta {
 
 impl super::AST {
 	pub fn infer_types(&mut self) {
-		let mut const_def_scopes = ConstDefScopeStack::new();
+		let mut const_defs = ConstDefScopeStack::new();
 
 		// Push the module scope on top of the stack
-		const_def_scopes.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
+		const_defs.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
 
-		let mut main = match const_def_scopes.get_at_height_mut("main", 0) {
+		let mut main = match const_defs.get_at_height_mut("main", 0) {
 			Some(main) => main.replace_into_def().unwrap(),
 			None => panic!("AST::infer_types: No main function found")
 		};
 
-		main.infer_types(&mut const_def_scopes);
+		let mut env = Env{ const_defs: const_defs, var_types: Vec::new() };
 
-		const_def_scopes.get_at_height_mut("main", 0).unwrap().insert_def(main);
+		main.infer_types(&mut env);
 
-		if const_def_scopes.height() != 1 {
+		env.const_defs.get_at_height_mut("main", 0).unwrap().insert_def(main);
+
+		if env.const_defs.height() != 1 {
 			panic!("AST::infer_types: Stack is not single scope");
 		}
 
-		self.const_defs = def_scope_to_vec(const_def_scopes.pop().unwrap())
+		self.const_defs = def_scope_to_vec(env.const_defs.pop().unwrap())
 	}
 }
