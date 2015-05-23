@@ -76,7 +76,7 @@
 // Per default, expect that all functions are pure, but make it possible to explicitly mark them as
 // unpure. Similar to unsafe in Rust.
 
-#![feature(non_ascii_idents, box_patterns, rustc_private, collections, collections_drain)]
+#![feature(non_ascii_idents, box_patterns, rustc_private, collections)]
 
 extern crate getopts;
 #[macro_use]
@@ -163,6 +163,7 @@ fn main() {
 
 	let mut ast = ast::AST::parse(&tokens).unwrap();
 	println!("AST:\n{:?}\n", ast);
+
 	ast.infer_types();
 	println!("AST INFERED:\n{:?}\n", ast);
 

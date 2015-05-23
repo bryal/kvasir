@@ -25,9 +25,7 @@ mod inference;
 
 use std::collections::HashMap;
 use std::borrow::Cow;
-
-/// A map of constant definitions
-type ConstDefMap = HashMap<Path, ConstDef>;
+use std::mem::replace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -74,6 +72,10 @@ pub struct Path {
 impl Path {
 	fn new(parts: Vec<String>, is_absolute: bool) -> Path {
 		Path{ parts: parts, is_absolute: is_absolute }
+	}
+
+	fn from_ident(ident: &str) -> Path {
+		Path::new(vec![ident.into()], false)
 	}
 
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
@@ -125,6 +127,127 @@ impl ConstDef {
 
 	fn set_type(&mut self, ty: Option<Type>) {
 		self.binding.type_sig = ty
+	}
+}
+
+enum ConstDefOrType {
+	Def(ConstDef),
+	Type(Option<Type>),
+}
+impl ConstDefOrType {
+	fn get_type(&self) -> Option<&Type> {
+		match self {
+			&ConstDefOrType::Def(ref def) => def.binding.type_sig.as_ref(),
+			&ConstDefOrType::Type(ref ty) => ty.as_ref()
+		}
+	}
+
+	/// Extracts a mutable ConstDef reference from self if self is of variant Def. Else, panic.
+	fn as_def(&mut self) -> Option<&mut ConstDef> {
+		match self {
+			&mut ConstDefOrType::Def(ref mut def) => Some(def),
+			_ => None
+		}
+	}
+
+	/// If variant is Def, return contained ConstDef. Panic otherwise
+	fn unwrap_def(self) -> ConstDef {
+		match self {
+			ConstDefOrType::Def(def) => def,
+			_ => panic!("ConstDefOrType::into_def: Variant wasn't `Def`")
+		}
+	}
+
+	/// If variant is `Def`, replace def with `Type` and return def
+	fn replace_into_def(&mut self) -> Option<ConstDef> {
+		let ty = match self.as_def() {
+			Some(def) => def.binding.type_sig.clone(),
+			None => return None
+		};
+
+		Some(replace(self, ConstDefOrType::Type(ty)).unwrap_def())
+	}
+
+	/// If variant is `Type`, replace self with `Def` variant containing passed def. Panic otherwise
+	fn insert_def(&mut self, def: ConstDef) {
+		match self {
+			&mut ConstDefOrType::Type(_) => *self = ConstDefOrType::Def(def),
+			_ => panic!("ConstDefOrType::insert_def: `self` is already `Type`")
+		}
+	}
+}
+
+type ConstDefScope = HashMap<String, ConstDefOrType>;
+
+/// A stack of scopes of constant definitions. There are no double entries.
+struct ConstDefScopeStack(
+	Vec<ConstDefScope>
+);
+impl ConstDefScopeStack {
+	fn new() -> ConstDefScopeStack {
+		ConstDefScopeStack(Vec::new())
+	}
+
+	fn height(&self) -> usize {
+		self.0.len()
+	}
+
+	fn contains_def(&self, def_ident: &str) -> bool {
+		self.0.iter().any(|scope| scope.contains_key(def_ident))
+	}
+
+	fn get_height(&self, key: &str) -> Option<usize> {
+		for (height, scope) in self.0.iter().enumerate() {
+			if scope.contains_key(key) {
+				return Some(height);
+			}
+		}
+		None
+	}
+
+	fn get(&self, key: &str) -> Option<(&ConstDefOrType, usize)> {
+		for (height, scope) in self.0.iter().enumerate() {
+			if let Some(ref def) = scope.get(key) {
+				return Some((def, height));
+			}
+		}
+		None
+	}
+	fn get_mut(&mut self, key: &str) -> Option<(&mut ConstDefOrType, usize)> {
+		for (height, scope) in self.0.iter_mut().enumerate() {
+			if let Some(def) = scope.get_mut(key) {
+				return Some((def, height));
+			}
+		}
+		None
+	}
+
+	fn get_at_height(&self, key: &str, height: usize) -> Option<&ConstDefOrType> {
+		self.0.get(height).and_then(|scope| scope.get(key))
+	}
+	fn get_at_height_mut(&mut self, key: &str, height: usize) -> Option<&mut ConstDefOrType> {
+		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
+	}
+
+	fn split_from(&mut self, from: usize) -> Vec<ConstDefScope> {
+		self.0.split_off(from)
+	}
+
+	fn push(&mut self, scope: ConstDefScope) {
+		if scope.keys().any(|key| self.contains_def(key)) {
+			panic!("ConstDefScopeStack::push: Key already exists in scope");
+		}
+
+		self.0.push(scope);
+	}
+	fn pop(&mut self) -> Option<ConstDefScope> {
+		self.0.pop()
+	}
+	fn extend<I: IntoIterator<Item=ConstDefScope>>(&mut self, scopes: I) {
+		// TODO: These checks for doubles would preferably be handled somewhere else
+		for scope in scopes {
+			self.push(scope);
+		}
 	}
 }
 
@@ -245,6 +368,7 @@ impl ExprMeta {
 	}
 
 	fn set_type(&mut self, ty: Option<Type>) {
+		// TODO: Try using Cow for speedup
 		match (&mut self.type_, ty) {
 			(&mut Some(ref expected), Some(ref found)) if expected != found => panic!(
 				"ExprMeta::set_type: Type mismatch. Expected `{:?}`, found `{:?}`",

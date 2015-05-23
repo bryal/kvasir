@@ -1,12 +1,1 @@
-(use /std/ops/Add)
-
 (--def-const (:<→ u64> main) (lambda () 1337))
-; fn add(a: u64, b: u64) -> u64 { Add::add(a, b) }
-;(--def-const add (lambda ((:u64 a) (:u64 b))
-;    (:u64 (Add/add a b))))
-
-;(--def-const (:<→ u64 u64> inc) (lambda (x)
-;    (add x 1)))
-
-;(--def-const main (lambda () (:() (block
-;    (inc 10)))))

@@ -1,63 +1,5 @@
 Good read http://www.codecommit.com/blog/scala/what-is-hindley-milner-and-why-is-it-cool
 
-```
-(define (f x) x)
-```
-
-End constraints for this function is (f x: X): X
-When concrete type can't be infered, make the function polymorphic and leave X as a type parameter
-```
-(define (f<T>::<fn (T) T> x: T) x)
-```
-
-
-```
-(define (g x) x)
-
-(define (f x) (block
-	(let ((a 10))
-		(+ (g x) a))))
-
-(define (main) (block
-	(define x (zeroed))
-	(f x)))
-```
-
-
-## Method 1
-
-### Rules
-
-- Start infering in main, work downwards in complexity.
-
-### Procedure
-
-```
-main has no return type
-	infer(main, None)
-
-No specific type is expected from (block ...)
-	infer((block ...), None)
-
-For block, return type is type of tail expression
-	infer((f x), None)
-
-type variables for expression: (f: F x: X): Z
-
-	Expected type adds constraint to Z, but expected is None, so nothing happens.
-	F and X can both gain constraints from definition of f
-		infer(f, None)
-
-
-
-When infering for expression first, infer for arguments.
-	infer(x, None)
-
-
-```
-
-AST: alla items clonas till vector. För varje item inferas typ, och vektorn ski8ckas med mutably.
-
 ## Spec
 
 Constant: `(define c <body>)`
@@ -111,3 +53,14 @@ Not sure what to do with const defs and maps. Should ConstDef contain a TypedBin
 * Let definitions take symbol instead of binding. This would allow for easier pattern matching.
   symbol => bind, expression => compare. E.g:
     `(match x ('(a ,(@ b (+ 3 2)) ,PI) ...))` would correspond to `match x { [a, b, c] if b == 3 + 2 && c == PI => ..., }`
+* Store definitions in a stack of scopes. Pop scopes until the def is found, then send remaining stack along when infering
+
+
+const a 1
+const b {
+	const c 2
+	const d {
+		const e 3
+		const f c
+	}
+}
