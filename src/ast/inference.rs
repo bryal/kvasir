@@ -79,24 +79,45 @@ impl Type {
 		}
 	}
 
-	fn add_constraint<'a>(&'a self, constraint: &'a Type) -> Cow<Type> {
+	fn specialize_to<'a>(&'a self, constraint: &'a Type) -> Cow<Type> {
 		match (self, constraint) {
 			(_, _) if self == constraint => Cow::Borrowed(self),
-			(&Type::Inferred, _) => panic!("Type::add_constraint: Can't specialize unknown type"),
-			(_, &Type::Inferred) => panic!("Type::add_constraint: Constraint is unknown"),
+			(&Type::Inferred, _) => panic!("Type::specialize_to: Can't specialize unknown type"),
+			(_, &Type::Inferred) => panic!("Type::specialize_to: Constraint is unknown"),
 			(&Type::Basic(_), &Type::Basic(_)) if self == constraint => Cow::Borrowed(self),
 			(&Type::Construct(ref s1, ref gens), &Type::Construct(ref s2, ref specs)) =>
 				if s1 == s2
 			{
 				Cow::Owned(Type::Construct(s1.clone(), constrain_related_types(gens, specs)))
 			} else {
-				panic!("Type::specialize_by: Type constructors differ. {:?} != {:?}", s1, s2)
+				panic!("Type::specialize_to: Type constructors differ. {:?} != {:?}", s1, s2)
 			},
 			(&Type::Tuple(ref gens), &Type::Tuple(ref specs)) =>
 				Cow::Owned(Type::Tuple(constrain_related_types(gens, specs))),
 			(&Type::Poly(_), _) => Cow::Borrowed(constraint),
 			(_, &Type::Poly(_)) => Cow::Borrowed(self),
-			_ => panic!("Type::specialize_by: Can't specialize {:?} into {:?}", self, constraint),
+			_ => panic!("Type::specialize_to: Can't specialize {:?} into {:?}", self, constraint),
+		}
+	}
+
+	fn add_constraint<'a>(&'a self, constraint: &'a Type) -> Cow<Type> {
+		match (self, constraint) {
+			(_, _) if self == constraint => Cow::Borrowed(self),
+			(&Type::Inferred, _) => Cow::Borrowed(constraint),
+			(_, &Type::Inferred) => Cow::Borrowed(self),
+			(&Type::Basic(_), &Type::Basic(_)) if self == constraint => Cow::Borrowed(self),
+			(&Type::Construct(ref s1, ref gens), &Type::Construct(ref s2, ref specs)) =>
+				if s1 == s2
+			{
+				Cow::Owned(Type::Construct(s1.clone(), constrain_related_types(gens, specs)))
+			} else {
+				panic!("Type::add_constraint: Type constructors differ. {:?} != {:?}", s1, s2)
+			},
+			(&Type::Tuple(ref gens), &Type::Tuple(ref specs)) =>
+				Cow::Owned(Type::Tuple(constrain_related_types(gens, specs))),
+			(&Type::Poly(_), _) => Cow::Borrowed(constraint),
+			(_, &Type::Poly(_)) => Cow::Borrowed(self),
+			_ => panic!("Type::add_constraint: Can't specialize {:?} into {:?}", self, constraint),
 		}
 	}
 }
@@ -144,7 +165,6 @@ impl Path {
 		} else {
 			panic!("Path::get_type: Not implemented for anything but simple idents")
 		};
-
 		// Fill in the blanks. A known type can't be inferred to be an unknown type
 		general.add_constraint(&constraint.infer_by(general)).into_owned()
 	}
@@ -218,6 +238,7 @@ impl super::SExpr {
 		} else {
 			vec![]
 		};
+
 		let expected_types = if self.func.type_.is_specified() {
 			extract_fn_sig(&self.func.type_)
 				.expect("SExpr::infer_arg_types: Could not extract fn sig")
@@ -226,6 +247,7 @@ impl super::SExpr {
 		} else {
 			inferreds.as_ref()
 		};
+		println!("2 Expected arg types: {:?}", expected_types);
 
 		if self.args.len() != expected_types.len() {
 			panic!("SExpr::infer_arg_types: Arity mismatch. Expected {}, found {}",
@@ -239,13 +261,19 @@ impl super::SExpr {
 	}
 
 	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
+		println!("In {:?}, args: {:?}, expected: {:?}", self.func, self.args, parent_expected_type);
 		self.infer_arg_types(env);
+		println!("Inferred args: {:?}", self.args);
 
 		let expected_fn_type = Type::fn_sig(
 			self.args.iter().map(|tb| tb.type_.clone()).collect(),
 			parent_expected_type.clone());
 
+		println!("Expected Fn: {:?}", expected_fn_type);
+
 		self.func.infer_types(&expected_fn_type, env);
+
+		println!("Inferred Fn: {:?}", self.func);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
@@ -253,6 +281,7 @@ impl super::SExpr {
 		if self.func.type_.is_specified() {
 			self.infer_arg_types(env);
 		}
+		println!("Inferred args2: {:?}", self.args);
 	}
 }
 
@@ -430,13 +459,13 @@ impl super::VarDef {
 }
 
 impl ExprMeta {
-	fn set_type(&mut self, set: &Type) {
-		self.type_ = self.type_.infer_to(set).into_owned();
+	fn set_type(&mut self, set: Type) {
+		self.type_ = set;
 	}
 
 	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
 		let found_type = {
-			let expected_type = self.type_.or(parent_expected_type);
+			let expected_type = self.type_.add_constraint(parent_expected_type);
 
 			match *self.value {
 				// Doesn't have children to infer types for
@@ -447,29 +476,29 @@ impl ExprMeta {
 				Expr::StrLit(_) => Type::basic("&str"),
 				Expr::Bool(_) => Type::bool(),
 				Expr::Binding(ref path) => {
-					path.infer_types(expected_type, env);
-					path.get_type(expected_type, env)
+					path.infer_types(&expected_type, env);
+					path.get_type(&expected_type, env)
 				},
 				Expr::SExpr(ref mut sexpr) => {
-					sexpr.infer_types(expected_type, env);
+					sexpr.infer_types(&expected_type, env);
 					sexpr.body_type().clone()
 				},
 				Expr::Block(ref mut block) => {
-					block.infer_types(expected_type, env);
+					block.infer_types(&expected_type, env);
 					block.get_type().clone()
 				},
 				Expr::Cond(ref mut cond) => {
-					cond.infer_types(expected_type, env);
+					cond.infer_types(&expected_type, env);
 					cond.get_type().clone()
 				},
 				Expr::Lambda(ref mut lambda) => {
-					lambda.infer_types(expected_type, env);
+					lambda.infer_types(&expected_type, env);
 					lambda.get_type()
 				},
 			}
 		};
 
-		self.set_type(&found_type);
+		self.set_type(found_type);
 	}
 }
 
@@ -500,5 +529,94 @@ impl super::AST {
 		}
 
 		self.const_defs = def_scope_to_vec(env.const_defs.pop().unwrap())
+	}
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test]
+	fn test_Type_infer_to() {
+	}
+
+	#[test]
+	fn test_Type_infer_by() {
+	}
+
+	#[test]
+	fn test_Type_add_constraint() {
+	}
+
+	#[test]
+	fn test_constrain_related_types() {
+	}
+
+	#[test]
+	fn test_Path_get_type() {
+	}
+
+	#[test]
+	fn test_Path_infer_types() {
+	}
+
+	#[test]
+	fn test_ConstDef_infer_types() {
+	}
+
+	#[test]
+	fn test_SExpr_body_type() {
+	}
+
+	#[test]
+	fn test_SExpr_infer_arg_types() {
+	}
+
+	#[test]
+	fn test_SExpr_infer_types() {
+	}
+
+	#[test]
+	fn test_Block_get_type() {
+	}
+
+	#[test]
+	fn test_Block_infer_types() {
+	}
+
+	#[test]
+	fn test_Cond_infer_types() {
+	}
+
+	#[test]
+	fn test_inferred_to_polymorphic() {
+	}
+
+	#[test]
+	fn test_Lambda_infer_arg_types() {
+	}
+
+	#[test]
+	fn test_Lambda_get_type() {
+	}
+
+	#[test]
+	fn test_Lambda_infer_types() {
+	}
+
+	#[test]
+	fn test_VarDef_infer_types() {
+	}
+
+	#[test]
+	fn test_ExprMeta_set_type() {
+	}
+
+	#[test]
+	fn test_ExprMeta_infer_types() {
+	}
+
+	#[test]
+	fn test_AST_infer_types() {
 	}
 }
