@@ -1,19 +1,27 @@
-(--def-const if_ (lambda (predicate consequence otherwise)
-    (cond (predicate consequence)
-          (else otherwise))))
+;(--def-const dec (lambda (n) (- n 1)))
+;(--def-const inc (lambda (n) (+ n 1)))
 
-(--def-const neg (lambda (x) (- 0 x)))
+;(--def-const if_ (lambda (predicate consequence otherwise)
+;    (cond (predicate consequence)
+;          (else otherwise))))
 
-(--def-const or (lambda (a b)
-    (cond (a true)
-          (b true)
-          (else false))))
+(--def-const fib (lambda (n)
+    (cond ((= n 0) 0)
+          ((= n 1) 1)
+          (else (+ (fib (- n 1)) (fib (- n 2)))))))
 
-(--def-const gteq (lambda (a b) (or (> a b) (= a b))))
+;(--def-const neg (lambda (x) (- 0 x)))
+;
+;(--def-const or (lambda (a b)
+;    (cond (a true)
+;          (b true)
+;          (else false))))
+;
+;(--def-const gteq (lambda (a b) (or (> a b) (= a b))))
+;
+;(--def-const max (lambda (a b)
+;    (if_ (gteq a b)
+;         a
+;         b)))
 
-(--def-const max (lambda (a b)
-    (if_ (gteq a b)
-         a
-         b)))
-
-(--def-const (:<→ ()> main) (lambda () (println! "{}" (max (neg 1337) (neg 200_000)))))
+(--def-const (:<→ ()> main) (lambda () (println! "{}" (fib 5))))
