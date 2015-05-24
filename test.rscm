@@ -1,15 +1,17 @@
+;(--def-const if_ (lambda (p c e) (cond (p c) (else e))))
+
+(--def-const minus (lambda (a b) (- a b)))
+
 ;(--def-const or (lambda (a b)
-;    (cond (a a)
-;          (b b)
-;          (else a))))
+;    (cond (a true)
+;          (b true)
+;          (else false))))
+;
+;(--def-const gteq (lambda (a b) (or (> a b) (= a b))))
 
-(--def-const max (lambda (a b)
-    (cond ((> a b) a)
-          ((= a b) a)
-          (else b))))
+;(--def-const max (lambda (a b)
+;    (if_ (gteq a b)
+;         a
+;         b)))
 
-(--def-const if_then (lambda (i c e)
-    (cond (i c)
-          (else e))))
-
-(--def-const (:<→ ()> main) (lambda () (println! "Number {}" (if_then true 1 0))))
+(--def-const (:<→ ()> main) (lambda () (println! "{}" (minus 3 4))))

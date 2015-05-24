@@ -26,15 +26,15 @@ use super::{ Type };
 
 pub fn core_consts() -> HashMap<&'static str, Type> {
 	HashMap::from_iter(vec![
-		("+", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
-		("-", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
-		("*", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
-		("/", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::basic("u64"))),
-		("=", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
-		("<", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
-		(">", Type::fn_sig(vec![Type::basic("u64"), Type::basic("u64")], Type::bool())),
+		("+", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
+		("-", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
+		("*", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
+		("/", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
+		("=", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
+		("<", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
+		(">", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
 		("true", Type::bool()),
 		("false", Type::bool()),
-		("println!", Type::fn_sig(vec![Type::basic("&str"), Type::basic("u64")], Type::nil())),
+		("println!", Type::fn_sig(vec![Type::basic("&str"), Type::poly("T")], Type::nil())),
 	])
 }

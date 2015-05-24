@@ -60,13 +60,14 @@ impl Type {
 	fn nil() -> Type {
 		Type::Tuple(vec![])
 	}
-
 	fn basic<T: Into<String>>(ts: T) -> Type {
 		Type::Basic(ts.into())
 	}
-
 	fn construct<T: Into<String>>(constructor: T, args: Vec<Type>) -> Type {
 		Type::Construct(constructor.into(), args)
+	}
+	fn poly<T: Into<String>>(ts: T) -> Type {
+		Type::Poly(ts.into())
 	}
 
 	fn fn_sig(mut arg_tys: Vec<Type>, return_ty: Type) -> Type {
@@ -84,6 +85,7 @@ impl Type {
 			_ => false
 		}
 	}
+	// TODO: Remake into something like `is_known`, include partial constructors etc.
 	fn is_specified(&self) -> bool {
 		!self.is_inferred()
 	}
@@ -96,71 +98,6 @@ impl Type {
 
 	fn or<'a>(&'a self, other: &'a Type) -> &Type {
 		if self.is_specified() { self } else { other }
-	}
-
-
-	fn specialize_by<'a>(&'a self, criterium: &'a Type) -> Cow<Type> {
-		match (self, criterium) {
-			(&Type::Inferred, _) => panic!("Type::specialize_by: `self` is `Inferred`"),
-			(_, &Type::Inferred) => Cow::Borrowed(self),
-			(&Type::Basic(_), &Type::Basic(_)) if self == criterium => Cow::Borrowed(self),
-			(&Type::Construct(ref s1, ref gens), &Type::Construct(ref s2, ref specs)) =>
-				if s1 == s2 && gens == specs
-			{
-				Cow::Borrowed(self)
-			} else if s1 == s2 {
-				Cow::Owned(Type::Construct(s1.clone(), specialize_related(gens, specs)))
-			} else {
-				panic!("Type::specialize: Type constructors differ. {:?} != {:?}", s1, s2)
-			},
-			(&Type::Tuple(ref gens), &Type::Tuple(ref specs)) => if gens == specs {
-				Cow::Borrowed(self)
-			} else {
-				Cow::Owned(Type::Tuple(specialize_related(gens, specs)))
-			},
-			(&Type::Poly(_), _) => Cow::Borrowed(criterium),
-			_ => panic!("Type::specialize: Can't specialize {:?} into {:?}", self, criterium),
-		}
-	}
-}
-
-fn specialize_related(generals: &[Type], criteria: &[Type]) -> Vec<Type> {
-	if generals.len() != criteria.len() {
-		panic!("specialize_related: Slices differ in length");
-	}
-
-	let mut specializing: Vec<_> = generals.into();
-
-	for (i, criterium) in criteria.iter().enumerate() {
-		if specializing[i].is_poly() {
-			let current_specializing = specializing[i].clone();
-			let specialized = current_specializing.specialize_by(criterium);
-
-			let same_type_args: Vec<_> = specializing[i..].iter_mut()
-				.filter(|ty| *ty == &current_specializing)
-				.collect();
-
-			for same in same_type_args {
-				*same = (&*specialized).clone();
-			}
-		} else {
-			specializing[i] = specializing[i].specialize_by(criterium).into_owned();
-		}
-	}
-
-	specializing
-}
-
-/// If `lhs` is Inferred, assign to it `rhs`. If types conflict, panic. Ignore other cases
-fn assign_type(lhs: &mut Type, rhs: Cow<Type>) {
-	match (lhs, rhs) {
-		(lhs @ &mut Type::Inferred, found) => *lhs = found.into_owned(),
-		(lhs @ &mut Type::Poly(_), found) => *lhs = found.into_owned(),
-		(&mut ref expected, ref found) if expected != &**found => panic!(
-			"assign_type: Type mismatch. Expected `{:?}`, found `{:?}`",
-			expected,
-			found),
-		_ => ()
 	}
 }
 
@@ -471,10 +408,6 @@ impl ExprMeta {
 	fn nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::nil()) }
 
 	pub fn expr(&mut self) -> &mut Expr { &mut self.value }
-
-	fn set_type(&mut self, set: Type) {
-		assign_type(&mut self.type_, Cow::Owned(set))
-	}
 }
 
 #[derive(Debug)]

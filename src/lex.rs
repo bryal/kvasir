@@ -115,7 +115,7 @@ fn is_ident_char(c: char) -> bool {
 }
 
 /// Tokenize a whitespace-less string of code (except in string literals)
-fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
+pub fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 	if word.starts_with('"') || word.starts_with(r#"r""#) || word.starts_with("r#") {
 		// The word is a string
 		return Ok(vec![Token::String(word)]);
@@ -178,42 +178,45 @@ pub fn tokenize_string(src: &str) -> Result<Vec<Token>, String> {
 	}
 }
 
-#[test]
-fn test_split_by_whitespace() {
-	let src = r##"(foo _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
-	assert_eq!(&split_by_whitespace(src).unwrap(), &[
-		"(foo", "_Bar", r#"r"b a ""#, r##"r#"s 1 4"#"##, "4_100.125:", "Xyz"
-	]);
-}
 
-#[test]
-fn test_tokenize_word() {
-	use lex::Token::*;
+#[cfg(test)]
+mod test {
+	use super::*;
+	use super::Token::*;
 
-	let src = "(4_100.125!)";
-	assert_eq!(&tokenize_word(src).unwrap(), &[
-		LParen, Number("4_100.125"), Exclamation, RParen
-	]);
-}
+	#[test]
+	fn test_split_by_whitespace() {
+		let src = r##"(foo _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
+		assert_eq!(&split_by_whitespace(src).unwrap(), &[
+			"(foo", "_Bar", r#"r"b a ""#, r##"r#"s 1 4"#"##, "4_100.125:", "Xyz"
+		]);
+	}
 
-#[test]
-fn test_tokenize_string() {
-	use lex::Token::*;
+	#[test]
+	fn test_tokenize_word() {
+		let src = "(:4_100.125)";
+		assert_eq!(&tokenize_word(src).unwrap(), &[
+			LParen, Colon, Number("4_100.125"), RParen
+		]);
+	}
 
-	let src = r##"(f00 _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
-	assert_eq!(&tokenize_string(src).unwrap(), &[
-		LParen,
-		Ident("f00"),
-		Ident("_Bar"),
-		String(r#"r"b a ""#),
-		String(r##"r#"s 1 4"#"##),
-		Number("4_100.125"),
-		Colon,
-		Ident("Xyz")
-	]);
+	#[test]
+	fn test_tokenize_string() {
+		let src = r##"(f00 _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
+		assert_eq!(&tokenize_string(src).unwrap(), &[
+			LParen,
+			Ident("f00"),
+			Ident("_Bar"),
+			String(r#"r"b a ""#),
+			String(r##"r#"s 1 4"#"##),
+			Number("4_100.125"),
+			Colon,
+			Ident("Xyz")
+		]);
 
-	let src = r#"[foo?::<T> _bar_)"#;
-	assert_eq!(&tokenize_string(src).unwrap(), &[
-		LBracket, Ident("foo?"), Colon, Colon, LT, Ident("T"), GT, Ident("_bar_"), RParen
-	]);
+		let src = r#"[foo?::<T> _bar_)"#;
+		assert_eq!(&tokenize_string(src).unwrap(), &[
+			LBracket, Ident("foo?"), Colon, Colon, LT, Ident("T"), GT, Ident("_bar_"), RParen
+		]);
+	}
 }
