@@ -247,7 +247,6 @@ impl super::SExpr {
 		} else {
 			inferreds.as_ref()
 		};
-		println!("2 Expected arg types: {:?}", expected_types);
 
 		if self.args.len() != expected_types.len() {
 			panic!("SExpr::infer_arg_types: Arity mismatch. Expected {}, found {}",
@@ -261,19 +260,13 @@ impl super::SExpr {
 	}
 
 	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
-		println!("In {:?}, args: {:?}, expected: {:?}", self.func, self.args, parent_expected_type);
 		self.infer_arg_types(env);
-		println!("Inferred args: {:?}", self.args);
 
 		let expected_fn_type = Type::fn_sig(
 			self.args.iter().map(|tb| tb.type_.clone()).collect(),
 			parent_expected_type.clone());
 
-		println!("Expected Fn: {:?}", expected_fn_type);
-
 		self.func.infer_types(&expected_fn_type, env);
-
-		println!("Inferred Fn: {:?}", self.func);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
@@ -281,7 +274,6 @@ impl super::SExpr {
 		if self.func.type_.is_specified() {
 			self.infer_arg_types(env);
 		}
-		println!("Inferred args2: {:?}", self.args);
 	}
 }
 

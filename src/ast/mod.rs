@@ -27,6 +27,7 @@ mod core_lib;
 use std::collections::HashMap;
 use std::borrow::Cow;
 use std::mem::replace;
+use std::fmt;
 
 struct Env {
 	core_consts: HashMap<&'static str, Type>,
@@ -48,7 +49,11 @@ impl Env {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+fn list_items_to_string<T: fmt::Debug>(list: &[T]) -> String {
+	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum Type {
 	Inferred,
 	Basic(String),
@@ -100,16 +105,34 @@ impl Type {
 		if self.is_specified() { self } else { other }
 	}
 }
+impl fmt::Debug for Type {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			&Type::Inferred => write!(f, "_"),
+			&Type::Basic(ref s) => write!(f, "{}", s),
+			&Type::Construct(ref constr, ref args) => write!(f, "<{}{}>",
+				constr,
+				list_items_to_string(&args)),
+			&Type::Tuple(ref tys) => write!(f, "({})", list_items_to_string(tys)),
+			&Type::Poly(ref poly) => write!(f, "{}", poly),
+		}
+	}
+}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TypedBinding {
 	pub ident: String,
 	pub type_sig: Type,
 }
+impl fmt::Debug for TypedBinding {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(:{:?} {})", self.type_sig, self.ident)
+	}
+}
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
 /// of a path to a function or constant in an expression.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Path {
 	parts: Vec<String>,
 	is_absolute: bool,
@@ -149,18 +172,23 @@ impl PartialEq<str> for Path {
 		self.to_str() == rhs
 	}
 }
-impl ::std::fmt::Display for Path {
-	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+impl fmt::Debug for Path {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_str(&self.to_str())
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Use {
 	pub paths: Vec<Path>,
 }
+impl fmt::Debug for Use {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(Use ({}))", list_items_to_string(&self.paths))
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConstDef {
 	pub binding: TypedBinding,
 	pub body: ExprMeta,
@@ -172,6 +200,11 @@ impl ConstDef {
 
 	fn set_type(&mut self, ty: Type) {
 		self.binding.type_sig = ty
+	}
+}
+impl fmt::Debug for ConstDef {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(ConstDef {:?} {:?})", self.binding, self.body)
 	}
 }
 
@@ -296,20 +329,33 @@ impl ConstDefScopeStack {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SExpr {
 	pub func: ExprMeta,
 	pub args: Vec<ExprMeta>,
 }
+impl fmt::Debug for SExpr {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "({:?} {})", self.func, list_items_to_string(&self.args))
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Block {
 	pub uses: Vec<Use>,
 	pub const_defs: Vec<ConstDef>,
 	pub exprs: Vec<ExprMeta>,
 }
+impl fmt::Debug for Block {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(Block {} {} {})",
+			list_items_to_string(&self.uses),
+			list_items_to_string(&self.const_defs),
+			list_items_to_string(&self.exprs))
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Cond {
 	pub clauses: Vec<(ExprMeta, ExprMeta)>,
 	pub else_clause: Option<ExprMeta>
@@ -346,28 +392,53 @@ impl Cond {
 		}
 	}
 }
+impl fmt::Debug for Cond {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(Cond {}{})",
+			list_items_to_string(&self.clauses),
+			self.else_clause.as_ref().map(|e| format!(" {:?}", e)).unwrap_or("".into()))
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Lambda {
 	pub arg_bindings: Vec<TypedBinding>,
 	pub body: ExprMeta
 }
+impl fmt::Debug for Lambda {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(Lambda ({}) {:?})", list_items_to_string(&self.arg_bindings), self.body)
+	}
+}
 
 // TODO: Separate into declaration and assignment. Let VarDecl create an l-value
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VarDef {
 	pub binding: TypedBinding,
 	pub mutable: bool,
 	pub body: ExprMeta,
 }
+impl fmt::Debug for VarDef {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(VarDef{} {:?} {:?})",
+			if self.mutable { " mut" } else { "" },
+			self.binding,
+			self.body)
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Assign {
 	pub lvalue: TypedBinding,
 	pub rvalue: ExprMeta,
 }
+impl fmt::Debug for Assign {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(Assign {:?} {:?})", self.lvalue, self.rvalue)
+	}
+}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Expr {
 	Nil,
 	NumLit(String),
@@ -390,9 +461,26 @@ impl Expr {
 		}
 	}
 }
+impl fmt::Debug for Expr {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			&Expr::Nil => write!(f, "()"),
+			&Expr::NumLit(ref n) => write!(f, "{}", n),
+			&Expr::StrLit(ref s) => write!(f, "{}", s),
+			&Expr::Bool(ref b) => write!(f, "{}", b),
+			&Expr::Binding(ref p) => write!(f, "{:?}", p),
+			&Expr::SExpr(ref e) => write!(f, "{:?}", e),
+			&Expr::Block(ref b) => write!(f, "{:?}", b),
+			&Expr::Cond(ref c) => write!(f, "{:?}", c),
+			&Expr::Lambda(ref l) => write!(f, "{:?}", l),
+			&Expr::VarDef(ref v) => write!(f, "{:?}", v),
+			&Expr::Assign(ref a) => write!(f, "{:?}", a)
+		}
+	}
+}
 
 /// An expression with additional attributes such as type information
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExprMeta {
 	pub value: Box<Expr>,
 	pub type_: Type
@@ -409,6 +497,11 @@ impl ExprMeta {
 
 	pub fn expr(&mut self) -> &mut Expr { &mut self.value }
 }
+impl fmt::Debug for ExprMeta {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(:{:?} {:?})", self.type_, self.value)
+	}
+}
 
 #[derive(Debug)]
 pub enum Item {
@@ -417,8 +510,15 @@ pub enum Item {
 	Expr(ExprMeta),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AST {
 	pub uses: Vec<Use>,
 	pub const_defs: Vec<ConstDef>,
+}
+impl fmt::Debug for AST {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "(AST {} {})",
+			list_items_to_string(&self.uses),
+			list_items_to_string(&self.const_defs))
+	}
 }
