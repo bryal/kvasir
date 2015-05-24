@@ -27,7 +27,7 @@
 //! 	* Rust AST ☐
 //! 	* LLVM something ☐
 
-use ast::*;
+use front::*;
 
 pub trait ToRustSrc {
 	fn to_rust(&self) -> String;

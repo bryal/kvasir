@@ -20,36 +20,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-mod parse;
-mod inference;
-mod core_lib;
-
-use std::collections::HashMap;
 use std::borrow::Cow;
-use std::mem::replace;
-use std::fmt;
+use std::fmt::{ self, Debug };
 
-struct Env {
-	core_consts: HashMap<&'static str, Type>,
-	const_defs: ConstDefScopeStack,
-	var_types: Vec<TypedBinding>
-}
-impl Env {
-	fn get_var_type(&self, ident: &str) -> Option<&Type> {
-		self.var_types.iter()
-			.rev()
-			.find(|stack_tb| stack_tb.ident == ident)
-			.map(|stack_tb| &stack_tb.type_sig)
-	}
-	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Type> {
-		self.var_types.iter_mut()
-			.rev()
-			.find(|stack_tb| stack_tb.ident == bnd)
-			.map(|stack_tb| &mut stack_tb.type_sig)
-	}
-}
-
-fn list_items_to_string<T: fmt::Debug>(list: &[T]) -> String {
+fn list_items_to_string<T: Debug>(list: &[T]) -> String {
 	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
 }
 
@@ -62,36 +36,28 @@ pub enum Type {
 	Poly(String)
 }
 impl Type {
-	fn nil() -> Type {
-		Type::Tuple(vec![])
-	}
-	fn basic<T: Into<String>>(ts: T) -> Type {
-		Type::Basic(ts.into())
-	}
-	fn construct<T: Into<String>>(constructor: T, args: Vec<Type>) -> Type {
+	pub fn new_nil() -> Type { Type::Tuple(vec![]) }
+	pub fn new_basic<T: Into<String>>(ts: T) -> Type { Type::Basic(ts.into()) }
+	pub fn new_construct<T: Into<String>>(constructor: T, args: Vec<Type>) -> Type {
 		Type::Construct(constructor.into(), args)
 	}
-	fn poly<T: Into<String>>(ts: T) -> Type {
-		Type::Poly(ts.into())
-	}
-
-	fn fn_sig(mut arg_tys: Vec<Type>, return_ty: Type) -> Type {
+	pub fn new_poly<T: Into<String>>(ts: T) -> Type { Type::Poly(ts.into()) }
+	pub fn new_fn(mut arg_tys: Vec<Type>, return_ty: Type) -> Type {
 		arg_tys.push(return_ty);
 		Type::Construct("→".into(), arg_tys)
 	}
-
-	fn bool() -> Type {
+	pub fn new_bool() -> Type {
 		Type::Basic("bool".into())
 	}
 
-	fn is_inferred(&self) -> bool {
+	pub fn is_inferred(&self) -> bool {
 		match self {
 			&Type::Inferred => true,
 			_ => false
 		}
 	}
 	// TODO: Remake into something like `is_known`, include partial constructors etc.
-	fn is_specified(&self) -> bool {
+	pub fn is_specified(&self) -> bool {
 		!self.is_inferred()
 	}
 	pub fn is_poly(&self) -> bool {
@@ -101,11 +67,11 @@ impl Type {
 		}
 	}
 
-	fn or<'a>(&'a self, other: &'a Type) -> &Type {
+	pub fn or<'a>(&'a self, other: &'a Type) -> &Type {
 		if self.is_specified() { self } else { other }
 	}
 }
-impl fmt::Debug for Type {
+impl Debug for Type {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			&Type::Inferred => write!(f, "_"),
@@ -124,11 +90,12 @@ pub struct TypedBinding {
 	pub ident: String,
 	pub type_sig: Type,
 }
-impl fmt::Debug for TypedBinding {
+impl Debug for TypedBinding {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(:{:?} {})", self.type_sig, self.ident)
 	}
 }
+
 
 /// A path to an expression or item. Could be a path to a module in a use statement,
 /// of a path to a function or constant in an expression.
@@ -138,20 +105,30 @@ pub struct Path {
 	is_absolute: bool,
 }
 impl Path {
-	fn new(parts: Vec<String>, is_absolute: bool) -> Path {
+	pub fn new(parts: Vec<String>, is_absolute: bool) -> Path {
 		Path{ parts: parts, is_absolute: is_absolute }
 	}
-
-	fn from_ident(ident: &str) -> Path {
+	pub fn from_ident(ident: &str) -> Path {
 		Path::new(vec![ident.into()], false)
 	}
 
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
 
+	pub fn concat(mut self, other: Path) -> Result<Path, String> {
+		if other.is_absolute {
+			Err(format!(
+				"Path::concat: `{}` is an absolute path",
+				other.to_str()))
+		} else {
+			self.parts.extend(other.parts);
+			Ok(self)
+		}
+	}
+
 	pub fn parts(&self) -> &[String] { &self.parts }
 
 	/// If self is just a simple ident, return it as Some
-	fn ident(&self) -> Option<&str> {
+	pub fn ident(&self) -> Option<&str> {
 		if self.parts.len() == 1 && !self.is_absolute {
 			Some(&self.parts[0])
 		} else {
@@ -172,7 +149,7 @@ impl PartialEq<str> for Path {
 		self.to_str() == rhs
 	}
 }
-impl fmt::Debug for Path {
+impl Debug for Path {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_str(&self.to_str())
 	}
@@ -182,7 +159,7 @@ impl fmt::Debug for Path {
 pub struct Use {
 	pub paths: Vec<Path>,
 }
-impl fmt::Debug for Use {
+impl Debug for Use {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Use ({}))", list_items_to_string(&self.paths))
 	}
@@ -193,139 +170,9 @@ pub struct ConstDef {
 	pub binding: TypedBinding,
 	pub body: ExprMeta,
 }
-impl ConstDef {
-	fn get_type(&self) -> &Type {
-		&self.binding.type_sig
-	}
-
-	fn set_type(&mut self, ty: Type) {
-		self.binding.type_sig = ty
-	}
-}
-impl fmt::Debug for ConstDef {
+impl Debug for ConstDef {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(ConstDef {:?} {:?})", self.binding, self.body)
-	}
-}
-
-enum ConstDefOrType {
-	Def(ConstDef),
-	Type(Type),
-}
-impl ConstDefOrType {
-	fn get_type(&self) -> &Type {
-		match self {
-			&ConstDefOrType::Def(ref def) => &def.binding.type_sig,
-			&ConstDefOrType::Type(ref ty) => &ty
-		}
-	}
-
-	/// Extracts a mutable ConstDef reference from self if self is of variant Def. Else, panic.
-	fn as_def(&mut self) -> Option<&mut ConstDef> {
-		match self {
-			&mut ConstDefOrType::Def(ref mut def) => Some(def),
-			_ => None
-		}
-	}
-
-	/// If variant is Def, return contained ConstDef. Panic otherwise
-	fn unwrap_def(self) -> ConstDef {
-		match self {
-			ConstDefOrType::Def(def) => def,
-			_ => panic!("ConstDefOrType::into_def: Variant wasn't `Def`")
-		}
-	}
-
-	/// If variant is `Def`, replace def with `Type` and return def
-	fn replace_into_def(&mut self) -> Option<ConstDef> {
-		let ty = match self.as_def() {
-			Some(def) => def.binding.type_sig.clone(),
-			None => return None
-		};
-
-		Some(replace(self, ConstDefOrType::Type(ty)).unwrap_def())
-	}
-
-	/// If variant is `Type`, replace self with `Def` variant containing passed def. Panic otherwise
-	fn insert_def(&mut self, def: ConstDef) {
-		match self {
-			&mut ConstDefOrType::Type(_) => *self = ConstDefOrType::Def(def),
-			_ => panic!("ConstDefOrType::insert_def: `self` is already `Type`")
-		}
-	}
-}
-
-type ConstDefScope = HashMap<String, ConstDefOrType>;
-
-/// A stack of scopes of constant definitions. There are no double entries.
-struct ConstDefScopeStack(
-	Vec<ConstDefScope>
-);
-impl ConstDefScopeStack {
-	fn new() -> ConstDefScopeStack {
-		ConstDefScopeStack(Vec::new())
-	}
-
-	fn height(&self) -> usize {
-		self.0.len()
-	}
-
-	fn contains_def(&self, def_ident: &str) -> bool {
-		self.0.iter().any(|scope| scope.contains_key(def_ident))
-	}
-
-	fn get_height(&self, key: &str) -> Option<usize> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if scope.contains_key(key) {
-				return Some(height);
-			}
-		}
-		None
-	}
-
-	fn get(&self, key: &str) -> Option<(&ConstDefOrType, usize)> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if let Some(ref def) = scope.get(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-	fn get_mut(&mut self, key: &str) -> Option<(&mut ConstDefOrType, usize)> {
-		for (height, scope) in self.0.iter_mut().enumerate() {
-			if let Some(def) = scope.get_mut(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-
-	fn get_at_height(&self, key: &str, height: usize) -> Option<&ConstDefOrType> {
-		self.0.get(height).and_then(|scope| scope.get(key))
-	}
-	fn get_at_height_mut(&mut self, key: &str, height: usize) -> Option<&mut ConstDefOrType> {
-		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
-	}
-
-	fn split_from(&mut self, from: usize) -> Vec<ConstDefScope> {
-		self.0.split_off(from)
-	}
-
-	fn push(&mut self, scope: ConstDefScope) {
-		if scope.keys().any(|key| self.contains_def(key)) {
-			panic!("ConstDefScopeStack::push: Key already exists in scope");
-		}
-
-		self.0.push(scope);
-	}
-	fn pop(&mut self) -> Option<ConstDefScope> {
-		self.0.pop()
-	}
-	fn extend<I: IntoIterator<Item=ConstDefScope>>(&mut self, scopes: I) {
-		// TODO: These checks for doubles would preferably be handled somewhere else
-		for scope in scopes {
-			self.push(scope);
-		}
 	}
 }
 
@@ -334,7 +181,7 @@ pub struct SExpr {
 	pub func: ExprMeta,
 	pub args: Vec<ExprMeta>,
 }
-impl fmt::Debug for SExpr {
+impl Debug for SExpr {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "({:?} {})", self.func, list_items_to_string(&self.args))
 	}
@@ -346,7 +193,7 @@ pub struct Block {
 	pub const_defs: Vec<ConstDef>,
 	pub exprs: Vec<ExprMeta>,
 }
-impl fmt::Debug for Block {
+impl Debug for Block {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Block {} {} {})",
 			list_items_to_string(&self.uses),
@@ -362,37 +209,28 @@ pub struct Cond {
 }
 impl Cond {
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_clauses<'a>(&'a self) -> Box<Iterator<Item=(Cow<ExprMeta>, &ExprMeta)> + 'a> {
+	pub fn iter_clauses<'a>(&'a self) -> Box<Iterator<Item=(Cow<ExprMeta>, &ExprMeta)> + 'a> {
 		Box::new(self.clauses.iter()
 			.map(|&(ref p, ref c)| (Cow::Borrowed(p), c))
 			.chain(self.else_clause.iter().map(|c| (Cow::Owned(ExprMeta::new_true()), c))))
 	}
-
 	/// Iterate over predicates of clauses.
 	/// This excludes the else clause, since it contains no predicate
-	fn iter_predicates_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
+	pub fn iter_predicates_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
 		Box::new(self.clauses.iter_mut().map(|&mut (ref mut p, _)| p))
 	}
-
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_consequences<'a>(&'a self) -> Box<Iterator<Item=&ExprMeta> + 'a> {
+	pub fn iter_consequences<'a>(&'a self) -> Box<Iterator<Item=&ExprMeta> + 'a> {
 		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))
 	}
 	/// Iterate over all clauses of self, including the else clause
-	fn iter_consequences_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
+	pub fn iter_consequences_mut<'a>(&'a mut self) -> Box<Iterator<Item=&mut ExprMeta> + 'a> {
 		Box::new(self.clauses.iter_mut()
 			.map(|&mut (_, ref mut c)| c)
 			.chain(self.else_clause.iter_mut()))
 	}
-
-	fn get_type(&self) -> &Type {
-		match self.iter_consequences().map(|c| &c.type_).find(|ty| ty.is_specified()) {
-			Some(found) => found,
-			None => &self.iter_consequences().next().unwrap().type_
-		}
-	}
 }
-impl fmt::Debug for Cond {
+impl Debug for Cond {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Cond {}{})",
 			list_items_to_string(&self.clauses),
@@ -405,7 +243,7 @@ pub struct Lambda {
 	pub arg_bindings: Vec<TypedBinding>,
 	pub body: ExprMeta
 }
-impl fmt::Debug for Lambda {
+impl Debug for Lambda {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Lambda ({}) {:?})", list_items_to_string(&self.arg_bindings), self.body)
 	}
@@ -418,7 +256,7 @@ pub struct VarDef {
 	pub mutable: bool,
 	pub body: ExprMeta,
 }
-impl fmt::Debug for VarDef {
+impl Debug for VarDef {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(VarDef{} {:?} {:?})",
 			if self.mutable { " mut" } else { "" },
@@ -432,7 +270,7 @@ pub struct Assign {
 	pub lvalue: TypedBinding,
 	pub rvalue: ExprMeta,
 }
-impl fmt::Debug for Assign {
+impl Debug for Assign {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Assign {:?} {:?})", self.lvalue, self.rvalue)
 	}
@@ -453,7 +291,7 @@ pub enum Expr {
 	Assign(Assign)
 }
 impl Expr {
-	fn is_var_def(&self) -> bool {
+	pub fn is_var_def(&self) -> bool {
 		if let Expr::VarDef(_) = *self {
 			true
 		} else {
@@ -461,7 +299,7 @@ impl Expr {
 		}
 	}
 }
-impl fmt::Debug for Expr {
+impl Debug for Expr {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			&Expr::Nil => write!(f, "()"),
@@ -486,18 +324,16 @@ pub struct ExprMeta {
 	pub type_: Type
 }
 impl ExprMeta {
-	fn new(value: Expr, ty: Type) -> ExprMeta {
+	pub fn new(value: Expr, ty: Type) -> ExprMeta {
 		ExprMeta{ value: Box::new(value), type_: ty }
 	}
-
-	fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::bool()) }
-	fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::bool()) }
-
-	fn nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::nil()) }
+	pub fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::new_bool()) }
+	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_bool()) }
+	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
 
 	pub fn expr(&mut self) -> &mut Expr { &mut self.value }
 }
-impl fmt::Debug for ExprMeta {
+impl Debug for ExprMeta {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(:{:?} {:?})", self.type_, self.value)
 	}
@@ -515,7 +351,7 @@ pub struct AST {
 	pub uses: Vec<Use>,
 	pub const_defs: Vec<ConstDef>,
 }
-impl fmt::Debug for AST {
+impl Debug for AST {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(AST {} {})",
 			list_items_to_string(&self.uses),

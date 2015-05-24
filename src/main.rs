@@ -88,11 +88,12 @@ use std::io::{ Read };
 use std::fs::File;
 use std::path::PathBuf;
 
-use compile::compile;
+pub use front::AST;
+use front::tokenize_string;
+use back::compile;
 
-mod compile;
-mod ast;
-mod lex;
+mod front;
+mod back;
 
 #[cfg(unix)]
 const BIN_EXTENSION: &'static str = "bin";
@@ -159,9 +160,9 @@ fn main() {
 	let mut scr_code = String::with_capacity(4_000);
 	File::open(inp_file_name).unwrap().read_to_string(&mut scr_code).unwrap();
 
-	let tokens = lex::tokenize_string(&scr_code).unwrap();
+	let tokens = tokenize_string(&scr_code).unwrap();
 
-	let mut ast = ast::AST::parse(&tokens).unwrap();
+	let mut ast = AST::parse(&tokens).unwrap();
 	println!("AST:\n{:?}\n", ast);
 
 	ast.infer_types();

@@ -22,19 +22,19 @@
 
 use std::iter::FromIterator;
 use std::collections::HashMap;
-use super::{ Type };
+use super::Type;
 
 pub fn core_consts() -> HashMap<&'static str, Type> {
 	HashMap::from_iter(vec![
-		("+", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
-		("-", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
-		("*", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
-		("/", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::basic("i64"))),
-		("=", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
-		("<", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
-		(">", Type::fn_sig(vec![Type::basic("i64"), Type::basic("i64")], Type::bool())),
-		("true", Type::bool()),
-		("false", Type::bool()),
-		("println!", Type::fn_sig(vec![Type::basic("&str"), Type::poly("T")], Type::nil())),
+		("+", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
+		("-", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
+		("*", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
+		("/", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
+		("=", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
+		("<", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
+		(">", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
+		("true", Type::new_bool()),
+		("false", Type::new_bool()),
+		("println!", Type::new_fn(vec![Type::new_basic("&str"), Type::new_poly("T")], Type::new_nil())),
 	])
 }

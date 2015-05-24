@@ -31,12 +31,153 @@
 //       Maybe encapsulate this using some kind of State object
 // TODO: Add field on things to keep track of whether inference has happened
 
+use std::collections::HashMap;
 use std::mem::replace;
 use std::iter::repeat;
 use std::borrow::Cow;
-use super::{ ConstDef, ConstDefOrType, ConstDefScope, ConstDefScopeStack,
-	Type, TypedBinding, Expr, ExprMeta, Path, Env };
+use super::*;
 use super::core_lib::core_consts;
+
+struct Env {
+	core_consts: HashMap<&'static str, Type>,
+	const_defs: ConstDefScopeStack,
+	var_types: Vec<TypedBinding>
+}
+impl Env {
+	fn get_var_type(&self, ident: &str) -> Option<&Type> {
+		self.var_types.iter()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == ident)
+			.map(|stack_tb| &stack_tb.type_sig)
+	}
+	fn get_var_type_mut(&mut self, bnd: &str) -> Option<&mut Type> {
+		self.var_types.iter_mut()
+			.rev()
+			.find(|stack_tb| stack_tb.ident == bnd)
+			.map(|stack_tb| &mut stack_tb.type_sig)
+	}
+}
+
+enum ConstDefOrType {
+	Def(ConstDef),
+	Type(Type),
+}
+impl ConstDefOrType {
+	fn get_type(&self) -> &Type {
+		match self {
+			&ConstDefOrType::Def(ref def) => &def.binding.type_sig,
+			&ConstDefOrType::Type(ref ty) => &ty
+		}
+	}
+
+	/// Extracts a mutable ConstDef reference from self if self is of variant Def. Else, panic.
+	fn as_def(&mut self) -> Option<&mut ConstDef> {
+		match self {
+			&mut ConstDefOrType::Def(ref mut def) => Some(def),
+			_ => None
+		}
+	}
+
+	/// If variant is Def, return contained ConstDef. Panic otherwise
+	fn unwrap_def(self) -> ConstDef {
+		match self {
+			ConstDefOrType::Def(def) => def,
+			_ => panic!("ConstDefOrType::into_def: Variant wasn't `Def`")
+		}
+	}
+
+	/// If variant is `Def`, replace def with `Type` and return def
+	fn replace_into_def(&mut self) -> Option<ConstDef> {
+		let ty = match self.as_def() {
+			Some(def) => def.binding.type_sig.clone(),
+			None => return None
+		};
+
+		Some(replace(self, ConstDefOrType::Type(ty)).unwrap_def())
+	}
+
+	/// If variant is `Type`, replace self with `Def` variant containing passed def. Panic otherwise
+	fn insert_def(&mut self, def: ConstDef) {
+		match self {
+			&mut ConstDefOrType::Type(_) => *self = ConstDefOrType::Def(def),
+			_ => panic!("ConstDefOrType::insert_def: `self` is already `Type`")
+		}
+	}
+}
+
+type ConstDefScope = HashMap<String, ConstDefOrType>;
+
+/// A stack of scopes of constant definitions. There are no double entries.
+struct ConstDefScopeStack(
+	Vec<ConstDefScope>
+);
+impl ConstDefScopeStack {
+	fn new() -> ConstDefScopeStack {
+		ConstDefScopeStack(Vec::new())
+	}
+
+	fn height(&self) -> usize {
+		self.0.len()
+	}
+
+	fn contains_def(&self, def_ident: &str) -> bool {
+		self.0.iter().any(|scope| scope.contains_key(def_ident))
+	}
+
+	fn get_height(&self, key: &str) -> Option<usize> {
+		for (height, scope) in self.0.iter().enumerate() {
+			if scope.contains_key(key) {
+				return Some(height);
+			}
+		}
+		None
+	}
+
+	fn get(&self, key: &str) -> Option<(&ConstDefOrType, usize)> {
+		for (height, scope) in self.0.iter().enumerate() {
+			if let Some(ref def) = scope.get(key) {
+				return Some((def, height));
+			}
+		}
+		None
+	}
+	fn get_mut(&mut self, key: &str) -> Option<(&mut ConstDefOrType, usize)> {
+		for (height, scope) in self.0.iter_mut().enumerate() {
+			if let Some(def) = scope.get_mut(key) {
+				return Some((def, height));
+			}
+		}
+		None
+	}
+
+	fn get_at_height(&self, key: &str, height: usize) -> Option<&ConstDefOrType> {
+		self.0.get(height).and_then(|scope| scope.get(key))
+	}
+	fn get_at_height_mut(&mut self, key: &str, height: usize) -> Option<&mut ConstDefOrType> {
+		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
+	}
+
+	fn split_from(&mut self, from: usize) -> Vec<ConstDefScope> {
+		self.0.split_off(from)
+	}
+
+	fn push(&mut self, scope: ConstDefScope) {
+		if scope.keys().any(|key| self.contains_def(key)) {
+			panic!("ConstDefScopeStack::push: Key already exists in scope");
+		}
+
+		self.0.push(scope);
+	}
+	fn pop(&mut self) -> Option<ConstDefScope> {
+		self.0.pop()
+	}
+	fn extend<I: IntoIterator<Item=ConstDefScope>>(&mut self, scopes: I) {
+		// TODO: These checks for doubles would preferably be handled somewhere else
+		for scope in scopes {
+			self.push(scope);
+		}
+	}
+}
 
 impl Type {
 	/// Recursively infer all Inferred to the `to` type.
@@ -205,6 +346,14 @@ impl Path {
 }
 
 impl super::ConstDef {
+	fn get_type(&self) -> &Type {
+		&self.binding.type_sig
+	}
+
+	fn set_type(&mut self, ty: Type) {
+		self.binding.type_sig = ty
+	}
+
 	fn infer_types(&mut self, env: &mut Env) {
 		let prev_var_types = replace(&mut env.var_types, Vec::new());
 
@@ -262,7 +411,7 @@ impl super::SExpr {
 	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
 		self.infer_arg_types(env);
 
-		let expected_fn_type = Type::fn_sig(
+		let expected_fn_type = Type::new_fn(
 			self.args.iter().map(|tb| tb.type_.clone()).collect(),
 			parent_expected_type.clone());
 
@@ -352,12 +501,19 @@ impl super::Block {
 }
 
 impl super::Cond {
+	fn get_type(&self) -> &Type {
+		match self.iter_consequences().map(|c| &c.type_).find(|ty| ty.is_specified()) {
+			Some(found) => found,
+			None => &self.iter_consequences().next().unwrap().type_
+		}
+	}
+
 	fn infer_types(&mut self, expected_type: &Type, env: &mut Env) {
 		if expected_type.is_inferred() {
 			let mut found_type = None;
 
 			for predicate in self.iter_predicates_mut() {
-				predicate.infer_types(&Type::bool(), env);
+				predicate.infer_types(&Type::new_bool(), env);
 			}
 			for consequence in self.iter_consequences_mut() {
 				if consequence.type_.is_specified() || {
@@ -374,7 +530,7 @@ impl super::Cond {
 			}
 		} else {
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(&Type::bool(), env);
+				predicate.infer_types(&Type::new_bool(), env);
 				consequence.infer_types(expected_type, env);
 			}
 			if let Some(ref mut else_clause) = self.else_clause {
@@ -402,7 +558,7 @@ impl super::Lambda {
 	}
 
 	fn get_type(&self) -> Type {
-		Type::fn_sig(
+		Type::new_fn(
 			self.arg_bindings.iter().map(|tb| tb.type_sig.clone()).collect(),
 			self.body.type_.clone())
 	}
@@ -461,12 +617,12 @@ impl ExprMeta {
 
 			match *self.value {
 				// Doesn't have children to infer types for
-				Expr::Nil => Type::nil(),
+				Expr::Nil => Type::new_nil(),
 				// TODO: This should be an internal, more general integer type
-				Expr::NumLit(_) | Expr::VarDef(_) | Expr::Assign(_) => Type::basic("i64"),
+				Expr::NumLit(_) | Expr::VarDef(_) | Expr::Assign(_) => Type::new_basic("i64"),
 				// TODO: This should be a construct somehow
-				Expr::StrLit(_) => Type::basic("&str"),
-				Expr::Bool(_) => Type::bool(),
+				Expr::StrLit(_) => Type::new_basic("&str"),
+				Expr::Bool(_) => Type::new_bool(),
 				Expr::Binding(ref path) => {
 					path.infer_types(&expected_type, env);
 					path.get_type(&expected_type, env)

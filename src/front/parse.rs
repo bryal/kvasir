@@ -25,58 +25,42 @@
 
 // TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
 
-use ast::*;
-use lex::Token;
+use super::*;
 
-impl Path {
-	/// Parse an ident
-	fn parse(tokens: &[Token]) -> Result<Path, String> {
-		if tokens.len() == 0 {
-			return Err("Ident::parse: no tokens".into());
-		}
-		match tokens[0] {
-			Token::Ident(s) => Path::parse_str(s),
-			t => Err(format!("Ident::parse: unexpexted token `{:?}`", t)),
-		}
-	}
+fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
+	let delim = match open_token {
+		Token::LParen => Token::RParen,
+		Token::LBracket => Token::RBracket,
+		Token::LBrace => Token::RBrace,
+		Token::LT => Token::GT,
+		_ => return None,
+	};
 
-	fn parse_str(path_s: &str) -> Result<Path, String> {
-		let (is_absolute, path_s) = if path_s.starts_with('/') {
-			if path_s.len() == 1 {
-				return Err("Ident::parse_str: Path is a lone `/`".into());
-			} else {
-				(true, &path_s[1..])
+	let mut opens = 0u64;
+	for (i, token) in tokens.iter().enumerate() {
+		if *token == open_token {
+			opens += 1;
+		} else if *token == delim {
+			if opens == 0 {
+				return Some(i)
 			}
-		} else {
-			(false, path_s)
-		};
-
-		if path_s.ends_with("/") {
-			return Err("Path::parse_str: Path ends with `/`".into());
-		}
-
-		let mut parts = Vec::new();
-
-		for part in path_s.split('/') {
-			if part == "" {
-				return Err(format!("Path::parse_str: Invalid path `{}`", path_s));
-			}
-			parts.push(part.into());
-		}
-
-		Ok(Path::new(parts, is_absolute))
-	}
-
-	fn concat(mut self, other: Path) -> Result<Path, String> {
-		if other.is_absolute {
-			Err(format!(
-				"Path::concat: `{}` is an absolute path",
-				other.to_str()))
-		} else {
-			self.parts.extend(other.parts);
-			Ok(self)
+			opens -= 1;
 		}
 	}
+	None
+}
+
+/// Parse content within brackets using provided function.
+///
+/// Return parsed content and num of used tokens. The type of bracket is denoted by the first token.
+fn parse_brackets<F, T>(tokens: &[Token], content_parser: F) -> Result<(T, usize), String>
+	where F: Fn(&[Token]) -> Result<T, String>
+{
+	find_closing_delim(tokens[0], &tokens[1..])
+		.map(|delim_i| delim_i + 1)
+		.ok_or("parse_brackets: failed to find closing paren".into())
+		.and_then(|delim_i| content_parser(&tokens[1..delim_i])
+			.map(|paths| (paths, delim_i + 1)))
 }
 
 impl Type {
@@ -166,6 +150,71 @@ impl TypedBinding {
 	}
 }
 
+fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
+	let mut bindings = Vec::new();
+
+	let mut i = 0;
+	while let Some(&token) = tokens.get(i) {
+		if let Token::Ident(ident) = token {
+			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
+				match Type::parse(&tokens[i + 2 ..]) {
+					Ok((ty, tl)) => (ty, tl),
+					Err(e) => return Err(e),
+				}
+			} else {
+				(Type::Inferred, 0)
+			};
+
+			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
+			i += 1 + if type_len != 0 { 1 + type_len } else { 0 }; // (ident + colon) + type_len
+		} else {
+			return Err(format!("parse_typed_bindings: unexpected token `{:?}`", token));
+		}
+	}
+
+	Ok(bindings)
+}
+
+impl Path {
+	/// Parse an ident
+	fn parse(tokens: &[Token]) -> Result<Path, String> {
+		if tokens.len() == 0 {
+			return Err("Ident::parse: no tokens".into());
+		}
+		match tokens[0] {
+			Token::Ident(s) => Path::parse_str(s),
+			t => Err(format!("Ident::parse: unexpexted token `{:?}`", t)),
+		}
+	}
+
+	fn parse_str(path_s: &str) -> Result<Path, String> {
+		let (is_absolute, path_s) = if path_s.starts_with('/') {
+			if path_s.len() == 1 {
+				return Err("Ident::parse_str: Path is a lone `/`".into());
+			} else {
+				(true, &path_s[1..])
+			}
+		} else {
+			(false, path_s)
+		};
+
+		if path_s.ends_with("/") {
+			return Err("Path::parse_str: Path ends with `/`".into());
+		}
+
+		let mut parts = Vec::new();
+
+		for part in path_s.split('/') {
+			if part == "" {
+				return Err(format!("Path::parse_str: Invalid path `{}`", path_s));
+			}
+			parts.push(part.into());
+		}
+
+		Ok(Path::new(parts, is_absolute))
+	}
+}
+
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
 fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	match Path::parse(tokens) {
@@ -183,6 +232,18 @@ fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 				Ok(paths)
 			}),
 		Err(e) => Err(e),
+	}
+}
+
+impl Use {
+	// {use path::to::item} == use path::to::item;
+	// {use (path::to::module sub::item1 item2)} == use path::to::module{ sub::item1, item2 }
+	fn parse(tokens: &[Token]) -> Result<Use, String> {
+		if tokens.len() == 0 {
+			return Err("Use::parse: no tokens".into());
+		}
+
+		parse_use_paths(tokens).map(|paths| Use{ paths: paths })
 	}
 }
 
@@ -213,18 +274,6 @@ fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	Ok(all_paths)
 }
 
-impl Use {
-	// {use path::to::item} == use path::to::item;
-	// {use (path::to::module sub::item1 item2)} == use path::to::module{ sub::item1, item2 }
-	fn parse(tokens: &[Token]) -> Result<Use, String> {
-		if tokens.len() == 0 {
-			return Err("Use::parse: no tokens".into());
-		}
-
-		parse_use_paths(tokens).map(|paths| Use{ paths: paths })
-	}
-}
-
 impl ConstDef {
 	fn parse(tokens: &[Token]) -> Result<ConstDef, String> {
 		if tokens.len() == 0 {
@@ -239,67 +288,6 @@ impl ConstDef {
 					}))
 		}
 	}
-}
-
-fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
-	let mut bindings = Vec::new();
-
-	let mut i = 0;
-	while let Some(&token) = tokens.get(i) {
-		if let Token::Ident(ident) = token {
-			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
-				match Type::parse(&tokens[i + 2 ..]) {
-					Ok((ty, tl)) => (ty, tl),
-					Err(e) => return Err(e),
-				}
-			} else {
-				(Type::Inferred, 0)
-			};
-
-			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
-			i += 1 + if type_len != 0 { 1 + type_len } else { 0 }; // (ident + colon) + type_len
-		} else {
-			return Err(format!("parse_typed_bindings: unexpected token `{:?}`", token));
-		}
-	}
-
-	Ok(bindings)
-}
-
-fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
-	let delim = match open_token {
-		Token::LParen => Token::RParen,
-		Token::LBracket => Token::RBracket,
-		Token::LBrace => Token::RBrace,
-		Token::LT => Token::GT,
-		_ => return None,
-	};
-
-	let mut opens = 0u64;
-	for (i, token) in tokens.iter().enumerate() {
-		if *token == open_token {
-			opens += 1;
-		} else if *token == delim {
-			if opens == 0 {
-				return Some(i)
-			}
-			opens -= 1;
-		}
-	}
-	None
-}
-
-/// Parse content within brackets using provided function.
-///
-/// Return parsed content and num of used tokens. The type of bracket is denoted by the first token.
-fn parse_brackets<F, T>(tokens: &[Token], content_parser: F) -> Result<(T, usize), String>
-	where F: Fn(&[Token]) -> Result<T, String>
-{
-	find_closing_delim(tokens[0], &tokens[1..])
-		.map(|delim_i| delim_i + 1)
-		.ok_or("parse_brackets: failed to find closing paren".into())
-		.and_then(|delim_i| content_parser(&tokens[1..delim_i])
-			.map(|paths| (paths, delim_i + 1)))
 }
 
 impl SExpr {
@@ -361,20 +349,6 @@ impl Lambda {
 	}
 }
 
-fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<ExprMeta>) {
-	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), Vec::new(), Vec::new());
-
-	for item in items {
-		match item {
-			Item::Use(u) => uses.push(u),
-			Item::ConstDef(d) => const_defs.push(d),
-			Item::Expr(e) => exprs.push(e),
-		}
-	}
-
-	(uses, const_defs, exprs)
-}
-
 impl Expr {
 	/// Parse an expression from tokens within parentheses
 	fn parse_parenthesized(tokens: &[Token]) -> Result<Expr, String> {
@@ -410,6 +384,28 @@ impl Expr {
 	}
 }
 
+/// Parse tokens as a list of expressions
+fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
+	if tokens.len() == 0 {
+		return Err("parse_exprs: no tokens".into());
+	}
+
+	let mut exprs = Vec::new();
+
+	let mut i = 0;
+	while i < tokens.len() {
+		match ExprMeta::parse(&tokens[i..]) {
+			Ok((expr, len)) => {
+				exprs.push(expr);
+				i += len;
+			},
+			Err(e) => return Err(e),
+		}
+	}
+
+	Ok(exprs)
+}
+
 impl ExprMeta {
 	fn parse_parenthesized(tokens: &[Token]) -> Result<ExprMeta, String> {
 		if tokens.len() > 0 && tokens[0] == Token::Colon {
@@ -435,33 +431,11 @@ impl ExprMeta {
 	}
 }
 
-/// Parse tokens as a list of expressions
-fn parse_exprs(tokens: &[Token]) -> Result<Vec<ExprMeta>, String> {
-	if tokens.len() == 0 {
-		return Err("parse_exprs: no tokens".into());
-	}
-
-	let mut exprs = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match ExprMeta::parse(&tokens[i..]) {
-			Ok((expr, len)) => {
-				exprs.push(expr);
-				i += len;
-			},
-			Err(e) => return Err(e),
-		}
-	}
-
-	Ok(exprs)
-}
-
 impl Item {
 	/// Parse an expression from tokens within parentheses
 	fn parse_parenthesized(tokens: &[Token]) -> Result<Item, String> {
 		if tokens.len() == 0 {
-			return Ok(Item::Expr(ExprMeta::nil()));
+			return Ok(Item::Expr(ExprMeta::new_nil()));
 		}
 
 		let tail = &tokens.tail();
@@ -505,6 +479,20 @@ fn parse_items(tokens: &[Token]) -> Result<Vec<Item>, String> {
 	}
 
 	Ok(items)
+}
+
+fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<ExprMeta>) {
+	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), Vec::new(), Vec::new());
+
+	for item in items {
+		match item {
+			Item::Use(u) => uses.push(u),
+			Item::ConstDef(d) => const_defs.push(d),
+			Item::Expr(e) => exprs.push(e),
+		}
+	}
+
+	(uses, const_defs, exprs)
 }
 
 impl AST {
