@@ -35,8 +35,7 @@ pub trait ToRustSrc {
 
 impl ToRustSrc for Path {
 	fn to_rust_src(&self) -> String {
-		format!(
-			"{}{}{}",
+		format!("{}{}{}",
 			if self.is_absolute() { "::" } else { "" },
 			self.parts()[0],
 			self.parts()[1..].iter().fold(String::new(), |acc, s| format!("{}::{}", acc, s)))
@@ -48,20 +47,19 @@ impl ToRustSrc for Type {
 		match *self {
 			Type::Inferred => "_".to_string(),
 			Type::Basic(ref ty) => ty.clone(),
-			Type::Construct(ref con, ref args) => format!(
-				"{}<{}>",
+			Type::Construct(ref con, ref args) => format!("{}<{}>",
 				con,
 				args.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src()))),
-			Type::Tuple(ref types) => format!(
-				"({})",
-				types.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src())))
+			Type::Tuple(ref tys) => format!("({})",
+				tys.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src()))),
+			Type::Poly(ref ty) => ty.clone(),
 		}
 	}
 }
 
 impl ToRustSrc for TypedBinding {
 	fn to_rust_src(&self) -> String {
-		format!("{}{}", self.ident, self.type_sig.to_rust_src())
+		format!("{}: {}", self.ident, self.type_sig.to_rust_src())
 	}
 }
 
@@ -72,11 +70,29 @@ impl ToRustSrc for Use {
 	}
 }
 
+/// Return the different elements of `it`. Each item in returned vec is unique, no doubles.
+fn different_elements<'a, I: Iterator<Item=&'a Type>>(it: I) -> Vec<&'a Type> {
+	let mut v: Vec<&Type> = Vec::new();
+
+	for ty in it {
+		if !v.contains(&ty) {
+			v.push(ty)
+		}
+	}
+
+	v
+}
+
 impl ToRustSrc for ConstDef {
 	fn to_rust_src(&self) -> String {
 		if let Expr::Lambda(ref lambda) = *self.body.value {
-			format!("fn {}({}) -> {} {{ {} }}",
+			format!("fn {}<{}>({}) -> {} {{ {} }}",
 				self.binding.ident,
+				different_elements(lambda.arg_bindings.iter()
+						.map(|tb| &tb.type_sig)
+						.filter(|ty| ty.is_poly()))
+					.into_iter()
+					.fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust_src())),
 				lambda.arg_bindings.first()
 					.map(|first| lambda.arg_bindings.tail()
 						.iter()

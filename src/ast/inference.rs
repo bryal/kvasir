@@ -38,8 +38,8 @@ use super::{ ConstDef, ConstDefOrType, ConstDefScope, ConstDefScopeStack,
 use super::core_lib::core_consts;
 
 impl Path {
-	fn get_type<'a>(&self, env: &'a Env) -> &'a Type {
-		if let Some(ident) = self.ident() {
+	fn get_type<'a>(&self, specialize_to: &'a Type, env: &'a Env) -> Cow<'a, Type> {
+		let general = if let Some(ident) = self.ident() {
 			if let Some(ty) = env.core_consts.get(ident) {
 				ty
 			} else if let Some((def, _)) = env.const_defs.get(ident) {
@@ -51,7 +51,9 @@ impl Path {
 			}
 		} else {
 			panic!("Path::get_type: Not implemented for anything but simple idents")
-		}
+		};
+
+		general.specialize_by(specialize_to)
 	}
 
 	fn infer_types(&self, expected_type: &Type, env: &mut Env) {
@@ -76,17 +78,7 @@ impl Path {
 			} else if expected_type.is_specified() {
 				if let Some(stack_bnd_ty) = env.get_var_type_mut(ident) {
 					// Path is a var
-					if stack_bnd_ty.is_inferred() {
-						*stack_bnd_ty = expected_type.clone()
-					} else if stack_bnd_ty != expected_type {
-						// TODO: Shouldn't necessarily panic if types differ.
-						//       Add some kind of coercion and polymorphism.
-						panic!(
-							"Path::infer_types: Tried to set type of binding on stack to `{:?}` \
-								when it already had type `{:?}`",
-							expected_type,
-							stack_bnd_ty)
-					}
+					assign_type(stack_bnd_ty, Cow::Borrowed(expected_type))
 				} else {
 					panic!("Path::infer_types: Binding not on stack")
 				}
@@ -105,7 +97,7 @@ impl super::ConstDef {
 
 		env.var_types = prev_var_types;
 
-		assign_type(&mut self.binding.type_sig, &self.body.type_)
+		assign_type(&mut self.binding.type_sig, Cow::Borrowed(&self.body.type_))
 	}
 }
 
@@ -156,6 +148,7 @@ impl super::SExpr {
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
+
 		if self.func.type_.is_specified() {
 			self.infer_arg_types(env);
 		}
@@ -237,10 +230,8 @@ impl super::Block {
 }
 
 impl super::Cond {
-	fn infer_types(&mut self, parent_expected_type: &Type, env: &mut Env) {
-		// TODO: Use predicates to infer var types
-
-		if parent_expected_type.is_inferred() {
+	fn infer_types(&mut self, expected_type: &Type, env: &mut Env) {
+		if expected_type.is_inferred() {
 			let mut found_type = None;
 
 			for predicate in self.iter_predicates_mut() {
@@ -252,23 +243,20 @@ impl super::Cond {
 					consequence.type_.is_specified()
 				} {
 					found_type = Some(consequence.type_.clone());
+					break;
 				}
 			}
 
-			match found_type {
-				Some(ref expected_type) =>
-					self.infer_types(expected_type, env),
-				// TODO: Shouldn't panic here. Even if type can't be infered now,
-				//       parent might return later with an expected type.
-				None => panic!("Cond::infer_types: Could not infer type for any clause"),
+			if let Some(ref expected_type) = found_type {
+				self.infer_types(expected_type, env)
 			}
 		} else {
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
 				predicate.infer_types(&Type::bool(), env);
-				consequence.infer_types(parent_expected_type, env);
+				consequence.infer_types(expected_type, env);
 			}
 			if let Some(ref mut else_clause) = self.else_clause {
-				else_clause.infer_types(parent_expected_type, env);
+				else_clause.infer_types(expected_type, env);
 			}
 		}
 	}
@@ -276,11 +264,12 @@ impl super::Cond {
 
 impl super::Lambda {
 	fn set_arg_types(&mut self, set_arg_types: &[Type]) {
-		for (arg_type, set_type) in self.arg_bindings.iter_mut()
-			.map(|tb| &mut tb.type_sig)
-			.zip(set_arg_types)
-		{
-			assign_type(arg_type, set_type)
+		for (arg, set_type) in self.arg_bindings.iter_mut().zip(set_arg_types) {
+			if set_type.is_inferred() {
+				assign_type(
+					&mut arg.type_sig,
+					Cow::Owned(Type::Poly(format!("__Poly{}", arg.ident))))
+			}
 		}
 	}
 
@@ -315,11 +304,10 @@ impl super::Lambda {
 }
 
 impl super::VarDef {
-	// NOTE: This is very similar to ConstDef::infer_types, DRY?
 	fn infer_types(&mut self, env: &mut Env) {
 		self.body.infer_types(&self.binding.type_sig, env);
 
-		assign_type(&mut self.binding.type_sig, &self.body.type_)
+		assign_type(&mut self.binding.type_sig, Cow::Borrowed(&self.body.type_))
 	}
 }
 
@@ -338,7 +326,7 @@ impl ExprMeta {
 				Expr::Bool(_) => Type::bool(),
 				Expr::Binding(ref path) => {
 					path.infer_types(expected_type, env);
-					path.get_type(env).clone()
+					path.get_type(expected_type, env).into_owned()
 				},
 				Expr::SExpr(ref mut sexpr) => {
 					sexpr.infer_types(expected_type, env);
