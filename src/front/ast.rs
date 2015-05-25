@@ -66,10 +66,6 @@ impl Type {
 			_ => false
 		}
 	}
-
-	pub fn or<'a>(&'a self, other: &'a Type) -> &Type {
-		if self.is_specified() { self } else { other }
-	}
 }
 impl Debug for Type {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

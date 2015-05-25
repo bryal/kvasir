@@ -1,5 +1,5 @@
-;(--def-const dec (lambda (n) (- n 1)))
-;(--def-const inc (lambda (n) (+ n 1)))
+(--def-const dec (lambda (n) (- n 1)))
+(--def-const inc (lambda (n) (+ n 1)))
 
 ;(--def-const if_ (lambda (predicate consequence otherwise)
 ;    (cond (predicate consequence)

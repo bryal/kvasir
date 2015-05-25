@@ -33,10 +33,13 @@
 
 use std::collections::HashMap;
 use std::mem::replace;
-use std::iter::repeat;
 use std::borrow::Cow;
 use super::*;
 use super::core_lib::core_consts;
+
+type ConstDefScope = HashMap<String, ConstDefOrType>;
+
+type ConstDefScopeStack = ScopeStack<String, ConstDefOrType>;
 
 struct Env {
 	core_consts: HashMap<&'static str, Type>,
@@ -101,80 +104,6 @@ impl ConstDefOrType {
 		match self {
 			&mut ConstDefOrType::Type(_) => *self = ConstDefOrType::Def(def),
 			_ => panic!("ConstDefOrType::insert_def: `self` is already `Type`")
-		}
-	}
-}
-
-type ConstDefScope = HashMap<String, ConstDefOrType>;
-
-/// A stack of scopes of constant definitions. There are no double entries.
-struct ConstDefScopeStack(
-	Vec<ConstDefScope>
-);
-impl ConstDefScopeStack {
-	fn new() -> ConstDefScopeStack {
-		ConstDefScopeStack(Vec::new())
-	}
-
-	fn height(&self) -> usize {
-		self.0.len()
-	}
-
-	fn contains_def(&self, def_ident: &str) -> bool {
-		self.0.iter().any(|scope| scope.contains_key(def_ident))
-	}
-
-	fn get_height(&self, key: &str) -> Option<usize> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if scope.contains_key(key) {
-				return Some(height);
-			}
-		}
-		None
-	}
-
-	fn get(&self, key: &str) -> Option<(&ConstDefOrType, usize)> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if let Some(ref def) = scope.get(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-	fn get_mut(&mut self, key: &str) -> Option<(&mut ConstDefOrType, usize)> {
-		for (height, scope) in self.0.iter_mut().enumerate() {
-			if let Some(def) = scope.get_mut(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-
-	fn get_at_height(&self, key: &str, height: usize) -> Option<&ConstDefOrType> {
-		self.0.get(height).and_then(|scope| scope.get(key))
-	}
-	fn get_at_height_mut(&mut self, key: &str, height: usize) -> Option<&mut ConstDefOrType> {
-		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
-	}
-
-	fn split_from(&mut self, from: usize) -> Vec<ConstDefScope> {
-		self.0.split_off(from)
-	}
-
-	fn push(&mut self, scope: ConstDefScope) {
-		if scope.keys().any(|key| self.contains_def(key)) {
-			panic!("ConstDefScopeStack::push: Key already exists in scope");
-		}
-
-		self.0.push(scope);
-	}
-	fn pop(&mut self) -> Option<ConstDefScope> {
-		self.0.pop()
-	}
-	fn extend<I: IntoIterator<Item=ConstDefScope>>(&mut self, scopes: I) {
-		// TODO: These checks for doubles would preferably be handled somewhere else
-		for scope in scopes {
-			self.push(scope);
 		}
 	}
 }
