@@ -48,6 +48,9 @@ Not sure what to do with const defs and maps. Should ConstDef contain a TypedBin
 * Maybe allow different modes for the compiler:
   * Strictly no CTE
   * No CTE unless explicitly allowed, `(#prefer-cte ...)` or `(#cte ...)` or maybe `(#allow-cte ...)`
+  * Discriminate between `def-proc` and `def-func`, decide whether to CTE from this.
+    `def-func` defines a function in the mathematical sense, i.e. a pure function, `(#prefer-cte ...)`
+    `def-proc` defines a procedure, a list of commands to execute. Not guaranteed to be a function. Neither `(#no-cte ...)` nor `(#prefer-cte ...)`
   * CTE unless explicitly disallowed, `(#no-cte ...)`
 * Add pattern matching for bindings. Would for example allow both `(lambda x ...)` and `(lambda (a b) ...)`
 * Let definitions take symbol instead of binding. This would allow for easier pattern matching.

@@ -88,12 +88,9 @@ use std::io::{ Read };
 use std::fs::File;
 use std::path::PathBuf;
 
-pub use front::AST;
-use front::tokenize_string;
-use back::compile;
+use lib::{ AST, tokenize_string, compile };
 
-mod front;
-mod back;
+mod lib;
 
 #[cfg(unix)]
 const BIN_EXTENSION: &'static str = "bin";

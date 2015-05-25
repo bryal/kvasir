@@ -359,10 +359,8 @@ impl super::SExpr {
 fn vec_to_def_scope(defs_vec: Vec<ConstDef>) -> ConstDefScope {
 	let mut scope = ConstDefScope::new();
 	for def in defs_vec.into_iter() {
-		let key = def.binding.ident.clone();
-		scope.insert(key, ConstDefOrType::Def(def));
+		scope.insert(def.binding.ident.clone(), ConstDefOrType::Def(def));
 	}
-
 	scope
 }
 
