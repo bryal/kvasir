@@ -83,6 +83,15 @@ fn different_elements<'a, I: Iterator<Item=&'a Type>>(it: I) -> Vec<&'a Type> {
 	v
 }
 
+fn delim_between_items<T: ToRustSrc>(items: &[T], delim: &str) -> String {
+	items.first()
+		.map(|first| items.tail()
+			.iter()
+			.fold(first.to_rust(), |acc, item|
+				format!("{}{}{}", acc, delim, item.to_rust())))
+		.unwrap_or("".into())
+}
+
 impl ToRustSrc for ConstDef {
 	fn to_rust(&self) -> String {
 		if let Expr::Lambda(ref lambda) = *self.body.value {
@@ -93,12 +102,7 @@ impl ToRustSrc for ConstDef {
 						.filter(|ty| ty.is_poly()))
 					.into_iter()
 					.fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust())),
-				lambda.arg_bindings.first()
-					.map(|first| lambda.arg_bindings.tail()
-						.iter()
-						.fold(first.to_rust(), |acc, bnd|
-							format!("{}, {}", acc, bnd.to_rust())))
-					.unwrap_or("".into()),
+				delim_between_items(&lambda.arg_bindings, ", "),
 				lambda.body.type_.to_rust(),
 				lambda.body.to_rust())
 		} else {
@@ -119,24 +123,17 @@ impl ToRustSrc for SExpr {
 				func,
 				self.args[1].to_rust()),
 			"=" => format!("({} == {})", self.args[0].to_rust(), self.args[1].to_rust()),
-			_ => format!("{}({})",
-				self.func.to_rust(),
-				self.args.first()
-					.map(|first| self.args[1..].iter()
-						.fold(first.to_rust(), |acc, bnd|
-							format!("{}, {}", acc, bnd.to_rust())))
-					.unwrap_or("".into()))
+			_ => format!("{}({})", self.func.to_rust(), delim_between_items(&self.args, ", ")),
 		}
 	}
 }
 
 impl ToRustSrc for Block {
 	fn to_rust(&self) -> String {
-		self.exprs.first()
-			.map(|first| self.exprs[1..].iter()
-				.fold(format!("{{ {}", first.to_rust()), |acc, expr|
-					format!("{}; {}", acc, expr.to_rust())) + "}")
-			.unwrap_or("{ }".into())
+		format!("{{ {} {} {} }}",
+			delim_between_items(&self.uses, " "),
+			delim_between_items(&self.const_defs, " "),
+			delim_between_items(&self.exprs, "; "))
 	}
 }
 
@@ -156,14 +153,9 @@ impl ToRustSrc for Cond {
 impl ToRustSrc for Lambda {
 	fn to_rust(&self) -> String {
 		format!("|{}| -> {} {{ {} }}",
-			self.arg_bindings.first()
-				.map(|first| self.arg_bindings[1..].iter()
-					.fold(first.to_rust(), |acc, bnd|
-						format!("{}, {}", acc, bnd.to_rust())))
-				.unwrap_or("".into()),
+			delim_between_items(&self.arg_bindings, ", "),
 			self.body.type_.to_rust(),
-			self.body.to_rust()
-		)
+			self.body.to_rust())
 	}
 }
 
