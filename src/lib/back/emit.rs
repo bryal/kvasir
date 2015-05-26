@@ -27,6 +27,7 @@
 //! 	* Rust AST ☐
 //! 	* LLVM something ☐
 
+use std::collections::HashMap;
 use lib::front::*;
 
 pub trait ToRustSrc {
@@ -92,28 +93,6 @@ fn delim_between_items<T: ToRustSrc>(items: &[T], delim: &str) -> String {
 		.unwrap_or("".into())
 }
 
-impl ToRustSrc for ConstDef {
-	fn to_rust(&self) -> String {
-		if let Expr::Lambda(ref lambda) = *self.body.value {
-			format!("fn {}<{}>({}) -> {} {{ {} }}",
-				self.binding.ident,
-				different_elements(lambda.arg_bindings.iter()
-						.map(|tb| &tb.type_sig)
-						.filter(|ty| ty.is_poly()))
-					.into_iter()
-					.fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust())),
-				delim_between_items(&lambda.arg_bindings, ", "),
-				lambda.body.type_.to_rust(),
-				lambda.body.to_rust())
-		} else {
-			format!("const {}: {} = {};",
-				self.binding.ident,
-				self.binding.type_sig.to_rust(),
-				self.body.to_rust())
-		}
-	}
-}
-
 impl ToRustSrc for SExpr {
 	fn to_rust(&self) -> String {
 		let func = self.func.to_rust();
@@ -128,11 +107,39 @@ impl ToRustSrc for SExpr {
 	}
 }
 
+fn const_defs_to_rust(consts: &HashMap<String, ExprMeta>, sep: &str) -> String {
+	use std::fmt::Write;
+
+	let mut s = String::new();
+
+	for (name, val) in consts.iter() {
+		match *val.expr() {
+			Expr::Lambda(ref lambda) => write!(s, "fn {}<{}>({}) -> {} {{ {} }}{}",
+				name,
+				different_elements(lambda.arg_bindings.iter()
+						.map(|tb| &tb.type_sig)
+						.filter(|ty| ty.is_poly()))
+					.into_iter()
+					.fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust())),
+				delim_between_items(&lambda.arg_bindings, ", "),
+				lambda.body.type_.to_rust(),
+				lambda.body.to_rust(),
+				sep).unwrap(),
+			_ => write!(s, "const {}: {} = {};{}",
+				name,
+				val.type_.to_rust(),
+				val.to_rust(),
+				sep).unwrap()
+		}
+	}
+	s
+}
+
 impl ToRustSrc for Block {
 	fn to_rust(&self) -> String {
 		format!("{{ {} {} {} }}",
 			delim_between_items(&self.uses, " "),
-			delim_between_items(&self.const_defs, " "),
+			const_defs_to_rust(&self.const_defs, " "),
 			delim_between_items(&self.exprs, "; "))
 	}
 }
@@ -210,8 +217,7 @@ impl ToRustSrc for AST {
 		format!("{}{}",
 			self.uses.iter()
 				.fold(String::new(), |acc, u| format!("{}{};\n", acc, u.to_rust())),
-			self.const_defs.iter()
-				.fold(String::new(), |acc, def| format!("{}{}\n", acc, def.to_rust())))
+			const_defs_to_rust(&self.const_defs, "\n"))
 	}
 }
 

@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+use std::collections::HashMap;
 use std::borrow::Cow;
 use std::fmt::{ self, Debug };
 
@@ -162,17 +163,6 @@ impl Debug for Use {
 }
 
 #[derive(Clone)]
-pub struct ConstDef {
-	pub binding: TypedBinding,
-	pub body: ExprMeta,
-}
-impl Debug for ConstDef {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "(ConstDef {:?} {:?})", self.binding, self.body)
-	}
-}
-
-#[derive(Clone)]
 pub struct SExpr {
 	pub func: ExprMeta,
 	pub args: Vec<ExprMeta>,
@@ -183,17 +173,22 @@ impl Debug for SExpr {
 	}
 }
 
+fn const_defs_to_string(consts: &HashMap<String, ExprMeta>) -> String {
+	consts.iter()
+		.fold(String::new(), |acc, (name, val)| format!("{} (ConstDef {} {:?})", acc, name, val))
+}
+
 #[derive(Clone)]
 pub struct Block {
 	pub uses: Vec<Use>,
-	pub const_defs: Vec<ConstDef>,
+	pub const_defs: HashMap<String, ExprMeta>,
 	pub exprs: Vec<ExprMeta>,
 }
 impl Debug for Block {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(Block {} {} {})",
 			list_items_to_string(&self.uses),
-			list_items_to_string(&self.const_defs),
+			const_defs_to_string(&self.const_defs),
 			list_items_to_string(&self.exprs))
 	}
 }
@@ -327,7 +322,8 @@ impl ExprMeta {
 	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_bool()) }
 	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
 
-	pub fn expr(&mut self) -> &mut Expr { &mut self.value }
+	pub fn expr(&self) -> &Expr { &self.value }
+	pub fn expr_mut(&mut self) -> &mut Expr { &mut self.value }
 }
 impl Debug for ExprMeta {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -335,22 +331,15 @@ impl Debug for ExprMeta {
 	}
 }
 
-#[derive(Debug)]
-pub enum Item {
-	Use(Use),
-	ConstDef(ConstDef),
-	Expr(ExprMeta),
-}
-
 #[derive(Clone)]
 pub struct AST {
 	pub uses: Vec<Use>,
-	pub const_defs: Vec<ConstDef>,
+	pub const_defs: HashMap<String, ExprMeta>,
 }
 impl Debug for AST {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "(AST {} {})",
 			list_items_to_string(&self.uses),
-			list_items_to_string(&self.const_defs))
+			const_defs_to_string(&self.const_defs))
 	}
 }

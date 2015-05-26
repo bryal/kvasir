@@ -1,4 +1,4 @@
-(--def-const dec (lambda (n) (- n 1)))
+;(--def-const dec (lambda (n) (- n 1)))
 ;(--def-const inc (lambda (n) (+ n 1)))
 
 ;(--def-const if_ (lambda (predicate consequence otherwise)
@@ -24,7 +24,7 @@
 ;         a
 ;         b)))
 
-(--def-const (:<→ ()> main) (lambda ()
+(--def-const main (lambda ()
     (println! "{}" (block
         (--def-const a 10)
         (fib a)))))

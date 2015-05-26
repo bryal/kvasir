@@ -32,14 +32,15 @@
 // TODO: Add field on things to keep track of whether inference has happened
 
 use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::mem::replace;
 use std::borrow::Cow;
 use super::*;
 use super::core_lib::core_consts;
 
-type ConstDefScope = HashMap<String, ConstDefOrType>;
+type ConstDefScope = HashMap<String, ValueOrType>;
 
-type ConstDefScopeStack = ScopeStack<String, ConstDefOrType>;
+type ConstDefScopeStack = ScopeStack<String, ValueOrType>;
 
 struct Env {
 	core_consts: HashMap<&'static str, Type>,
@@ -61,49 +62,48 @@ impl Env {
 	}
 }
 
-enum ConstDefOrType {
-	Def(ConstDef),
+enum ValueOrType {
+	Value(ExprMeta),
 	Type(Type),
 }
-impl ConstDefOrType {
+impl ValueOrType {
 	fn get_type(&self) -> &Type {
 		match self {
-			&ConstDefOrType::Def(ref def) => &def.binding.type_sig,
-			&ConstDefOrType::Type(ref ty) => &ty
+			&ValueOrType::Value(ref val) => &val.type_,
+			&ValueOrType::Type(ref ty) => &ty
 		}
 	}
 
-	/// Extracts a mutable ConstDef reference from self if self is of variant Def. Else, panic.
-	fn as_def(&mut self) -> Option<&mut ConstDef> {
+	/// Extracts a mutable `ExprMeta` reference from self. Panic if variant is not `Value`
+	fn as_value(&mut self) -> Option<&mut ExprMeta> {
 		match self {
-			&mut ConstDefOrType::Def(ref mut def) => Some(def),
+			&mut ValueOrType::Value(ref mut val) => Some(val),
 			_ => None
 		}
 	}
 
-	/// If variant is Def, return contained ConstDef. Panic otherwise
-	fn unwrap_def(self) -> ConstDef {
+	/// Return contained `ExprMeta`. Panic if variant is not `Value`
+	fn unwrap_value(self) -> ExprMeta {
 		match self {
-			ConstDefOrType::Def(def) => def,
-			_ => panic!("ConstDefOrType::into_def: Variant wasn't `Def`")
+			ValueOrType::Value(val) => val,
+			_ => panic!("ValueOrType::into_value: Variant wasn't `Value`")
 		}
 	}
 
-	/// If variant is `Def`, replace def with `Type` and return def
-	fn replace_into_def(&mut self) -> Option<ConstDef> {
-		let ty = match self.as_def() {
-			Some(def) => def.binding.type_sig.clone(),
-			None => return None
-		};
-
-		Some(replace(self, ConstDefOrType::Type(ty)).unwrap_def())
+	/// Replace contained value with its own type as `Type` and return the value.
+	/// Returns `None` if variant is already `Type`
+	fn replace_into_value(&mut self) -> Option<ExprMeta> {
+		self.as_value()
+			.map(|val| val.type_.clone())
+			.map(|ty| replace(self, ValueOrType::Type(ty)).unwrap_value())
 	}
 
-	/// If variant is `Type`, replace self with `Def` variant containing passed def. Panic otherwise
-	fn insert_def(&mut self, def: ConstDef) {
+	/// Replace contained type with passed value as `Value`.
+	/// Panic if variant is not `Type`
+	fn insert_value(&mut self, val: ExprMeta) {
 		match self {
-			&mut ConstDefOrType::Type(_) => *self = ConstDefOrType::Def(def),
-			_ => panic!("ConstDefOrType::insert_def: `self` is already `Type`")
+			&mut ValueOrType::Type(_) => *self = ValueOrType::Value(val),
+			_ => panic!("ValueOrType::insert_value: Variant is already `Value`")
 		}
 	}
 }
@@ -250,11 +250,15 @@ impl Path {
 
 				if let Some(mut def) = env.const_defs.get_at_height_mut(ident, height)
 					.unwrap()
-					.replace_into_def()
+					.replace_into_value()
 				{
-					def.infer_types(env);
+					let prev_var_types = replace(&mut env.var_types, Vec::new());
 
-					env.const_defs.get_at_height_mut(ident, height).unwrap().insert_def(def);
+					def.infer_types(&Type::Inferred, env);
+
+					env.var_types = prev_var_types;
+
+					env.const_defs.get_at_height_mut(ident, height).unwrap().insert_value(def);
 				}
 
 				env.const_defs.extend(above);
@@ -271,28 +275,6 @@ impl Path {
 		} else {
 			panic!("Path::infer_types: Not implemented for anything but simple idents")
 		}
-	}
-}
-
-impl super::ConstDef {
-	fn get_type(&self) -> &Type {
-		&self.binding.type_sig
-	}
-
-	fn set_type(&mut self, ty: Type) {
-		self.binding.type_sig = ty
-	}
-
-	fn infer_types(&mut self, env: &mut Env) {
-		let prev_var_types = replace(&mut env.var_types, Vec::new());
-
-		self.body.infer_types(&self.binding.type_sig, env);
-
-		env.var_types = prev_var_types;
-
-		self.binding.type_sig = self.body.type_
-			.add_constraint(&self.binding.type_sig.infer_by(&self.body.type_))
-			.into_owned();
 	}
 }
 
@@ -355,18 +337,11 @@ impl super::SExpr {
 	}
 }
 
-/// Maps a Vec<ConstDef> to a ConstDefScope
-fn vec_to_def_scope(defs_vec: Vec<ConstDef>) -> ConstDefScope {
-	let mut scope = ConstDefScope::new();
-	for def in defs_vec.into_iter() {
-		scope.insert(def.binding.ident.clone(), ConstDefOrType::Def(def));
-	}
-	scope
+fn value_wrap_defs(defs: HashMap<String, ExprMeta>) -> HashMap<String, ValueOrType> {
+	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, ValueOrType::Value(val))))
 }
-
-/// Maps a ConstDefScope to a Vec<ConstDef>
-fn def_scope_to_vec(scope: ConstDefScope) -> Vec<ConstDef> {
-	scope.into_iter().map(|(_, def)| def.unwrap_def()).collect()
+fn value_unwrap_defs(defs: HashMap<String, ValueOrType>) -> HashMap<String, ExprMeta> {
+	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, val.unwrap_value())))
 }
 
 impl super::Block {
@@ -379,7 +354,7 @@ impl super::Block {
 			return;
 		}
 
-		env.const_defs.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
+		env.const_defs.push(value_wrap_defs(replace(&mut self.const_defs, HashMap::new())));
 
 		let old_vars_len = env.var_types.len();
 
@@ -422,8 +397,8 @@ impl super::Block {
 				.infer_types(parent_expected_type, env);
 		}
 
-		self.const_defs = def_scope_to_vec(env.const_defs.pop()
-			.expect("Block::infer_types: Could not pop const def scope stack"));
+		self.const_defs = value_unwrap_defs(
+			env.const_defs.pop().expect("Block::infer_types: Could not pop const def scope stack"));
 	}
 }
 
@@ -582,10 +557,10 @@ impl super::AST {
 		let mut const_defs = ConstDefScopeStack::new();
 
 		// Push the module scope on top of the stack
-		const_defs.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
+		const_defs.push(value_wrap_defs(replace(&mut self.const_defs, HashMap::new())));
 
 		let mut main = match const_defs.get_at_height_mut("main", 0) {
-			Some(main) => main.replace_into_def().unwrap(),
+			Some(main) => main.replace_into_value().unwrap(),
 			None => panic!("AST::infer_types: No main function found")
 		};
 
@@ -595,15 +570,15 @@ impl super::AST {
 			var_types: Vec::new()
 		};
 
-		main.infer_types(&mut env);
+		main.infer_types(&Type::new_nil(), &mut env);
 
-		env.const_defs.get_at_height_mut("main", 0).unwrap().insert_def(main);
+		env.const_defs.get_at_height_mut("main", 0).unwrap().insert_value(main);
 
 		if env.const_defs.height() != 1 {
 			panic!("AST::infer_types: Stack is not single scope");
 		}
 
-		self.const_defs = def_scope_to_vec(env.const_defs.pop().unwrap())
+		self.const_defs = value_unwrap_defs(env.const_defs.pop().unwrap())
 	}
 }
 

@@ -25,7 +25,10 @@
 
 // TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
 
+use std::collections::HashMap;
 use super::*;
+
+type ConstDef = (String, ExprMeta);
 
 fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 	let delim = match open_token {
@@ -154,22 +157,12 @@ fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
 	let mut bindings = Vec::new();
 
 	let mut i = 0;
-	while let Some(&token) = tokens.get(i) {
-		if let Token::Ident(ident) = token {
-			let (type_sig, type_len) = if let Some(&Token::Colon) = tokens.get(i + 1) {
-				match Type::parse(&tokens[i + 2 ..]) {
-					Ok((ty, tl)) => (ty, tl),
-					Err(e) => return Err(e),
-				}
-			} else {
-				(Type::Inferred, 0)
-			};
+	while i < tokens.len() {
+		let (binding, binding_len) = try!(TypedBinding::parse(&tokens[i..]));
 
-			bindings.push(TypedBinding{ ident: ident.into(), type_sig: type_sig });
-			i += 1 + if type_len != 0 { 1 + type_len } else { 0 }; // (ident + colon) + type_len
-		} else {
-			return Err(format!("parse_typed_bindings: unexpected token `{:?}`", token));
-		}
+		bindings.push(binding);
+
+		i += binding_len;
 	}
 
 	Ok(bindings)
@@ -274,18 +267,18 @@ fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	Ok(all_paths)
 }
 
-impl ConstDef {
-	fn parse(tokens: &[Token]) -> Result<ConstDef, String> {
-		if tokens.len() == 0 {
-			Err("ConstDef::parse: No tokens".into())
-		} else {
-			TypedBinding::parse(tokens).and_then(|(bnd, bnd_len)|
-				ExprMeta::parse(&tokens[bnd_len..])
-					.and_then(|(body, body_len)| if body_len + bnd_len == tokens.len() {
-						Ok(ConstDef{ binding: bnd, body: body })
-					} else {
-						Err("ConstDef::parse: Tokens remained after parsing body".into())
-					}))
+fn parse_definition(tokens: &[Token]) -> Result<(String, ExprMeta), String> {
+	if tokens.len() == 0 {
+		Err("parse_definition: No tokens".into())
+	} else {
+		match tokens[0] {
+			Token::Ident(ident) => ExprMeta::parse(tokens.tail())
+				.and_then(|(body, body_len)| if body_len == tokens.tail().len() {
+					Ok((ident.into(), body))
+				} else {
+					Err("parse_definition: Tokens remained after parsing body".into())
+				}),
+			t => Err(format!("parse_definition: Expected ident, found `{:?}`", t))
 		}
 	}
 }
@@ -431,6 +424,12 @@ impl ExprMeta {
 	}
 }
 
+#[derive(Debug)]
+pub enum Item {
+	Use(Use),
+	ConstDef(ConstDef),
+	Expr(ExprMeta),
+}
 impl Item {
 	/// Parse an expression from tokens within parentheses
 	fn parse_parenthesized(tokens: &[Token]) -> Result<Item, String> {
@@ -441,7 +440,7 @@ impl Item {
 		let tail = &tokens.tail();
 
 		match tokens[0] {
-			Token::Ident("--def-const") => ConstDef::parse(tail).map(|d| Item::ConstDef(d)),
+			Token::Ident("--def-const") => parse_definition(tail).map(|d| Item::ConstDef(d)),
 			Token::Ident("use") => Use::parse(tail).map(|u| Item::Use(u)),
 			_ => ExprMeta::parse_parenthesized(tokens).map(|e| Item::Expr(e)),
 		}
@@ -481,13 +480,16 @@ fn parse_items(tokens: &[Token]) -> Result<Vec<Item>, String> {
 	Ok(items)
 }
 
-fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<ExprMeta>) {
-	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), Vec::new(), Vec::new());
+fn extract_items(items: Vec<Item>) -> (Vec<Use>, HashMap<String, ExprMeta>, Vec<ExprMeta>) {
+	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), HashMap::new(), Vec::new());
 
 	for item in items {
 		match item {
 			Item::Use(u) => uses.push(u),
-			Item::ConstDef(d) => const_defs.push(d),
+			Item::ConstDef((name, val)) => match const_defs.insert(name, val) {
+				None => (),
+				Some(_) => panic!("extract_items: Constant already exists in map"),
+			},
 			Item::Expr(e) => exprs.push(e),
 		}
 	}
@@ -498,16 +500,12 @@ fn extract_items(items: Vec<Item>) -> (Vec<Use>, Vec<ConstDef>, Vec<ExprMeta>) {
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
 		parse_items(tokens).and_then(|items| {
-			let mut ast = AST{ uses: Vec::new(), const_defs: Vec::new() };
-			for item in items {
-				match item {
-					Item::Use(u) => ast.uses.push(u),
-					Item::ConstDef(d) => ast.const_defs.push(d),
-					_ => return Err(format!("AST::parse: Unexpected item `{:?}`", item)),
-				}
+			let (uses, consts, exprs) = extract_items(items);
+			if !exprs.is_empty() {
+				Err(format!("AST::parse: Expression(s) found in AST root"))
+			} else {
+				Ok(AST{ uses:uses, const_defs: consts })
 			}
-
-			Ok(ast)
 		})
 	}
 }

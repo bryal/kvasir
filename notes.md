@@ -57,13 +57,4 @@ Not sure what to do with const defs and maps. Should ConstDef contain a TypedBin
   symbol => bind, expression => compare. E.g:
     `(match x ('(a ,(@ b (+ 3 2)) ,PI) ...))` would correspond to `match x { [a, b, c] if b == 3 + 2 && c == PI => ..., }`
 * Store definitions in a stack of scopes. Pop scopes until the def is found, then send remaining stack along when infering
-
-
-const a 1
-const b {
-	const c 2
-	const d {
-		const e 3
-		const f c
-	}
-}
+* Streaming tokenizer & parser
