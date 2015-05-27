@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::mem::replace;
 use std::borrow::Borrow;
 
 pub use self::lex::{ tokenize_string, Token };
@@ -102,5 +103,25 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		where Q: Hash + Eq, K: Borrow<Q>
 	{
 		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
+	}
+}
+impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
+	pub fn do_for_item_at_height<Q: ?Sized, F>(&mut self, key: &Q, height: usize, action: F)
+		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(Self, &mut V) -> Self,
+	{
+		let mut item = match self.get_at_height_mut(key, height) {
+			Some(item) => replace(item, None)
+				.expect("ScopeStack::do_for_item_at_height: Item was `None`"),
+			None => panic!("ScopeStack::do_for_item_at_height: No entry for key function found")
+		};
+
+		let above = self.split_from(height + 1);
+
+		let const_defs = replace(self, ScopeStack::new());
+		*self = action(const_defs, &mut item);
+
+		*self.get_at_height_mut(key, height).unwrap() = Some(item);
+
+		self.extend(above);
 	}
 }

@@ -48,6 +48,10 @@ struct Env {
 	var_types: Vec<TypedBinding>
 }
 impl Env {
+	fn new(const_defs: ConstDefScopeStack, var_types: Vec<TypedBinding>) -> Env {
+		Env{ core_consts: core_consts(), const_defs: const_defs, var_types: var_types }
+	}
+
 	fn get_var_type(&self, ident: &str) -> Option<&Type> {
 		self.var_types.iter()
 			.rev()
@@ -200,22 +204,13 @@ impl Path {
 				()
 			} else if let Some(height) = env.const_defs.get_height(ident) {
 				// Path is a constant
-				let above = env.const_defs.split_from(height + 1);
-
-				if let Some(mut def) = replace(env.const_defs.get_at_height_mut(ident, height)
-						.unwrap(),
-					None)
-				{
-					let prev_var_types = replace(&mut env.var_types, Vec::new());
-
-					def.infer_types(&Type::Inferred, env);
-
-					env.var_types = prev_var_types;
-
-					*env.const_defs.get_at_height_mut(ident, height).unwrap() = Some(def);
+				if env.const_defs.get_at_height(ident, height).unwrap().is_some() {
+					env.const_defs.do_for_item_at_height(ident, height, |const_defs, def| {
+						let mut env = Env::new(const_defs, Vec::new());
+						def.infer_types(&Type::Inferred, &mut env);
+						env.const_defs
+					})
 				}
-
-				env.const_defs.extend(above);
 			} else if expected_type.is_specified() {
 				if let Some(stack_bnd_ty) = env.get_var_type_mut(ident) {
 					// Path is a var
@@ -513,26 +508,17 @@ impl super::AST {
 		// Push the module scope on top of the stack
 		const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));
 
-		let mut main = match const_defs.get_at_height_mut("main", 0) {
-			Some(main) => replace(main, None).unwrap(),
-			None => panic!("AST::infer_types: No main function found")
-		};
+		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
+			let mut env = Env::new(const_defs, Vec::new());
+			main.infer_types(&Type::new_nil(), &mut env);
+			env.const_defs
+		});
 
-		let mut env = Env{
-			core_consts: core_consts(),
-			const_defs: const_defs,
-			var_types: Vec::new()
-		};
-
-		main.infer_types(&Type::new_nil(), &mut env);
-
-		*env.const_defs.get_at_height_mut("main", 0).unwrap() = Some(main);
-
-		if env.const_defs.height() != 1 {
+		if const_defs.height() != 1 {
 			panic!("AST::infer_types: Stack is not single scope");
 		}
 
-		self.const_defs = unwrap_option_defs(env.const_defs.pop().unwrap())
+		self.const_defs = unwrap_option_defs(const_defs.pop().unwrap())
 	}
 }
 
