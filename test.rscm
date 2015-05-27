@@ -5,7 +5,7 @@
 ;    (cond (predicate consequence)
 ;          (else otherwise))))
 
-(--def-const fib (lambda (n)
+(--def-const fib (λ (n)
     (cond ((= n 0) 0)
           ((= n 1) 1)
           (else (+ (fib (- n 1)) (fib (- n 2)))))))
@@ -24,7 +24,7 @@
 ;         a
 ;         b)))
 
-(--def-const main (lambda ()
+(--def-const main (λ ()
     (println! "{}" (block
         (--def-const a 10)
         (fib a)))))

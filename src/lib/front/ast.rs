@@ -28,7 +28,7 @@ fn list_items_to_string<T: Debug>(list: &[T]) -> String {
 	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
 }
 
-static FUNCTION_CONSTRUCTORS: &'static [&'static str] = &["→", "fn"];
+static FUNCTION_CONSTRUCTORS: &'static [&'static str] = &["→", "fn", "->"];
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Type {
@@ -48,9 +48,6 @@ impl Type {
 	pub fn new_fn(mut arg_tys: Vec<Type>, return_ty: Type) -> Type {
 		arg_tys.push(return_ty);
 		Type::Construct("→".into(), arg_tys)
-	}
-	pub fn new_bool() -> Type {
-		Type::Basic("bool".into())
 	}
 
 	pub fn is_inferred(&self) -> bool {
@@ -81,7 +78,7 @@ impl Debug for Type {
 		match self {
 			&Type::Inferred => write!(f, "_"),
 			&Type::Basic(ref s) => write!(f, "{}", s),
-			&Type::Construct(ref constr, ref args) => write!(f, "<{}{}>",
+			&Type::Construct(ref constr, ref args) => write!(f, "{{{}{}}}",
 				constr,
 				list_items_to_string(&args)),
 			&Type::Tuple(ref tys) => write!(f, "({})", list_items_to_string(tys)),
@@ -326,8 +323,8 @@ impl ExprMeta {
 	pub fn new(value: Expr, ty: Type) -> ExprMeta {
 		ExprMeta{ value: Box::new(value), type_: ty }
 	}
-	pub fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::new_bool()) }
-	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_bool()) }
+	pub fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::new_basic("bool")) }
+	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_basic("bool")) }
 	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
 
 	pub fn get_type(&self) -> &Type { &self.type_ }

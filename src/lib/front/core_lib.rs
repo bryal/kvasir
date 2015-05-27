@@ -32,15 +32,15 @@ macro_rules! core_type {
 
 lazy_static! {
 	pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type> = HashMap::from_iter(vec![
-		("+", core_type!("fn"; "i64", "i64", "i64")),
-		("-", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
-		("*", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
-		("/", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
-		("=", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
-		("<", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
-		(">", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_bool())),
-		("true", Type::new_bool()),
-		("false", Type::new_bool()),
+		("+", core_type!("→"; "i64", "i64", "i64")),
+		("-", core_type!("→"; "i64", "i64", "i64")),
+		("*", core_type!("→"; "i64", "i64", "i64")),
+		("/", core_type!("→"; "i64", "i64", "i64")),
+		("=", core_type!("→"; "i64", "i64", "bool")),
+		("<", core_type!("→"; "i64", "i64", "bool")),
+		(">", core_type!("→"; "i64", "i64", "bool")),
+		("true", Type::new_basic("bool")),
+		("false", Type::new_basic("bool")),
 		("println!", Type::new_fn(vec![Type::new_basic("&str"), Type::new_poly("T")], Type::new_nil())),
 	]);
 }

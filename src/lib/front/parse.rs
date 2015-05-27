@@ -35,7 +35,6 @@ fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 		Token::LParen => Token::RParen,
 		Token::LBracket => Token::RBracket,
 		Token::LBrace => Token::RBrace,
-		Token::LT => Token::GT,
 		_ => return None,
 	};
 
@@ -89,7 +88,7 @@ impl Type {
 		tokens.get(0).ok_or("Type::parse: no tokens".into()).and_then(|&token| match token {
 			Token::Ident("_") => Ok((Type::Inferred, 1)),
 			Token::Ident(ident) => Ok((Type::Basic(ident.into()), 1)),
-			Token::LT => parse_brackets(tokens, Type::parse_construct),
+			Token::LBrace => parse_brackets(tokens, Type::parse_construct),
 			Token::LParen => parse_brackets(tokens, Type::parse_tuple),
 			t => Err(format!("Type::parse: unexpected token `{:?}`", t))
 		})
@@ -351,7 +350,7 @@ impl Expr {
 
 		match tokens[0] {
 			Token::Ident("cond") => Cond::parse(&tokens[1..]).map(|c| Expr::Cond(c)),
-			Token::Ident("lambda") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
+			Token::Ident("lambda") | Token::Ident("λ") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
 			Token::Ident("block") => parse_items(&tokens[1..]).map(|items| {
 				let (uses, const_defs, exprs) = extract_items(items);
 				Expr::Block(Block{ uses: uses, const_defs: const_defs, exprs: exprs })
@@ -369,8 +368,6 @@ impl Expr {
 				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
 				Token::Ident(_) => Path::parse(tokens).map(|ident| (Expr::Binding(ident), 1)),
-				Token::LT => Ok((Expr::Binding(Path::parse_str("<").unwrap()), 1)),
-				Token::GT => Ok((Expr::Binding(Path::parse_str(">").unwrap()), 1)),
 				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
 			}
 		}

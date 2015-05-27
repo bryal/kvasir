@@ -28,8 +28,6 @@ pub enum Token<'a> {
 	RBracket,
 	LBrace,
 	RBrace,
-	LT,
-	GT,
 	Ident(&'a str),
 	Number(&'a str),
 	String(&'a str),
@@ -108,7 +106,7 @@ pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
 fn is_ident_char(c: char) -> bool {
 	match c {
 		// TODO: Instead of allowing certain chars, just allow all non-reserved chars
-		'_' | '?' | '/' | '+' | '-' | '*' | '=' | '&' | '→' => true,
+		'_' | '?' | '/' | '+' | '-' | '*' | '=' | '&' | '→' | '>' | '<' => true,
 		c if c.is_alphanumeric() => true,
 		_ => false,
 	}
@@ -131,8 +129,6 @@ pub fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 			']' => { tokens.push(Token::RBracket); 1 },
 			'{' => { tokens.push(Token::LBrace); 1 },
 			'}' => { tokens.push(Token::RBrace); 1 },
-			'<' => { tokens.push(Token::LT); 1 },
-			'>' => { tokens.push(Token::GT); 1 },
 			':' => { tokens.push(Token::Colon); 1 },
 			c if c.is_numeric() => {
 				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')

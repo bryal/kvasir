@@ -365,7 +365,7 @@ impl super::Cond {
 			let mut found_type = None;
 
 			for predicate in self.iter_predicates_mut() {
-				predicate.infer_types(&Type::new_bool(), env);
+				predicate.infer_types(&Type::new_basic("bool"), env);
 			}
 			for consequence in self.iter_consequences_mut() {
 				if consequence.type_.is_specified() || {
@@ -382,7 +382,7 @@ impl super::Cond {
 			}
 		} else {
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(&Type::new_bool(), env);
+				predicate.infer_types(&Type::new_basic("bool"), env);
 				consequence.infer_types(expected_type, env);
 			}
 			if let Some(ref mut else_clause) = self.else_clause {
@@ -474,7 +474,7 @@ impl ExprMeta {
 				Expr::NumLit(_) | Expr::VarDef(_) | Expr::Assign(_) => Type::new_basic("i64"),
 				// TODO: This should be a construct somehow
 				Expr::StrLit(_) => Type::new_basic("&str"),
-				Expr::Bool(_) => Type::new_bool(),
+				Expr::Bool(_) => Type::new_basic("bool"),
 				Expr::Binding(ref path) => {
 					path.infer_types(&expected_type, env);
 					path.get_type(&expected_type, env)
