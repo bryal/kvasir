@@ -24,9 +24,15 @@ use std::iter::FromIterator;
 use std::collections::HashMap;
 use super::Type;
 
+macro_rules! core_type {
+	($constr:expr; $($args:expr),*) => {
+		Type::new_construct($constr, vec![$(Type::new_basic($args)),*])
+	}
+}
+
 lazy_static! {
 	pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type> = HashMap::from_iter(vec![
-		("+", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
+		("+", core_type!("fn"; "i64", "i64", "i64")),
 		("-", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
 		("*", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
 		("/", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),

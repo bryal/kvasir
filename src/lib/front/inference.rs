@@ -113,7 +113,7 @@ impl Type {
 			(_, &Type::Inferred) => panic!("Type::specialize_to: Constraint is unknown"),
 			(&Type::Basic(_), &Type::Basic(_)) if self == constraint => Cow::Borrowed(self),
 			(&Type::Construct(ref s1, ref gens), &Type::Construct(ref s2, ref specs)) =>
-				if s1 == s2
+				if Type::constructor_eq(s1, s2)
 			{
 				Cow::Owned(Type::Construct(s1.clone(), constrain_related_types(gens, specs)))
 			} else {
@@ -134,7 +134,7 @@ impl Type {
 			(_, &Type::Inferred) => Cow::Borrowed(self),
 			(&Type::Basic(_), &Type::Basic(_)) if self == constraint => Cow::Borrowed(self),
 			(&Type::Construct(ref s1, ref gens), &Type::Construct(ref s2, ref specs)) =>
-				if s1 == s2
+				if Type::constructor_eq(s1, s2)
 			{
 				Cow::Owned(Type::Construct(s1.clone(), constrain_related_types(gens, specs)))
 			} else {

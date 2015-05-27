@@ -28,6 +28,8 @@ fn list_items_to_string<T: Debug>(list: &[T]) -> String {
 	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
 }
 
+static FUNCTION_CONSTRUCTORS: &'static [&'static str] = &["→", "fn"];
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Type {
 	Inferred,
@@ -66,6 +68,12 @@ impl Type {
 			&Type::Poly(_) => true,
 			_ => false
 		}
+	}
+
+	/// Basically lhs == rhs, with some exceptions. E.g. "→" == "fn"
+	pub fn constructor_eq(lhs: &str, rhs: &str) -> bool {
+		(FUNCTION_CONSTRUCTORS.contains(&lhs) && FUNCTION_CONSTRUCTORS.contains(&rhs))
+			|| lhs == rhs
 	}
 }
 impl Debug for Type {
