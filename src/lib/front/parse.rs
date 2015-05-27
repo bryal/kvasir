@@ -180,9 +180,9 @@ impl Path {
 	}
 
 	fn parse_str(path_s: &str) -> Result<Path, String> {
-		let (is_absolute, path_s) = if path_s.starts_with('/') {
+		let (is_absolute, path_s) = if path_s.starts_with('\\') {
 			if path_s.len() == 1 {
-				return Err("Ident::parse_str: Path is a lone `/`".into());
+				return Err("Ident::parse_str: Path is a lone `\\`".into());
 			} else {
 				(true, &path_s[1..])
 			}
@@ -190,13 +190,13 @@ impl Path {
 			(false, path_s)
 		};
 
-		if path_s.ends_with("/") {
-			return Err("Path::parse_str: Path ends with `/`".into());
+		if path_s.ends_with("\\") {
+			return Err("Path::parse_str: Path ends with `\\`".into());
 		}
 
 		let mut parts = Vec::new();
 
-		for part in path_s.split('/') {
+		for part in path_s.split('\\') {
 			if part == "" {
 				return Err(format!("Path::parse_str: Invalid path `{}`", path_s));
 			}
@@ -228,8 +228,8 @@ fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 }
 
 impl Use {
-	// {use path::to::item} == use path::to::item;
-	// {use (path::to::module sub::item1 item2)} == use path::to::module{ sub::item1, item2 }
+	// (use path\to\item} == use path::to::item;
+	// (use (path\to\module sub\item1 item2)) == use path::to::module{ sub::item1, item2 }
 	fn parse(tokens: &[Token]) -> Result<Use, String> {
 		if tokens.len() == 0 {
 			return Err("Use::parse: no tokens".into());

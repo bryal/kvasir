@@ -141,9 +141,9 @@ impl Path {
 	pub fn to_str(&self) -> String {
 		format!(
 			"{}{}{}",
-			if self.is_absolute() { "/" } else { "" },
+			if self.is_absolute() { "\\" } else { "" },
 			self.parts[0],
-			self.parts[1..].iter().fold(String::new(), |acc, p| acc + "/" + p))
+			self.parts[1..].iter().fold(String::new(), |acc, p| acc + "\\" + p))
 	}
 }
 impl PartialEq<str> for Path {

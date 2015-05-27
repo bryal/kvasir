@@ -214,9 +214,8 @@ impl ToRustSrc for ExprMeta {
 
 impl ToRustSrc for AST {
 	fn to_rust(&self) -> String {
-		format!("{}{}",
-			self.uses.iter()
-				.fold(String::new(), |acc, u| format!("{}{};\n", acc, u.to_rust())),
+		format!("{}\n{}",
+			delim_between_items(&self.uses, "\n"),
 			const_defs_to_rust(&self.const_defs, "\n"))
 	}
 }
