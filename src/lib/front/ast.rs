@@ -322,6 +322,8 @@ impl ExprMeta {
 	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_bool()) }
 	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
 
+	pub fn get_type(&self) -> &Type { &self.type_ }
+
 	pub fn expr(&self) -> &Expr { &self.value }
 	pub fn expr_mut(&mut self) -> &mut Expr { &mut self.value }
 }

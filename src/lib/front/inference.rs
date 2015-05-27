@@ -38,9 +38,9 @@ use std::borrow::Cow;
 use super::*;
 use super::core_lib::core_consts;
 
-type ConstDefScope = HashMap<String, ValueOrType>;
+type ConstDefScope = HashMap<String, Option<ExprMeta>>;
 
-type ConstDefScopeStack = ScopeStack<String, ValueOrType>;
+type ConstDefScopeStack = ScopeStack<String, Option<ExprMeta>>;
 
 struct Env {
 	core_consts: HashMap<&'static str, Type>,
@@ -59,52 +59,6 @@ impl Env {
 			.rev()
 			.find(|stack_tb| stack_tb.ident == bnd)
 			.map(|stack_tb| &mut stack_tb.type_sig)
-	}
-}
-
-enum ValueOrType {
-	Value(ExprMeta),
-	Type(Type),
-}
-impl ValueOrType {
-	fn get_type(&self) -> &Type {
-		match self {
-			&ValueOrType::Value(ref val) => &val.type_,
-			&ValueOrType::Type(ref ty) => &ty
-		}
-	}
-
-	/// Extracts a mutable `ExprMeta` reference from self. Panic if variant is not `Value`
-	fn as_value(&mut self) -> Option<&mut ExprMeta> {
-		match self {
-			&mut ValueOrType::Value(ref mut val) => Some(val),
-			_ => None
-		}
-	}
-
-	/// Return contained `ExprMeta`. Panic if variant is not `Value`
-	fn unwrap_value(self) -> ExprMeta {
-		match self {
-			ValueOrType::Value(val) => val,
-			_ => panic!("ValueOrType::into_value: Variant wasn't `Value`")
-		}
-	}
-
-	/// Replace contained value with its own type as `Type` and return the value.
-	/// Returns `None` if variant is already `Type`
-	fn replace_into_value(&mut self) -> Option<ExprMeta> {
-		self.as_value()
-			.map(|val| val.type_.clone())
-			.map(|ty| replace(self, ValueOrType::Type(ty)).unwrap_value())
-	}
-
-	/// Replace contained type with passed value as `Value`.
-	/// Panic if variant is not `Type`
-	fn insert_value(&mut self, val: ExprMeta) {
-		match self {
-			&mut ValueOrType::Type(_) => *self = ValueOrType::Value(val),
-			_ => panic!("ValueOrType::insert_value: Variant is already `Value`")
-		}
 	}
 }
 
@@ -224,11 +178,11 @@ impl Path {
 	fn get_type(&self, constraint: &Type, env: &Env) -> Type {
 		let general = if let Some(ident) = self.ident() {
 			if let Some(ty) = env.core_consts.get(ident) {
-				ty
+				Cow::Borrowed(ty)
 			} else if let Some((def, _)) = env.const_defs.get(ident) {
-				def.get_type()
+				def.as_ref().map_or(Cow::Owned(Type::Inferred), |e| Cow::Borrowed(e.get_type()))
 			} else if let Some(var_stack_ty) = env.get_var_type(ident) {
-				var_stack_ty
+				Cow::Borrowed(var_stack_ty)
 			} else {
 				panic!("Path::get_type: Unresolved path `{}`", ident)
 			}
@@ -236,7 +190,7 @@ impl Path {
 			panic!("Path::get_type: Not implemented for anything but simple idents")
 		};
 		// Fill in the blanks. A known type can't be inferred to be an unknown type
-		general.add_constraint(&constraint.infer_by(general)).into_owned()
+		general.add_constraint(&constraint.infer_by(&general)).into_owned()
 	}
 
 	fn infer_types(&self, expected_type: &Type, env: &mut Env) {
@@ -248,9 +202,9 @@ impl Path {
 				// Path is a constant
 				let above = env.const_defs.split_from(height + 1);
 
-				if let Some(mut def) = env.const_defs.get_at_height_mut(ident, height)
-					.unwrap()
-					.replace_into_value()
+				if let Some(mut def) = replace(env.const_defs.get_at_height_mut(ident, height)
+						.unwrap(),
+					None)
 				{
 					let prev_var_types = replace(&mut env.var_types, Vec::new());
 
@@ -258,7 +212,7 @@ impl Path {
 
 					env.var_types = prev_var_types;
 
-					env.const_defs.get_at_height_mut(ident, height).unwrap().insert_value(def);
+					*env.const_defs.get_at_height_mut(ident, height).unwrap() = Some(def);
 				}
 
 				env.const_defs.extend(above);
@@ -337,11 +291,11 @@ impl super::SExpr {
 	}
 }
 
-fn value_wrap_defs(defs: HashMap<String, ExprMeta>) -> HashMap<String, ValueOrType> {
-	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, ValueOrType::Value(val))))
+fn wrap_defs_some(defs: HashMap<String, ExprMeta>) -> HashMap<String, Option<ExprMeta>> {
+	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, Some(val))))
 }
-fn value_unwrap_defs(defs: HashMap<String, ValueOrType>) -> HashMap<String, ExprMeta> {
-	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, val.unwrap_value())))
+fn unwrap_option_defs(defs: HashMap<String, Option<ExprMeta>>) -> HashMap<String, ExprMeta> {
+	HashMap::from_iter(defs.into_iter().map(|(name, val)| (name, val.unwrap())))
 }
 
 impl super::Block {
@@ -354,7 +308,7 @@ impl super::Block {
 			return;
 		}
 
-		env.const_defs.push(value_wrap_defs(replace(&mut self.const_defs, HashMap::new())));
+		env.const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));
 
 		let old_vars_len = env.var_types.len();
 
@@ -397,7 +351,7 @@ impl super::Block {
 				.infer_types(parent_expected_type, env);
 		}
 
-		self.const_defs = value_unwrap_defs(
+		self.const_defs = unwrap_option_defs(
 			env.const_defs.pop().expect("Block::infer_types: Could not pop const def scope stack"));
 	}
 }
@@ -557,10 +511,10 @@ impl super::AST {
 		let mut const_defs = ConstDefScopeStack::new();
 
 		// Push the module scope on top of the stack
-		const_defs.push(value_wrap_defs(replace(&mut self.const_defs, HashMap::new())));
+		const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));
 
 		let mut main = match const_defs.get_at_height_mut("main", 0) {
-			Some(main) => main.replace_into_value().unwrap(),
+			Some(main) => replace(main, None).unwrap(),
 			None => panic!("AST::infer_types: No main function found")
 		};
 
@@ -572,13 +526,13 @@ impl super::AST {
 
 		main.infer_types(&Type::new_nil(), &mut env);
 
-		env.const_defs.get_at_height_mut("main", 0).unwrap().insert_value(main);
+		*env.const_defs.get_at_height_mut("main", 0).unwrap() = Some(main);
 
 		if env.const_defs.height() != 1 {
 			panic!("AST::infer_types: Stack is not single scope");
 		}
 
-		self.const_defs = value_unwrap_defs(env.const_defs.pop().unwrap())
+		self.const_defs = unwrap_option_defs(env.const_defs.pop().unwrap())
 	}
 }
 
