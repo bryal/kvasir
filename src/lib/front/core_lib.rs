@@ -24,8 +24,8 @@ use std::iter::FromIterator;
 use std::collections::HashMap;
 use super::Type;
 
-pub fn core_consts() -> HashMap<&'static str, Type> {
-	HashMap::from_iter(vec![
+lazy_static! {
+	pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type> = HashMap::from_iter(vec![
 		("+", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
 		("-", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
 		("*", Type::new_fn(vec![Type::new_basic("i64"), Type::new_basic("i64")], Type::new_basic("i64"))),
@@ -36,5 +36,5 @@ pub fn core_consts() -> HashMap<&'static str, Type> {
 		("true", Type::new_bool()),
 		("false", Type::new_bool()),
 		("println!", Type::new_fn(vec![Type::new_basic("&str"), Type::new_poly("T")], Type::new_nil())),
-	])
+	]);
 }

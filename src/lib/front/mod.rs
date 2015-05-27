@@ -106,8 +106,9 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 	}
 }
 impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
+	/// If item is already `None`, do nothing and return false.
 	pub fn do_for_item_at_height<Q: ?Sized, F>(&mut self, key: &Q, height: usize, action: F)
-		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(Self, &mut V) -> Self,
+		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(Self, &mut V) -> Self
 	{
 		let mut item = match self.get_at_height_mut(key, height) {
 			Some(item) => replace(item, None)

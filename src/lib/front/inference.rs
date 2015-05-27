@@ -36,20 +36,19 @@ use std::iter::FromIterator;
 use std::mem::replace;
 use std::borrow::Cow;
 use super::*;
-use super::core_lib::core_consts;
+use super::core_lib::CORE_CONSTS_TYPES;
 
 type ConstDefScope = HashMap<String, Option<ExprMeta>>;
 
 type ConstDefScopeStack = ScopeStack<String, Option<ExprMeta>>;
 
 struct Env {
-	core_consts: HashMap<&'static str, Type>,
 	const_defs: ConstDefScopeStack,
 	var_types: Vec<TypedBinding>
 }
 impl Env {
 	fn new(const_defs: ConstDefScopeStack, var_types: Vec<TypedBinding>) -> Env {
-		Env{ core_consts: core_consts(), const_defs: const_defs, var_types: var_types }
+		Env{ const_defs: const_defs, var_types: var_types }
 	}
 
 	fn get_var_type(&self, ident: &str) -> Option<&Type> {
@@ -181,7 +180,7 @@ fn constrain_related_types(generals: &[Type], criteria: &[Type]) -> Vec<Type> {
 impl Path {
 	fn get_type(&self, constraint: &Type, env: &Env) -> Type {
 		let general = if let Some(ident) = self.ident() {
-			if let Some(ty) = env.core_consts.get(ident) {
+			if let Some(ty) = CORE_CONSTS_TYPES.get(ident) {
 				Cow::Borrowed(ty)
 			} else if let Some((def, _)) = env.const_defs.get(ident) {
 				def.as_ref().map_or(Cow::Owned(Type::Inferred), |e| Cow::Borrowed(e.get_type()))
@@ -199,16 +198,18 @@ impl Path {
 
 	fn infer_types(&self, expected_type: &Type, env: &mut Env) {
 		if let Some(ident) = self.ident() {
-			if env.core_consts.get(ident).is_some() {
+			if CORE_CONSTS_TYPES.get(ident).is_some() {
 				// Don't try to infer types for internal functions
 				()
 			} else if let Some(height) = env.const_defs.get_height(ident) {
 				// Path is a constant
 				if env.const_defs.get_at_height(ident, height).unwrap().is_some() {
 					env.const_defs.do_for_item_at_height(ident, height, |const_defs, def| {
-						let mut env = Env::new(const_defs, Vec::new());
-						def.infer_types(&Type::Inferred, &mut env);
-						env.const_defs
+						let mut local_env = Env::new(const_defs, Vec::new());
+
+						def.infer_types(&Type::Inferred, &mut local_env);
+
+						local_env.const_defs
 					})
 				}
 			} else if expected_type.is_specified() {

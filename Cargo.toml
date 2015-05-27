@@ -8,3 +8,4 @@ license = "MIT"
 [dependencies]
 getopts = "*"
 bitflags = "*"
+lazy_static = "*"

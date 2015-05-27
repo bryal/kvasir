@@ -78,6 +78,8 @@
 
 #![feature(non_ascii_idents, box_patterns, rustc_private, collections, collections_drain)]
 
+#[macro_use]
+extern crate lazy_static;
 extern crate getopts;
 #[macro_use]
 extern crate bitflags;
