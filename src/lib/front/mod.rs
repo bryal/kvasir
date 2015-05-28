@@ -20,11 +20,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::mem::replace;
-use std::borrow::Borrow;
-
 pub use self::lex::{ tokenize_string, Token };
 pub use self::ast::*;
 
@@ -33,96 +28,3 @@ pub mod lex;
 pub mod parse;
 pub mod inference;
 pub mod core_lib;
-
-/// A stack of scopes of something. Fast access due to hashmaps, and guaranteed to contain no
-/// duplications at any point.
-///
-/// Used for ConstDef:s. Only one constant can be defined for a single name at any given moment.
-pub struct ScopeStack<K, V>(
-	Vec<HashMap<K, V>>
-);
-impl<K: Hash + Eq, V> ScopeStack<K, V> {
-	pub fn new() -> ScopeStack<K, V> { ScopeStack(Vec::new()) }
-
-	pub fn height(&self) -> usize { self.0.len() }
-
-	pub fn split_from(&mut self, from: usize) -> Vec<HashMap<K, V>> { self.0.split_off(from) }
-
-	pub fn push(&mut self, scope: HashMap<K, V>) {
-		if scope.keys().any(|key| self.contains_def(key)) {
-			panic!("ScopeStack::push: Key already exists in scope");
-		}
-		self.0.push(scope);
-	}
-	pub fn pop(&mut self) -> Option<HashMap<K, V>> { self.0.pop() }
-	pub fn extend<I: IntoIterator<Item=HashMap<K, V>>>(&mut self, scopes: I) {
-		for scope in scopes {
-			self.push(scope);
-		}
-	}
-
-	pub fn contains_def<Q: ?Sized>(&self, def_ident: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
-		self.0.iter().any(|scope| scope.contains_key(def_ident))
-	}
-
-	pub fn get_height<Q: ?Sized>(&self, key: &Q) -> Option<usize> where Q: Hash + Eq, K: Borrow<Q> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if scope.contains_key(key) {
-				return Some(height);
-			}
-		}
-		None
-	}
-
-	pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<(&V, usize)> where Q: Hash + Eq, K: Borrow<Q> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if let Some(ref def) = scope.get(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-	pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<(&mut V, usize)>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		for (height, scope) in self.0.iter_mut().enumerate() {
-			if let Some(def) = scope.get_mut(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
-
-	/// Faster than `get` because only one level is searched in.
-	pub fn get_at_height<Q: ?Sized>(&self, key: &Q, height: usize) -> Option<&V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		self.0.get(height).and_then(|scope| scope.get(key))
-	}
-	pub fn get_at_height_mut<Q: ?Sized>(&mut self, key: &Q, height: usize) -> Option<&mut V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
-	}
-}
-impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
-	/// If item is already `None`, do nothing and return false.
-	pub fn do_for_item_at_height<Q: ?Sized, F>(&mut self, key: &Q, height: usize, action: F)
-		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(Self, &mut V) -> Self
-	{
-		let mut item = match self.get_at_height_mut(key, height) {
-			Some(item) => replace(item, None)
-				.expect("ScopeStack::do_for_item_at_height: Item was `None`"),
-			None => panic!("ScopeStack::do_for_item_at_height: No entry for key function found")
-		};
-
-		let above = self.split_from(height + 1);
-
-		let const_defs = replace(self, ScopeStack::new());
-		*self = action(const_defs, &mut item);
-
-		*self.get_at_height_mut(key, height).unwrap() = Some(item);
-
-		self.extend(above);
-	}
-}

@@ -20,49 +20,29 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::collections::HashMap;
+use std::collections::{ HashMap, HashSet };
 use std::mem::replace;
 use front::AST;
 
-type ConstDefScope = HashMap<String, ConstDefOrType>;
-
-type ConstDefScopeStack = ScopeStack<String, ConstDefOrType>;
-
-enum ConstUse {
-	Used,
-	Unused
-}
-
-fn used_consts_map(defs: &[ConstDef]) -> HashMap<String, ConstUse> {
-	let mut used_consts = HashMap::new();
-	for def in defs {
-		used_consts.insert(def.binding.ident.clone(), false);
-	}
-	used_consts
-}
-
-/// Maps a Vec<ConstDef> to a ConstDefScope
-fn vec_to_def_scope(defs_vec: Vec<ConstDef>) -> ConstDefScope {
-	let mut scope = ConstDefScope::new();
-	for def in defs_vec.into_iter() {
-		scope.insert(def.binding.ident.clone(), ConstDefOrType::Def(def));
-	}
-	scope
-}
-
-/// Maps a ConstDefScope to a Vec<ConstDef>
-fn def_scope_to_vec(scope: ConstDefScope) -> Vec<ConstDef> {
-	scope.into_iter().map(|(_, def)| def.unwrap_def()).collect()
-}
-
 impl AST {
 	pub fn remove_unused_consts(&mut self) {
-		let mut consts_use = ScopeStack::new();
+		let mut used_consts = HashSet::new();
 		let mut const_defs = ConstDefScopeStack::new();
 
-		consts_use.push(used_consts_map(&self.const_defs));
+		const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));
 
-		const_defs.push(const_defs_map(replace(&mut self.const_defs, Vec::new())));
+		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
+			let mut env = Env::new(const_defs, Vec::new());
+			main.infer_types(&Type::new_nil(), &mut env);
+			env.const_defs
+		});
+
+		if const_defs.height() != 1 {
+			panic!("AST::infer_types: Stack is not single scope");
+		}
+
+		self.const_defs = unwrap_option_defs(const_defs.pop().unwrap())
+
 
 
 
