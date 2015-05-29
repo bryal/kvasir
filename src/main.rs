@@ -22,38 +22,39 @@
 
 //! Rust and Scheme inspired implementation of LISP
 //!
-//! # Envisioned syntax
-//! ```ignore
-//! (extern crate num)
-//!
-//! ; Types are static and can be specified with `: <TYPE>` or inferred, like in Rust.
-//!
-//! ; `define` translates to `const` and `fn` in Rust.
+//! # Envisioned syntax⊢
+//! ```scheme
+//! ; Types are static and can be annotated with `(:TYPE EXPR)` or inferred, similar to Rust.
 //!
 //! ; Define a constant C_FOO with value 1_000 of type U32
-//! {define C_FOO 1_000: U16} ; == const C_FOO = 1_000_u16;
+//! > (def-const C_FOO (:U16 1_000))
+//! C_FOO :: U16
 //!
-//! ; Define a constant C_BAR of type U64, with value 337 of type num::BigInt coerced to U64.
+//! ; Define a constant C_BAR of type U64, with value of C_FOO of type U16 coerced to U64.
 //! ; Number types can only be coerced upwards, to higher precision
-//! {define: U64 C_BAR 337: num::BigInt} ; == const C_BAR: u64 = 337_u32;
+//! > (def-const C_BAR (:U64 C_FOO))
+//! C_BAR :: U64
 //!
-//! ; Define a constant C_BAZ of inferred type num::BigInt
-//! {define C_BAZ (+ C_FOO C_BAR)}
+//! ; Define a constant C_BAZ of inferred type U64. The result from adding numbers with different
+//! ; precision gets the type of the highest precision type of the two
+//! > (def-const C_BAZ (+ C_FOO C_BAR))
+//! C_BAZ :: U64
 //!
-//! ; Define a function of inferred type. Only specify type of argument `a`, and infer the rest
-//! {define (f_foo a: U32) a} ; == fn f_foo(a: u32) -> u32 { a }
+//! ; Define a function of inferred polymorphic type.
+//! > (def-func (f_foo a) a)
+//! ; which is equivalent to
+//! > (def-const f_foo (λ (a) a))
+//! f_foo :: ∀__Polya . __Polya → __Polya
 //!
-//! ; Try to define a function of inferred type. Don't specify any types. Won't work.
-//! {define (f_bar a) a} ; == fn f_foo(a: _) -> _ { a }
-//!
-//! ; Define a function of type Fn<(F32), F64>.
-//! ; Infer argument type and return value coersion type from function type
-//! {define (f_baz: Fn<(F32) F64> a) a} ; == fn tmp(a: _) -> _ {a}; const f_foo: fn(f32) -> f64 = tmp;
+//! ; Define a function of inferred constrained type.
+//! ; add : Num → Num → Num ⇒ α : Num, β : Num in add α β ⇒ λ1.λβ.add 1 β : Num → Num → Num
+//! > (def-func (inc n) (+ 1 n))
+//! inc :: Num → Num
 //!
 //! The `main` function entry, same as Rust `fn main() { ...`
-//! {define (main) (block
+//! (def-func (main) (block
 //! 	(println! "c_foo: {}, c_bar: {}, c_baz: {}" C_FOO C_BAR C_BAZ)
-//! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32))))}
+//! 	(println! "f_foo: {}" (f_baz (as C_BAZ F32)))))
 //! ```
 
 // TODO: Compile time execution. By marking functions as pure,
@@ -69,9 +70,9 @@
 //     map f (first:rest) = f first : map f rest
 // do not try to infer type, instead, leave types of f, first, and rest as type variables
 
-// TODO: Implement something like
-// [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system)
-// for type inference
+// TODO: Formally prove that all type inference is correct using
+// [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
+// [Good explanation](http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
 
 // Per default, expect that all functions are pure, but make it possible to explicitly mark them as
 // unpure. Similar to unsafe in Rust.
