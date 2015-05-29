@@ -164,6 +164,9 @@ fn main() {
 	let mut ast = AST::parse(&tokens).unwrap();
 	println!("AST:\n{:?}\n", ast);
 
+	ast.remove_unused_consts();
+	println!("AST REMOVED UNUSED:\n{:?}\n", ast);
+
 	ast.infer_types();
 	println!("AST INFERED:\n{:?}\n", ast);
 

@@ -22,11 +22,107 @@
 
 use std::collections::{ HashMap, HashSet };
 use std::mem::replace;
-use front::AST;
+use lib::ScopeStack;
+use lib::front::*;
 
-enum Use {
-	Used,
-	Unused,
+type ConstDefs = ScopeStack<String, Option<(ExprMeta, Used)>>;
+
+enum Used {
+	Yes,
+	No,
+}
+impl Used {
+	fn is_yes(&self) -> bool { match *self { Used::Yes => true, _ => false } }
+	fn is_no(&self) -> bool { !self.is_yes() }
+}
+
+impl Path {
+	fn remove_unused_consts(&self, const_defs: &mut ConstDefs) {
+		if let Some(ident) = self.ident() {
+			if let Some(height) = const_defs.get_height(ident) {
+				if const_defs.get_at_height(ident, height).unwrap().is_some() {
+					const_defs.do_for_item_at_height(ident, height, |const_defs, def|
+						if def.1.is_no() {
+							def.1 = Used::Yes;
+							def.0.remove_unused_consts(const_defs)
+						}
+					)
+				}
+			}
+		} else {
+			panic!("Path::remove_unused_consts: Not implemented for anything but simple idents")
+		}
+	}
+}
+
+impl SExpr {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		self.func.remove_unused_consts(const_defs);
+
+		for arg in &mut self.args {
+			arg.remove_unused_consts(const_defs);
+		}
+	}
+}
+
+impl Block {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		let mut const_defs = const_defs.map_push_local(
+			&mut self.const_defs,
+			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
+			|it| it.filter_map(|(k, v)| match v.unwrap() {
+				(e, Used::Yes) => Some((k, e)),
+				(e, Used::No) => None,
+			}));
+
+		for expr in &mut self.exprs {
+			expr.remove_unused_consts(&mut const_defs);
+		}
+	}
+}
+
+impl Cond {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		for pred in self.iter_predicates_mut() {
+			pred.remove_unused_consts(const_defs);
+		}
+		for conseq in self.iter_consequences_mut() {
+			conseq.remove_unused_consts(const_defs);
+		}
+	}
+}
+
+impl Lambda {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		self.body.remove_unused_consts(const_defs);
+	}
+}
+
+impl VarDef {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		self.body.remove_unused_consts(const_defs);
+	}
+}
+
+impl Assign {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		self.rvalue.remove_unused_consts(const_defs);
+	}
+}
+
+impl ExprMeta {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+		match *self.value {
+			Expr::Binding(ref path) => path.remove_unused_consts(const_defs),
+			Expr::SExpr(ref mut sexpr) => sexpr.remove_unused_consts(const_defs),
+			Expr::Block(ref mut block) => block.remove_unused_consts(const_defs),
+			Expr::Cond(ref mut cond) => cond.remove_unused_consts(const_defs),
+			Expr::Lambda(ref mut lambda) => lambda.remove_unused_consts(const_defs),
+			Expr::VarDef(ref mut def) => def.remove_unused_consts(const_defs),
+			Expr::Assign(ref mut assign) => assign.remove_unused_consts(const_defs),
+			_ => (),
+		}
+	}
 }
 
 impl AST {
@@ -34,59 +130,17 @@ impl AST {
 		let mut const_defs = ConstDefs::new();
 
 		// Push the module scope on top of the stack
-		let mut const_defs = const_defs.map_push_local(&mut self.const_defs, Some, Option::unwrap);
+		let mut const_defs = const_defs.map_push_local(
+			&mut self.const_defs,
+			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
+			|it| it.filter_map(|(k, v)| match v.unwrap() {
+				(e, Used::Yes) => Some((k, e)),
+				(e, Used::No) => None,
+			}));
 
 		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
-			let mut used_consts = HashSet::new();
-			main.remove_unused_consts(const_defs, &mut used_consts)
+			main.1 = Used::Yes;
+			main.0.remove_unused_consts(const_defs)
 		});
-
-
-
-
-		let mut const_defs = ConstDefScopeStack::new();
-
-		const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));
-
-		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
-			let mut env = Env::new(const_defs, Vec::new());
-			main.infer_types(&Type::new_nil(), &mut env);
-			env.const_defs
-		});
-
-		if const_defs.height() != 1 {
-			panic!("AST::infer_types: Stack is not single scope");
-		}
-
-		self.const_defs = unwrap_option_defs(const_defs.pop().unwrap())
-
-
-
-
-		let mut const_defs = ConstDefScopeStack::new();
-
-		// Push the module scope on top of the stack
-		const_defs.push(vec_to_def_scope(replace(&mut self.const_defs, Vec::new())));
-
-		let mut main = match const_defs.get_at_height_mut("main", 0) {
-			Some(main) => main.replace_into_def().unwrap(),
-			None => panic!("AST::infer_types: No main function found")
-		};
-
-		let mut env = Env{
-			core_consts: core_consts(),
-			const_defs: const_defs,
-			var_types: Vec::new()
-		};
-
-		main.infer_types(&mut env);
-
-		env.const_defs.get_at_height_mut("main", 0).unwrap().insert_def(main);
-
-		if env.const_defs.height() != 1 {
-			panic!("AST::infer_types: Stack is not single scope");
-		}
-
-		self.const_defs = def_scope_to_vec(env.const_defs.pop().unwrap())
 	}
 }

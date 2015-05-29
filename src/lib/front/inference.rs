@@ -451,11 +451,13 @@ impl ExprMeta {
 		let found_type = {
 			let expected_type = self.type_.add_constraint(parent_expected_type);
 
+			// TODO: Move this step to Expr::infer_types
 			match *self.value {
-				// Doesn't have children to infer types for
 				Expr::Nil => Type::new_nil(),
+				// TODO: Add inference for these
+				Expr::VarDef(_) | Expr::Assign(_) => Type::new_nil(),
 				// TODO: This should be an internal, more general integer type
-				Expr::NumLit(_) | Expr::VarDef(_) | Expr::Assign(_) => Type::new_basic("i64"),
+				Expr::NumLit(_) => Type::new_basic("i64"),
 				// TODO: This should be a construct somehow
 				Expr::StrLit(_) => Type::new_basic("&str"),
 				Expr::Bool(_) => Type::new_basic("bool"),

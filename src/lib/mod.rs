@@ -22,9 +22,12 @@
 
 pub use self::front::AST;
 pub use self::front::tokenize_string;
+
 pub use self::back::compile;
+
 pub use self::collections::ScopeStack;
 
 pub mod front;
+pub mod middle;
 pub mod back;
 pub mod collections;
