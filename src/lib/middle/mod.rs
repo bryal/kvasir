@@ -24,9 +24,26 @@ use std::collections::{ HashMap, HashSet };
 use std::mem::replace;
 use front::AST;
 
+enum Use {
+	Used,
+	Unused,
+}
+
 impl AST {
 	pub fn remove_unused_consts(&mut self) {
-		let mut used_consts = HashSet::new();
+		let mut const_defs = ConstDefs::new();
+
+		// Push the module scope on top of the stack
+		let mut const_defs = const_defs.map_push_local(&mut self.const_defs, Some, Option::unwrap);
+
+		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
+			let mut used_consts = HashSet::new();
+			main.remove_unused_consts(const_defs, &mut used_consts)
+		});
+
+
+
+
 		let mut const_defs = ConstDefScopeStack::new();
 
 		const_defs.push(wrap_defs_some(replace(&mut self.const_defs, HashMap::new())));

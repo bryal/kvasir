@@ -280,7 +280,10 @@ impl super::Block {
 			return;
 		}
 
-		let mut const_defs = const_defs.map_push_local(&mut self.const_defs, Some, Option::unwrap);
+		let mut const_defs = const_defs.map_push_local(
+			&mut self.const_defs,
+			|it| it.map(|(k, v)| (k, Some(v))),
+			|it| it.map(|(k, v)| (k, v.unwrap())));
 
 		let old_vars_len = var_types.len();
 
@@ -488,7 +491,10 @@ impl super::AST {
 		let mut const_defs = ConstDefs::new();
 
 		// Push the module scope on top of the stack
-		let mut const_defs = const_defs.map_push_local(&mut self.const_defs, Some, Option::unwrap);
+		let mut const_defs = const_defs.map_push_local(
+			&mut self.const_defs,
+			|it| it.map(|(k, v)| (k, Some(v))),
+			|it| it.map(|(k, v)| (k, v.unwrap())));
 
 		const_defs.do_for_item_at_height("main", 0, |const_defs, main|
 			main.infer_types(&Type::new_nil(), &mut Vec::new(), const_defs));

@@ -20,48 +20,30 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::collections::HashMap;
+use std::collections::hash_map::{ HashMap, IntoIter };
 use std::iter::FromIterator;
 use std::hash::Hash;
 use std::mem::replace;
 use std::borrow::Borrow;
 use std::ops::{ Deref, DerefMut };
 
-struct BorrowGuard<'a, K: 'a + Hash + Eq, V: 'a> {
-	scope_stack: &'a mut ScopeStack<K, V>,
-	borrowed_map: &'a mut HashMap<K, V>,
-}
-impl<'a, K: Hash + Eq, V> Drop for BorrowGuard<'a, K, V> {
-	fn drop(&mut self) {
-		*self.borrowed_map = self.scope_stack.pop().unwrap();
-	}
-}
-impl<'a, K: Hash + Eq, V> Deref for BorrowGuard<'a, K, V> {
-	type Target = ScopeStack<K, V>;
-	fn deref(&self) -> &ScopeStack<K, V> { &self.scope_stack }
-}
-impl<'a, K: Hash + Eq, V> DerefMut for BorrowGuard<'a, K, V> {
-	fn deref_mut(&mut self) -> &mut ScopeStack<K, V> { self.scope_stack }
-}
-
-struct MappedBorrowGuard<'a, K: 'a + Hash + Eq, E: 'a, V: 'a, Fi: Fn(V) -> E> {
+struct BorrowGuard<'a, K: 'a + Hash + Eq, E: 'a, V: 'a, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> {
 	scope_stack: &'a mut ScopeStack<K, V>,
 	borrowed_map: &'a mut HashMap<K, E>,
 	f_inverse: Fi
 }
-impl<'a, K: Hash + Eq, E, V, Fi: Fn(V) -> E> Drop for MappedBorrowGuard<'a, K, E, V, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> Drop for BorrowGuard<'a, K, E, V, ItOut, Fi> {
 	fn drop(&mut self) {
-		*self.borrowed_map = HashMap::from_iter(self.scope_stack.pop()
-			.unwrap()
-			.into_iter()
-			.map(|(k, v)| (k, (self.f_inverse)(v))))
+		*self.borrowed_map = HashMap::from_iter(
+			(self.f_inverse)(self.scope_stack.pop().unwrap().into_iter())
+		)
 	}
 }
-impl<'a, K: Hash + Eq, E, V, Fi: Fn(V) -> E> Deref for MappedBorrowGuard<'a, K, E, V, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> Deref for BorrowGuard<'a, K, E, V, ItOut, Fi> {
 	type Target = ScopeStack<K, V>;
 	fn deref(&self) -> &ScopeStack<K, V> { &self.scope_stack }
 }
-impl<'a, K: Hash + Eq, E, V, Fi: Fn(V) -> E> DerefMut for MappedBorrowGuard<'a, K, E, V, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> DerefMut for BorrowGuard<'a, K, E, V, ItOut, Fi> {
 	fn deref_mut(&mut self) -> &mut ScopeStack<K, V> { self.scope_stack }
 }
 
@@ -94,25 +76,38 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		}
 	}
 
-	pub fn push_local<'a>(&'a mut self, borrowed: &'a mut HashMap<K, V>) -> BorrowGuard<K, V> {
+	pub fn push_local<'a>(&'a mut self, borrowed: &'a mut HashMap<K, V>)
+		-> BorrowGuard<K, V, V, IntoIter<K, V>, fn(IntoIter<K, V>) -> IntoIter<K, V>>
+	{
+		fn identity<T>(x: T) -> T { x };
+
 		self.push(replace(borrowed, HashMap::new()));
 
-		BorrowGuard{ scope_stack: self, borrowed_map: borrowed }
+		BorrowGuard{
+			scope_stack: self,
+			borrowed_map: borrowed,
+			f_inverse: identity::<IntoIter<K, V>> as fn(IntoIter<K, V>) -> IntoIter<K, V>
+		}
 	}
 
 	/// Borrows a `HashMap<K, V>`, maps it to a `HashMap<K, E>`, then pushes it onto the stack.
 	/// When the returned `BorrowGuard` goes out of scope, pop and replace back the borrowed map.
-	pub fn map_push_local<'a, E, F, Fi>(&'a mut self,
+	pub fn map_push_local<'a, E, ItIn, F, ItOut, Fi>(&'a mut self,
 		borrowed: &'a mut HashMap<K, E>,
-		f: F, f_inverse: Fi)
-			-> MappedBorrowGuard<K, E, V, Fi>
-			where F: Fn(E) -> V, Fi: Fn(V) -> E
+		f: F,
+		f_inverse: Fi)
+			-> BorrowGuard<K, E, V, ItOut, Fi>
+			where
+				ItIn: Iterator<Item=(K, V)>,
+				ItOut: Iterator<Item=(K, E)>,
+				F: Fn(IntoIter<K, E>) -> ItIn,
+				Fi: Fn(IntoIter<K, V>) -> ItOut
 	{
 		let map = replace(borrowed, HashMap::new());
 
-		self.push(HashMap::from_iter(map.into_iter().map(|(k, v)| (k, f(v)))));
+		self.push(HashMap::from_iter(f(map.into_iter())));
 
-		MappedBorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: f_inverse }
+		BorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: f_inverse }
 	}
 
 	pub fn contains_def<Q: ?Sized>(&self, def_ident: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
