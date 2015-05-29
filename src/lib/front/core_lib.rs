@@ -22,7 +22,7 @@
 
 use std::iter::FromIterator;
 use std::collections::HashMap;
-use super::Type;
+use lib::Type;
 
 macro_rules! core_type {
 	($constr:expr; $($args:expr),*) => {

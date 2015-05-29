@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use super::*;
+use lib::ast::*;
 
 type ConstDef = (String, ExprMeta);
 

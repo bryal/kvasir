@@ -33,7 +33,7 @@ use self::rustc_trans::session::config::{ build_session_options, build_configura
 use self::rustc_trans::session::{ build_session, Session };
 use self::rustc_driver::{ driver, RustcDefaultCalls, CompilerCalls, handle_options };
 use self::emit::generate_rust_src;
-use lib::front::AST;
+use lib::AST;
 use { Emit, EMIT_RUST };
 
 pub mod emit;

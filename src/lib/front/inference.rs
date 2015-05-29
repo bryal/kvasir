@@ -32,7 +32,7 @@
 // TODO: Add field on things to keep track of whether inference has happened
 
 use std::borrow::Cow;
-use lib::ScopeStack;
+use lib::*;
 use super::*;
 use super::core_lib::CORE_CONSTS_TYPES;
 
@@ -216,7 +216,7 @@ fn extract_fn_sig(sig: &Type) -> Option<(&[Type], &Type)> {
 	}
 }
 
-impl super::SExpr {
+impl SExpr {
 	fn body_type(&self) -> &Type {
 		extract_fn_sig(&self.func.type_).expect("SExpr::body_type: Could not extract fn sig").1
 	}
@@ -268,7 +268,7 @@ impl super::SExpr {
 	}
 }
 
-impl super::Block {
+impl Block {
 	fn get_type(&self) -> &Type {
 		&self.exprs.last().expect("Block::get_type: No expressions in block").type_
 	}
@@ -330,7 +330,7 @@ impl super::Block {
 	}
 }
 
-impl super::Cond {
+impl Cond {
 	fn get_type(&self) -> &Type {
 		match self.iter_consequences().map(|c| &c.type_).find(|ty| ty.is_specified()) {
 			Some(found) => found,
@@ -382,7 +382,7 @@ fn inferred_to_polymorphic(mut binds: Vec<TypedBinding>) -> Vec<TypedBinding> {
 	binds
 }
 
-impl super::Lambda {
+impl Lambda {
 	fn infer_arg_types(&mut self, constraints: &[Type]) {
 		for (arg, constraint) in self.arg_bindings.iter_mut().zip(constraints) {
 			arg.type_sig = arg.type_sig.infer_to(constraint).into_owned();
@@ -433,7 +433,7 @@ impl super::Lambda {
 	}
 }
 
-impl super::VarDef {
+impl VarDef {
 	fn infer_types(&mut self, var_types: &mut Vec<TypedBinding>, const_defs: &mut ConstDefs) {
 		self.body.infer_types(&self.binding.type_sig, var_types, const_defs);
 		self.binding.type_sig = self.binding.type_sig.infer_to(&self.body.type_).into_owned();
@@ -488,7 +488,7 @@ impl ExprMeta {
 	}
 }
 
-impl super::AST {
+impl AST {
 	pub fn infer_types(&mut self) {
 		let mut const_defs = ConstDefs::new();
 

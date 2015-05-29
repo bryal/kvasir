@@ -22,8 +22,7 @@
 
 use std::collections::{ HashMap, HashSet };
 use std::mem::replace;
-use lib::ScopeStack;
-use lib::front::*;
+use lib::*;
 
 type ConstDefs = ScopeStack<String, Option<(ExprMeta, Used)>>;
 

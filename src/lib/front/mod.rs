@@ -20,10 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-pub use self::lex::{ tokenize_string, Token };
-pub use self::ast::*;
+pub use self::lex::Token;
 
-pub mod ast;
 pub mod lex;
 pub mod parse;
 pub mod inference;

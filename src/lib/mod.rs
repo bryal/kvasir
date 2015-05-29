@@ -20,14 +20,13 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-pub use self::front::AST;
-pub use self::front::tokenize_string;
-
+pub use self::front::lex::tokenize_string;
 pub use self::back::compile;
-
+pub use self::ast::*;
 pub use self::collections::ScopeStack;
 
 pub mod front;
 pub mod middle;
 pub mod back;
+pub mod ast;
 pub mod collections;

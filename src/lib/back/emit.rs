@@ -28,7 +28,7 @@
 //! 	* LLVM something ☐
 
 use std::collections::HashMap;
-use lib::front::*;
+use lib::*;
 
 pub trait ToRustSrc {
 	fn to_rust(&self) -> String;
