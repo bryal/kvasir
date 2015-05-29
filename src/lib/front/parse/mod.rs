@@ -26,10 +26,12 @@
 // TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
 
 use std::collections::HashMap;
+use lib::{ Path, Use, Type, TypedBinding };
 use super::*;
-use lib::ast::*;
+use self::ast::{ MacroRules, SExpr, Block, Cond, Lambda, Expr, ExprMeta };
+pub use self::ast::AST;
 
-type ConstDef = (String, ExprMeta);
+mod ast;
 
 fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 	let delim = match open_token {
@@ -353,8 +355,13 @@ impl Expr {
 			Token::Ident("cond") => Cond::parse(&tokens[1..]).map(|c| Expr::Cond(c)),
 			Token::Ident("lambda") | Token::Ident("λ") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
 			Token::Ident("block") => parse_items(&tokens[1..]).map(|items| {
-				let (uses, const_defs, exprs) = extract_items(items);
-				Expr::Block(Block{ uses: uses, const_defs: const_defs, exprs: exprs })
+				let (macro_defs, uses, const_defs, exprs) = extract_items(items);
+				Expr::Block(Block{
+					macro_defs: macro_defs,
+					uses: uses,
+					const_defs: const_defs,
+					exprs: exprs
+				})
 			}),
 			_ => SExpr::parse(tokens).map(|se| Expr::SExpr(se)),
 		}
@@ -424,8 +431,9 @@ impl ExprMeta {
 
 #[derive(Debug)]
 pub enum Item {
+	MacroDef((String, MacroRules)),
 	Use(Use),
-	ConstDef(ConstDef),
+	ConstDef((String, ExprMeta)),
 	Expr(ExprMeta),
 }
 impl Item {
@@ -478,11 +486,17 @@ fn parse_items(tokens: &[Token]) -> Result<Vec<Item>, String> {
 	Ok(items)
 }
 
-fn extract_items(items: Vec<Item>) -> (Vec<Use>, HashMap<String, ExprMeta>, Vec<ExprMeta>) {
-	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), HashMap::new(), Vec::new());
+fn extract_items(items: Vec<Item>)
+	-> (HashMap<String, MacroRules>, Vec<Use>, HashMap<String, ExprMeta>, Vec<ExprMeta>)
+{
+	let (mut macro_defs, mut uses, mut const_defs, mut exprs)
+		= (HashMap::new(), Vec::new(), HashMap::new(), Vec::new());
 
 	for item in items {
 		match item {
+			Item::MacroDef((name, m)) => if let Some(_) = macro_defs.insert(name, m) {
+				panic!("extract_items: Macro already exists in map")
+			},
 			Item::Use(u) => uses.push(u),
 			Item::ConstDef((name, val)) => match const_defs.insert(name, val) {
 				None => (),
@@ -492,17 +506,17 @@ fn extract_items(items: Vec<Item>) -> (Vec<Use>, HashMap<String, ExprMeta>, Vec<
 		}
 	}
 
-	(uses, const_defs, exprs)
+	(macro_defs, uses, const_defs, exprs)
 }
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
 		parse_items(tokens).and_then(|items| {
-			let (uses, consts, exprs) = extract_items(items);
+			let (macro_defs, uses, consts, exprs) = extract_items(items);
 			if !exprs.is_empty() {
 				Err(format!("AST::parse: Expression(s) found in AST root"))
 			} else {
-				Ok(AST{ uses:uses, const_defs: consts })
+				Ok(AST{ macro_defs: macro_defs, uses:uses, const_defs: consts })
 			}
 		})
 	}

@@ -27,4 +27,5 @@
 (--def-const main (λ ()
     (println! "{}" (block
         (--def-const a 10)
+        (--def-const b 10)
         (fib a)))))

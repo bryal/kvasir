@@ -98,7 +98,6 @@ impl Debug for TypedBinding {
 	}
 }
 
-
 /// A path to an expression or item. Could be a path to a module in a use statement,
 /// of a path to a function or constant in an expression.
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -113,17 +112,6 @@ impl Path {
 
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
 
-	pub fn concat(mut self, other: Path) -> Result<Path, String> {
-		if other.is_absolute {
-			Err(format!(
-				"Path::concat: `{}` is an absolute path",
-				other.to_str()))
-		} else {
-			self.parts.extend(other.parts);
-			Ok(self)
-		}
-	}
-
 	pub fn parts(&self) -> &[String] { &self.parts }
 
 	/// If self is just a simple ident, return it as Some
@@ -132,6 +120,17 @@ impl Path {
 			Some(&self.parts[0])
 		} else {
 			None
+		}
+	}
+
+	pub fn concat(mut self, other: Path) -> Result<Path, String> {
+		if other.is_absolute {
+			Err(format!(
+				"Path::concat: `{:?}` is an absolute path",
+				other.to_str()))
+		} else {
+			self.parts.extend(other.parts);
+			Ok(self)
 		}
 	}
 
@@ -318,9 +317,7 @@ pub struct ExprMeta {
 	pub type_: Type
 }
 impl ExprMeta {
-	pub fn new(value: Expr, ty: Type) -> ExprMeta {
-		ExprMeta{ value: Box::new(value), type_: ty }
-	}
+	pub fn new(value: Expr, ty: Type) -> Self { ExprMeta{ value: Box::new(value), type_: ty } }
 	pub fn new_true() -> ExprMeta { ExprMeta::new(Expr::Bool(true), Type::new_basic("bool")) }
 	pub fn new_false() -> ExprMeta { ExprMeta::new(Expr::Bool(false), Type::new_basic("bool")) }
 	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
