@@ -69,7 +69,7 @@ impl Block {
 			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
 			|it| it.filter_map(|(k, v)| match v.unwrap() {
 				(e, Used::Yes) => Some((k, e)),
-				(_, Used::No) => None,
+				(_, Used::No) => { println!("Warning: Unused procedure `{}`", k); None },
 			}));
 
 		for expr in &mut self.exprs {
@@ -132,7 +132,7 @@ impl AST {
 			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
 			|it| it.filter_map(|(k, v)| match v.unwrap() {
 				(e, Used::Yes) => Some((k, e)),
-				(_, Used::No) => None,
+				(_, Used::No) => { println!("Warning: Unused procedure `{}`", k); None },
 			}));
 
 		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
