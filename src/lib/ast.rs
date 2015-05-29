@@ -110,9 +110,6 @@ impl Path {
 	pub fn new(parts: Vec<String>, is_absolute: bool) -> Path {
 		Path{ parts: parts, is_absolute: is_absolute }
 	}
-	pub fn from_ident(ident: &str) -> Path {
-		Path::new(vec![ident.into()], false)
-	}
 
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
 
@@ -205,6 +202,7 @@ pub struct Cond {
 }
 impl Cond {
 	/// Iterate over all clauses of self, including the else clause
+	#[allow(dead_code)]
 	pub fn iter_clauses<'a>(&'a self) -> Box<Iterator<Item=(Cow<ExprMeta>, &ExprMeta)> + 'a> {
 		Box::new(self.clauses.iter()
 			.map(|&(ref p, ref c)| (Cow::Borrowed(p), c))

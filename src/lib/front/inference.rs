@@ -33,7 +33,6 @@
 
 use std::borrow::Cow;
 use lib::*;
-use super::*;
 use super::core_lib::CORE_CONSTS_TYPES;
 
 type ConstDefs = ScopeStack<String, Option<ExprMeta>>;

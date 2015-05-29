@@ -20,8 +20,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::collections::{ HashMap, HashSet };
-use std::mem::replace;
 use lib::*;
 
 type ConstDefs = ScopeStack<String, Option<(ExprMeta, Used)>>;
@@ -71,7 +69,7 @@ impl Block {
 			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
 			|it| it.filter_map(|(k, v)| match v.unwrap() {
 				(e, Used::Yes) => Some((k, e)),
-				(e, Used::No) => None,
+				(_, Used::No) => None,
 			}));
 
 		for expr in &mut self.exprs {
@@ -134,7 +132,7 @@ impl AST {
 			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
 			|it| it.filter_map(|(k, v)| match v.unwrap() {
 				(e, Used::Yes) => Some((k, e)),
-				(e, Used::No) => None,
+				(_, Used::No) => None,
 			}));
 
 		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
