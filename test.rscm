@@ -4,14 +4,14 @@
 
 ;(def-macro-rules def-func ()
 ;    (((name args ...) body)
-;     (def-const name (λ (args ...) body))))
+;     (def-const name (lambda (args ...) body))))
 
 ;(def-func dec (lambda (n) (- n 1)))
 ;(def-func inc (lambda (n) (+ n 1)))
 
-(def-const max (λ (a b) (if (> a b) a b)))
+;(def-const max (lambda (a b) (if (> a b) a b)))
 
-(def-const fib (λ (n)
+(def-const fib (lambda (n)
     (cond ((= n 0) 0)
           ((= n 1) 1)
           (else (+ (fib (- n 1)) (fib (- n 2)))))))
@@ -30,8 +30,9 @@
 ;         a
 ;         b)))
 
-(def-const main (λ ()
+(def-const main (lambda ()
     (println! "{}" (block
         (def-const a 10)
         (fib a)
-        (max 10 20)))))
+        ;(max 10 20)
+        ))))

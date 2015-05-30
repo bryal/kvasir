@@ -35,13 +35,13 @@ pub enum MacroPattern {
 #[derive(Clone, Debug)]
 pub struct MacroRules {
 	pub literal_idents: Vec<String>,
-	pub rules: Vec<(MacroPattern, ExprMeta)>,
+	pub rules: Vec<(MacroPattern, Expr)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SExpr {
-	pub func: ExprMeta,
-	pub args: Vec<ExprMeta>,
+	pub func: Expr,
+	pub args: Vec<Expr>,
 }
 impl Into<lib::SExpr> for SExpr {
 	fn into(self) -> lib::SExpr {
@@ -56,28 +56,28 @@ impl Into<lib::SExpr> for SExpr {
 pub struct Block {
 	pub macro_defs: HashMap<String, MacroRules>,
 	pub uses: Vec<Use>,
-	pub const_defs: HashMap<String, ExprMeta>,
-	pub exprs: Vec<ExprMeta>,
+	pub const_defs: HashMap<String, Expr>,
+	pub exprs: Vec<Expr>,
 }
 impl Into<lib::Block> for Block {
 	fn into(self) -> lib::Block {
 		lib::Block{
 			uses: self.uses,
 			const_defs: HashMap::from_iter(self.const_defs.into_iter().map(|(k, v)| (k, v.into()))),
-			exprs: self.exprs.map_in_place(|e| e.into())
+			exprs: self.exprs.into_iter().map(|e| e.into()).collect()
 		}
 	}
 }
 
 #[derive(Clone, Debug)]
 pub struct Cond {
-	pub clauses: Vec<(ExprMeta, ExprMeta)>,
-	pub else_clause: Option<ExprMeta>
+	pub clauses: Vec<(Expr, Expr)>,
+	pub else_clause: Option<Expr>
 }
 impl Into<lib::Cond> for Cond {
 	fn into(self) -> lib::Cond {
 		lib::Cond{
-			clauses: self.clauses.map_in_place(|(p, c)| (p.into(), c.into())),
+			clauses: self.clauses.into_iter().map(|(p, c)| (p.into(), c.into())).collect(),
 			else_clause: self.else_clause.map(|c| c.into()),
 		}
 	}
@@ -86,7 +86,7 @@ impl Into<lib::Cond> for Cond {
 #[derive(Clone, Debug)]
 pub struct Lambda {
 	pub arg_bindings: Vec<TypedBinding>,
-	pub body: ExprMeta
+	pub body: Expr
 }
 impl Into<lib::Lambda> for Lambda {
 	fn into(self) -> lib::Lambda {
@@ -98,7 +98,7 @@ impl Into<lib::Lambda> for Lambda {
 pub struct VarDef {
 	pub binding: TypedBinding,
 	pub mutable: bool,
-	pub body: ExprMeta,
+	pub body: Expr,
 }
 impl Into<lib::VarDef> for VarDef {
 	fn into(self) -> lib::VarDef {
@@ -109,7 +109,7 @@ impl Into<lib::VarDef> for VarDef {
 #[derive(Clone, Debug)]
 pub struct Assign {
 	pub lvalue: TypedBinding,
-	pub rvalue: ExprMeta,
+	pub rvalue: Expr,
 }
 impl Into<lib::Assign> for Assign {
 	fn into(self) -> lib::Assign {
@@ -124,48 +124,33 @@ pub enum Expr {
 	StrLit(String),
 	Bool(bool),
 	Binding(Path),
-	SExpr(SExpr),
-	Block(Block),
-	Cond(Cond),
-	Lambda(Lambda),
-	VarDef(VarDef),
-	Assign(Assign)
+	TypeAscr(Type, Box<Expr>),
+	SExpr(Box<SExpr>),
+	Block(Box<Block>),
+	Cond(Box<Cond>),
+	Lambda(Box<Lambda>),
+	VarDef(Box<VarDef>),
+	Assign(Box<Assign>)
 }
-impl Into<lib::Expr> for Expr {
-	fn into(self) -> lib::Expr {
-		match self {
+impl Into<lib::ExprMeta> for Expr {
+	fn into(self) -> lib::ExprMeta {
+		let expr = match self {
 			Expr::Nil => lib::Expr::Nil,
 			Expr::NumLit(n) => lib::Expr::NumLit(n),
 			Expr::StrLit(s) => lib::Expr::StrLit(s),
 			Expr::Bool(b) => lib::Expr::Bool(b),
 			Expr::Binding(p) => lib::Expr::Binding(p),
-			Expr::SExpr(e) => lib::Expr::SExpr(e.into()),
-			Expr::Block(b) => lib::Expr::Block(b.into()),
-			Expr::Cond(c) => lib::Expr::Cond(c.into()),
-			Expr::Lambda(l) => lib::Expr::Lambda(l.into()),
-			Expr::VarDef(v) => lib::Expr::VarDef(v.into()),
-			Expr::Assign(a) => lib::Expr::Assign(a.into())
-		}
-	}
-}
+			Expr::TypeAscr(ty, box e) => return lib::ExprMeta{ type_: ty, ..e.into() },
+			Expr::SExpr(box e) => lib::Expr::SExpr(e.into()),
+			Expr::Block(box b) => lib::Expr::Block(b.into()),
+			Expr::Cond(box c) => lib::Expr::Cond(c.into()),
+			Expr::Lambda(box l) => lib::Expr::Lambda(l.into()),
+			Expr::VarDef(box v) => lib::Expr::VarDef(v.into()),
+			Expr::Assign(box a) => lib::Expr::Assign(a.into())
+		};
 
-// TODO: Exprs shouldn't yet have types in this representation. `(:TYPE EXPR)` should be an
-//       expression here. Remove ExprMeta in favor of just Expr
-#[derive(Clone, Debug)]
-pub struct ExprMeta {
-	pub value: Box<Expr>,
-	pub type_: Type
-}
-impl ExprMeta {
-	pub fn new(value: Expr, ty: Type) -> Self { ExprMeta{ value: Box::new(value), type_: ty } }
-	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
-
-	pub fn get_binding(&self) -> Option<&Path> {
-		match *self.value { Expr::Binding(ref binding) => Some(binding), _ => None }
+		lib::ExprMeta::new(expr, Type::Inferred)
 	}
-}
-impl Into<lib::ExprMeta> for ExprMeta {
-	fn into(self) -> lib::ExprMeta { lib::ExprMeta::new((*self.value).into(), self.type_) }
 }
 
 #[derive(Debug)]
