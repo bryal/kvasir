@@ -54,6 +54,7 @@ impl ToRustSrc for Type {
 			Type::Tuple(ref tys) => format!("({})",
 				tys.iter().fold(String::new(), |acc, ty| format!("{}{},", acc, ty.to_rust()))),
 			Type::Poly(ref ty) => ty.clone(),
+			Type::Symbol => "&str".into()
 		}
 	}
 }
@@ -198,7 +199,11 @@ impl ToRustSrc for ExprMeta {
 	fn to_rust(&self) -> String {
 		match *self.value {
 			Expr::Nil => "()".into(),
-			Expr::NumLit(ref s) => s.clone(),
+			Expr::NumLit(ref s) => if self.type_.is_specified() {
+				format!("{}{}", s, self.type_.to_rust())
+			} else {
+				s.clone()
+			},
 			Expr::StrLit(ref s) => s.clone(),
 			Expr::Bool(b) => if b { "true" } else { "false" }.into(),
 			Expr::Binding(ref ident) => ident.to_rust(),
@@ -208,6 +213,9 @@ impl ToRustSrc for ExprMeta {
 			Expr::Lambda(ref λ) => λ.to_rust(),
 			Expr::VarDef(ref def) => def.to_rust(),
 			Expr::Assign(ref a) => a.to_rust(),
+			Expr::Symbol(ref symbol) => symbol.clone(),
+			Expr::List(ref list) => format!("vec![{}]",
+				delim_between_items(&list, ", "))
 		}
 	}
 }

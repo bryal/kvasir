@@ -468,12 +468,31 @@ fn parse_exprs(tokens: &[Token]) -> Result<Vec<Expr>, String> {
 }
 
 impl Expr {
+	fn parse_parenthesized_quoted(tokens: &[Token]) -> Result<Expr, String> {
+		if tokens.len() == 0 {
+			Ok(Expr::Nil)
+		} else if let Token::Colon = tokens[0] {
+			Type::parse(tokens.tail())
+				.and_then(|(ty, len)| Expr::parse_quoted(&tokens.tail()[len..])
+					.map(|(expr, _)| Expr::TypeAscr(ty, Box::new(expr))))
+		} else {
+			let mut items = Vec::new();
+
+			let mut i = 0;
+			while i < tokens.len() {
+				let (e, len) = try!(Expr::parse_quoted(&tokens[i..]));
+				items.push(e);
+
+				i += len;
+			}
+			Ok(Expr::List(items))
+		}
+	}
 	/// Parse an expression from tokens within parentheses
 	fn parse_parenthesized(tokens: &[Token]) -> Result<Expr, String> {
 		if tokens.len() == 0 {
 			return Ok(Expr::Nil);
 		}
-
 		// Handle special forms
 		match tokens[0] {
 			// Type ascription. `(:TYPE EXPR)`
@@ -486,15 +505,31 @@ impl Expr {
 				Lambda::parse(tokens.tail()).map(|λ| Expr::Lambda(Box::new(λ))),
 			Token::Ident("block") =>
 				Block::parse(tokens.tail()).map(|block| Expr::Block(Box::new(block))),
+			Token::Ident("quote") => Expr::parse_quoted(tokens.tail()).map(|(q, _)| q),
 			_ => SExpr::parse(tokens).map(|se| Expr::SExpr(Box::new(se))),
 		}
 	}
 
+	fn parse_quoted(tokens: &[Token]) -> Result<(Expr, usize), String> {
+		if tokens.len() == 0 {
+			Err("Expr::parse_quoted: No tokens".into())
+		} else {
+			match tokens[0] {
+				Token::Quote => Expr::parse_quoted(tokens.tail())
+					.map(|(q, len)| (Expr::List(vec![Expr::Symbol("quote".into()), q]), len + 1)),
+				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized_quoted),
+				Token::Ident(ident) => Ok((Expr::Symbol(ident.into()), 1)),
+				_ => Expr::parse(tokens),
+			}
+		}
+	}
 	pub fn parse(tokens: &[Token]) -> Result<(Expr, usize), String> {
 		if tokens.len() == 0 {
 			Err("Expr::parse: No tokens".into())
 		} else {
 			match tokens[0] {
+				Token::Quote =>
+					Expr::parse_quoted(tokens.tail()).map(|(quoted, len)| (quoted, len+1)),
 				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
 				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),

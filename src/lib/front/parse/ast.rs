@@ -130,7 +130,9 @@ pub enum Expr {
 	Cond(Box<Cond>),
 	Lambda(Box<Lambda>),
 	VarDef(Box<VarDef>),
-	Assign(Box<Assign>)
+	Assign(Box<Assign>),
+	Symbol(String),
+	List(Vec<Expr>)
 }
 impl Into<lib::ExprMeta> for Expr {
 	fn into(self) -> lib::ExprMeta {
@@ -146,7 +148,9 @@ impl Into<lib::ExprMeta> for Expr {
 			Expr::Cond(box c) => lib::Expr::Cond(c.into()),
 			Expr::Lambda(box l) => lib::Expr::Lambda(l.into()),
 			Expr::VarDef(box v) => lib::Expr::VarDef(v.into()),
-			Expr::Assign(box a) => lib::Expr::Assign(a.into())
+			Expr::Assign(box a) => lib::Expr::Assign(a.into()),
+			Expr::Symbol(s) => lib::Expr::Symbol(s),
+			Expr::List(l) => lib::Expr::List(l.into_iter().map(|e| e.into()).collect()),
 		};
 
 		lib::ExprMeta::new(expr, Type::Inferred)

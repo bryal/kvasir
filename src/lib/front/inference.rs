@@ -439,6 +439,44 @@ impl VarDef {
 	}
 }
 
+fn infer_list_types(list: &mut [ExprMeta],
+	expected_type: &Type,
+	var_types: &mut Vec<TypedBinding>, const_defs: &mut ConstDefs)
+{
+	let expected_item_type = if expected_type.is_inferred() {
+		let mut found_type = Type::Inferred;
+		for item in list.iter_mut() {
+			if item.type_.is_specified() || {
+				item.infer_types(&Type::Inferred, var_types, const_defs);
+				item.type_.is_specified()
+			}{
+				found_type = item.type_.clone();
+				break;
+			}
+		}
+		Cow::Owned(found_type)
+	} else {
+		expected_type.get_list_item_type()
+	};
+
+	for item in list {
+		item.infer_types(&expected_item_type, var_types, const_defs);
+	}
+}
+
+fn get_list_type(list: &[ExprMeta]) -> Type {
+	let item_type = if list.len() == 0 {
+		Type::Inferred
+	} else {
+		list.iter()
+			.find(|item| item.type_.is_specified())
+			.map(|item| item.type_.clone())
+			.unwrap_or(list[0].type_.clone())
+	};
+
+	Type::new_construct("List", vec![item_type])
+}
+
 impl ExprMeta {
 	fn set_type(&mut self, set: Type) {
 		self.type_ = set;
@@ -479,6 +517,11 @@ impl ExprMeta {
 				Expr::Lambda(ref mut lambda) => {
 					lambda.infer_types(&expected_type, var_types, const_defs);
 					lambda.get_type()
+				},
+				Expr::Symbol(_) => Type::Symbol,
+				Expr::List(ref mut list) => {
+					infer_list_types(list, &expected_type, var_types, const_defs);
+					get_list_type(list)
 				},
 			}
 		};

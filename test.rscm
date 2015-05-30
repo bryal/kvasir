@@ -31,8 +31,8 @@
 ;         b)))
 
 (def-const main (lambda ()
-    (println! "{}" (block
-        (def-const a 10)
-        (fib a)
+    (println! "{:?}" (block
+        ;(def-const a 10)
+        ;(fib a)
         ;(max 10 20)
         ))))

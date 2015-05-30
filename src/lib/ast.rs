@@ -36,7 +36,8 @@ pub enum Type {
 	Basic(String),
 	Construct(String, Vec<Type>),
 	Tuple(Vec<Type>),
-	Poly(String)
+	Poly(String),
+	Symbol, // TODO: Should be a subtype of string reference, like &str
 }
 impl Type {
 	pub fn new_nil() -> Type { Type::Tuple(vec![]) }
@@ -67,6 +68,14 @@ impl Type {
 		}
 	}
 
+	pub fn get_list_item_type(&self) -> Cow<Type> {
+		match *self {
+			Type::Construct(ref constructor, ref items) if constructor == "List" && items.len() > 0
+				=> Cow::Borrowed(&items[0]),
+			_ => Cow::Owned(Type::Inferred)
+		}
+	}
+
 	/// Basically lhs == rhs, with some exceptions. E.g. "→" == "fn"
 	pub fn constructor_eq(lhs: &str, rhs: &str) -> bool {
 		(FUNCTION_CONSTRUCTORS.contains(&lhs) && FUNCTION_CONSTRUCTORS.contains(&rhs))
@@ -75,14 +84,15 @@ impl Type {
 }
 impl Debug for Type {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match self {
-			&Type::Inferred => write!(f, "_"),
-			&Type::Basic(ref s) => write!(f, "{}", s),
-			&Type::Construct(ref constr, ref args) => write!(f, "{{{}{}}}",
+		match *self {
+			Type::Inferred => write!(f, "_"),
+			Type::Basic(ref s) => write!(f, "{}", s),
+			Type::Construct(ref constr, ref args) => write!(f, "{{{}{}}}",
 				constr,
 				list_items_to_string(&args)),
-			&Type::Tuple(ref tys) => write!(f, "({})", list_items_to_string(tys)),
-			&Type::Poly(ref poly) => write!(f, "{}", poly),
+			Type::Tuple(ref tys) => write!(f, "({})", list_items_to_string(tys)),
+			Type::Poly(ref poly) => write!(f, "{}", poly),
+			Type::Symbol => write!(f, "{}", "Symbol")
 		}
 	}
 }
@@ -281,7 +291,9 @@ pub enum Expr {
 	Cond(Cond),
 	Lambda(Lambda),
 	VarDef(VarDef),
-	Assign(Assign)
+	Assign(Assign),
+	Symbol(String),
+	List(Vec<ExprMeta>)
 }
 impl Expr {
 	pub fn is_var_def(&self) -> bool {
@@ -294,18 +306,20 @@ impl Expr {
 }
 impl Debug for Expr {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match self {
-			&Expr::Nil => write!(f, "()"),
-			&Expr::NumLit(ref n) => write!(f, "{}", n),
-			&Expr::StrLit(ref s) => write!(f, "{}", s),
-			&Expr::Bool(ref b) => write!(f, "{}", b),
-			&Expr::Binding(ref p) => write!(f, "{:?}", p),
-			&Expr::SExpr(ref e) => write!(f, "{:?}", e),
-			&Expr::Block(ref b) => write!(f, "{:?}", b),
-			&Expr::Cond(ref c) => write!(f, "{:?}", c),
-			&Expr::Lambda(ref l) => write!(f, "{:?}", l),
-			&Expr::VarDef(ref v) => write!(f, "{:?}", v),
-			&Expr::Assign(ref a) => write!(f, "{:?}", a)
+		match *self {
+			Expr::Nil => write!(f, "()"),
+			Expr::NumLit(ref n) => write!(f, "{}", n),
+			Expr::StrLit(ref s) => write!(f, "{}", s),
+			Expr::Bool(ref b) => write!(f, "{}", b),
+			Expr::Binding(ref p) => write!(f, "{:?}", p),
+			Expr::SExpr(ref e) => write!(f, "{:?}", e),
+			Expr::Block(ref b) => write!(f, "{:?}", b),
+			Expr::Cond(ref c) => write!(f, "{:?}", c),
+			Expr::Lambda(ref l) => write!(f, "{:?}", l),
+			Expr::VarDef(ref v) => write!(f, "{:?}", v),
+			Expr::Assign(ref a) => write!(f, "{:?}", a),
+			Expr::Symbol(ref symbol) => write!(f, "{}", symbol),
+			Expr::List(ref list) => write!(f, "(List {})", list_items_to_string(list))
 		}
 	}
 }

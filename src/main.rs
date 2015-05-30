@@ -58,24 +58,20 @@
 //! ```
 
 // TODO: Compile time execution. By marking functions as pure,
-// enable calculation of constants from these functions at compile time.
-
+//       enable calculation of constants from these functions at compile time.
 // TODO: Higher Kinded Types. Like Functor which would provide map for a generic container
-
 // TODO: Find errors in code. When lexing, produce a map of token indices =>
-// line and col in source. When parsing, pass along token index.
-
-// TODO: In cases like:
-//     map f [] = []
-//     map f (first:rest) = f first : map f rest
-// do not try to infer type, instead, leave types of f, first, and rest as type variables
-
+//       line and col in source. When parsing, pass along token index.
+// TODO: In cases like: `map f [] = []` and `map f (first:rest) = f first : map f rest`,
+//       do not try to infer type, instead, leave types of f, first, and rest as type variables
 // TODO: Formally prove that all type inference is correct using
-// [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
-// [Good explanation](http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
-
-// Per default, expect that all functions are pure, but make it possible to explicitly mark them as
-// unpure. Similar to unsafe in Rust.
+//       [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
+//       [Good explanation](http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
+// TODO: Per default, expect that all functions are pure, but make it possible to explicitly
+//       mark them as unpure. Similar to unsafe in Rust.
+// TODO: Make symbols interned. Maybe at compile time, build a table of all symbols and substitute
+//       uses in code with references to this table.
+//       When comparing for equality, just test for reference equality
 
 #![feature(non_ascii_idents, box_patterns, rustc_private, collections, collections_drain)]
 
@@ -165,9 +161,12 @@ fn main() {
 	let tokens = tokenize_string(&scr_code).unwrap();
 
 	let ast = parse::AST::parse(&tokens).unwrap();
+	println!("AST PARSED:\n{:?}\n", ast);
+
+	// ast.expand_macros();
 
 	let mut ast: lib::AST = ast.into();
-	println!("AST PARSED:\n{:?}\n", ast);
+	println!("AST MACRO EXPANDED:\n{:?}\n", ast);
 
 	ast.remove_unused_consts();
 	println!("AST REMOVED UNUSED:\n{:?}\n", ast);

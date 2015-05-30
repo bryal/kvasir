@@ -32,6 +32,7 @@ pub enum Token<'a> {
 	Number(&'a str),
 	String(&'a str),
 	Colon,
+	Quote,
 }
 
 // TODO: Handle comments. Both on own lines, and at end of lines. Should probably be renamed aswell
@@ -130,6 +131,7 @@ pub fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
 			'{' => { tokens.push(Token::LBrace); 1 },
 			'}' => { tokens.push(Token::RBrace); 1 },
 			':' => { tokens.push(Token::Colon); 1 },
+			'\'' => { tokens.push(Token::Quote); 1 },
 			c if c.is_numeric() => {
 				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
 					.unwrap_or(word.len());
