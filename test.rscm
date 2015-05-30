@@ -1,31 +1,37 @@
-(--def-const dec (lambda (n) (- n 1)))
-(--def-const inc (lambda (n) (+ n 1)))
+(def-macro-rules if ()
+    ((predicate consequence otherwise)
+     (cond (predicate consequence) (else otherwise))))
 
-;(--def-const if_ (lambda (predicate consequence otherwise)
-;    (cond (predicate consequence)
-;          (else otherwise))))
+;(def-macro-rules def-func ()
+;    (((name args ...) body)
+;     (def-const name (λ (args ...) body))))
 
-(--def-const fib (λ (n)
+;(def-func dec (lambda (n) (- n 1)))
+;(def-func inc (lambda (n) (+ n 1)))
+
+(def-const max (λ (a b) (if (> a b) a b)))
+
+(def-const fib (λ (n)
     (cond ((= n 0) 0)
           ((= n 1) 1)
           (else (+ (fib (- n 1)) (fib (- n 2)))))))
 
-;(--def-const neg (lambda (x) (- 0 x)))
+;(def-const neg (lambda (x) (- 0 x)))
 ;
-;(--def-const or (lambda (a b)
+;(def-const or (lambda (a b)
 ;    (cond (a true)
 ;          (b true)
 ;          (else false))))
 ;
-;(--def-const gteq (lambda (a b) (or (> a b) (= a b))))
+;(def-const gteq (lambda (a b) (or (> a b) (= a b))))
 ;
-;(--def-const max (lambda (a b)
+;(def-const max (lambda (a b)
 ;    (if_ (gteq a b)
 ;         a
 ;         b)))
 
-(--def-const main (λ ()
+(def-const main (λ ()
     (println! "{}" (block
-        (--def-const a 10)
-        (--def-const b 10)
-        (fib a)))))
+        (def-const a 10)
+        (fib a)
+        (max 10 20)))))

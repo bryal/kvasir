@@ -27,15 +27,15 @@ use lib;
 use lib::{ Path, Use, Type, TypedBinding };
 
 #[derive(Clone, Debug)]
-enum MacroPattern {
+pub enum MacroPattern {
 	Ident(String),
-	Pattern(Vec<MacroPattern>),
+	List(Vec<MacroPattern>),
 }
 
 #[derive(Clone, Debug)]
 pub struct MacroRules {
-	literal_idents: Vec<String>,
-	rules: Vec<(Vec<MacroPattern>, ExprMeta)>,
+	pub literal_idents: Vec<String>,
+	pub rules: Vec<(MacroPattern, ExprMeta)>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +149,8 @@ impl Into<lib::Expr> for Expr {
 	}
 }
 
+// TODO: Exprs shouldn't yet have types in this representation. `(:TYPE EXPR)` should be an
+//       expression here. Remove ExprMeta in favor of just Expr
 #[derive(Clone, Debug)]
 pub struct ExprMeta {
 	pub value: Box<Expr>,
@@ -157,21 +159,25 @@ pub struct ExprMeta {
 impl ExprMeta {
 	pub fn new(value: Expr, ty: Type) -> Self { ExprMeta{ value: Box::new(value), type_: ty } }
 	pub fn new_nil() -> ExprMeta { ExprMeta::new(Expr::Nil, Type::new_nil()) }
+
+	pub fn get_binding(&self) -> Option<&Path> {
+		match *self.value { Expr::Binding(ref binding) => Some(binding), _ => None }
+	}
 }
 impl Into<lib::ExprMeta> for ExprMeta {
 	fn into(self) -> lib::ExprMeta { lib::ExprMeta::new((*self.value).into(), self.type_) }
 }
 
+#[derive(Debug)]
 pub struct AST {
-	pub macro_defs: HashMap<String, MacroRules>,
-	pub uses: Vec<Use>,
-	pub const_defs: HashMap<String, ExprMeta>,
+	pub block: Block,
 }
 impl Into<lib::AST> for AST {
 	fn into(self) -> lib::AST {
 		lib::AST{
-			uses: self.uses,
-			const_defs: HashMap::from_iter(self.const_defs.into_iter().map(|(k, v)| (k, v.into())))
+			uses: self.block.uses,
+			const_defs: HashMap::from_iter(
+				self.block.const_defs.into_iter().map(|(k, v)| (k, v.into())))
 		}
 	}
 }

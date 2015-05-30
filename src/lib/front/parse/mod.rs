@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use lib::{ Path, Use, Type, TypedBinding };
 use super::*;
-use self::ast::{ MacroRules, SExpr, Block, Cond, Lambda, Expr, ExprMeta };
+use self::ast::{ MacroPattern, MacroRules, SExpr, Block, Cond, Lambda, Expr, ExprMeta };
 pub use self::ast::AST;
 
 mod ast;
@@ -61,7 +61,7 @@ fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 fn parse_brackets<F, T>(tokens: &[Token], content_parser: F) -> Result<(T, usize), String>
 	where F: Fn(&[Token]) -> Result<T, String>
 {
-	find_closing_delim(tokens[0], &tokens[1..])
+	find_closing_delim(tokens[0], tokens.tail())
 		.map(|delim_i| delim_i + 1)
 		.ok_or("parse_brackets: failed to find closing paren".into())
 		.and_then(|delim_i| content_parser(&tokens[1..delim_i])
@@ -75,7 +75,7 @@ impl Type {
 			return Err("Type::parse_construct: no tokens".into())
 		}
 		match tokens[0] {
-			Token::Ident(ident) => parse_types(&tokens[1..])
+			Token::Ident(ident) => parse_types(tokens.tail())
 				.map(|tys| Type::Construct(ident.into(), tys)),
 			t => Err(format!("Type::parse_construct: unexpected token `{:?}`", t))
 		}
@@ -210,10 +210,97 @@ impl Path {
 	}
 }
 
+fn parse_macro_patterns(tokens: &[Token]) -> Result<Vec<MacroPattern>, String> {
+	let mut patterns = Vec::new();
+
+	let mut i = 0;
+	while i < tokens.len() {
+		let (pat, len) = try!(MacroPattern::parse(&tokens[i..]));
+		patterns.push(pat);
+		i += len;
+	}
+	Ok(patterns)
+}
+
+impl MacroPattern {
+	fn parse(tokens: &[Token]) -> Result<(MacroPattern, usize), String> {
+		if tokens.len() == 0 {
+			Err("MacroPattern::parse: No tokens".into())
+		} else {
+			match tokens[0] {
+				Token::LParen => parse_brackets(tokens, parse_macro_patterns)
+					.map(|(patterns, len)| (MacroPattern::List(patterns), len)),
+				Token::Ident(ident) => Ok((MacroPattern::Ident(ident.into()), 1)),
+				ref t => Err(format!("MacroPattern::parse: Unexpected token `{:?}`", t)),
+			}
+		}
+	}
+}
+
+fn parse_macro_rule(tokens: &[Token]) -> Result<(MacroPattern, ExprMeta), String> {
+	MacroPattern::parse(tokens).and_then(|(pat, len)|
+		// TODO: Should parse as if quoted
+		ExprMeta::parse(&tokens[len..]).map(|(expr, _)| (pat, expr)))
+}
+
+fn parse_macro_rules(tokens: &[Token]) -> Result<Vec<(MacroPattern, ExprMeta)>, String> {
+	let mut macro_rules = Vec::new();
+
+	let mut i = 0;
+	while i < tokens.len() {
+		match tokens[i] {
+			Token::LParen => {
+				let (rule, len) = try!(parse_brackets(&tokens[i..], parse_macro_rule));
+				macro_rules.push(rule);
+				i += len;
+			},
+			ref t => return Err(format!("parse_macro_rules: Unexpected token `{:?}`", t)),
+		}
+	}
+	Ok(macro_rules)
+}
+
+impl MacroRules {
+	fn parse(tokens: &[Token]) -> Result<MacroRules, String> {
+		if tokens.len() == 0 {
+			return Err("MacroRules::parse: No tokens".into())
+		}
+		match tokens[0] {
+			Token::LParen => parse_brackets(tokens, |tokens| {
+					let mut lits = Vec::new();
+					for token in tokens {
+						match token {
+							&Token::Ident(ident) => lits.push(ident.into()),
+							t => return Err(format!(
+								"MacroRules::parse: In parse_brackets, unexpected token `{:?}`",
+								t)),
+						}
+					}
+					Ok(lits)
+				})
+				.and_then(|(literal_idents, len)| parse_macro_rules(&tokens[len..])
+					.map(|rules| MacroRules{ literal_idents: literal_idents, rules: rules })),
+			ref t => Err(format!("MacroRules::parse: Unexpected token `{:?}`", t))
+		}
+	}
+}
+
+fn parse_macro_def(tokens: &[Token]) -> Result<(String, MacroRules), String> {
+	if tokens.len() == 0 {
+		Err("parse_macro_def: No tokens".into())
+	} else {
+		match tokens[0] {
+			Token::Ident(ident) => MacroRules::parse(tokens.tail())
+				.map(|macro_rules| (ident.into(), macro_rules)),
+			t => Err(format!("parse_macro_def: Expected ident, found `{:?}`", t))
+		}
+	}
+}
+
 // (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
 fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
 	match Path::parse(tokens) {
-		Ok(head) => parse_use_paths(&tokens[1..])
+		Ok(head) => parse_use_paths(tokens.tail())
 			.and_then(|tails| {
 				let mut paths = Vec::new();
 
@@ -291,6 +378,20 @@ impl SExpr {
 	}
 }
 
+impl Block {
+	fn parse(tokens: &[Token]) -> Result<Block, String> {
+		parse_items(tokens).map(|items| {
+			let (macro_defs, uses, const_defs, exprs) = extract_items(items);
+			Block{
+				macro_defs: macro_defs,
+				uses: uses,
+				const_defs: const_defs,
+				exprs: exprs
+			}
+		})
+	}
+}
+
 impl Cond {
 	fn parse(tokens: &[Token]) -> Result<Cond, String> {
 		if tokens.len() == 0 {
@@ -352,17 +453,9 @@ impl Expr {
 		}
 
 		match tokens[0] {
-			Token::Ident("cond") => Cond::parse(&tokens[1..]).map(|c| Expr::Cond(c)),
-			Token::Ident("lambda") | Token::Ident("λ") => Lambda::parse(&tokens[1..]).map(|λ| Expr::Lambda(λ)),
-			Token::Ident("block") => parse_items(&tokens[1..]).map(|items| {
-				let (macro_defs, uses, const_defs, exprs) = extract_items(items);
-				Expr::Block(Block{
-					macro_defs: macro_defs,
-					uses: uses,
-					const_defs: const_defs,
-					exprs: exprs
-				})
-			}),
+			Token::Ident("cond") => Cond::parse(tokens.tail()).map(|c| Expr::Cond(c)),
+			Token::Ident("lambda") | Token::Ident("λ") => Lambda::parse(tokens.tail()).map(|λ| Expr::Lambda(λ)),
+			Token::Ident("block") => Block::parse(tokens.tail()).map(|block| Expr::Block(block)),
 			_ => SExpr::parse(tokens).map(|se| Expr::SExpr(se)),
 		}
 	}
@@ -376,7 +469,7 @@ impl Expr {
 				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
 				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
 				Token::Ident(_) => Path::parse(tokens).map(|ident| (Expr::Binding(ident), 1)),
-				t => Err(format!("ExprMeta::parse: unexpected token `{:?}`", t)),
+				t => Err(format!("Expr::parse: unexpected token `{:?}`", t)),
 			}
 		}
 	}
@@ -443,11 +536,12 @@ impl Item {
 			return Ok(Item::Expr(ExprMeta::new_nil()));
 		}
 
-		let tail = &tokens.tail();
-
 		match tokens[0] {
-			Token::Ident("--def-const") => parse_definition(tail).map(|d| Item::ConstDef(d)),
-			Token::Ident("use") => Use::parse(tail).map(|u| Item::Use(u)),
+			Token::Ident("def-const") =>
+				parse_definition(tokens.tail()).map(|d| Item::ConstDef(d)),
+			Token::Ident("def-macro-rules") =>
+				parse_macro_def(tokens.tail()).map(|d| Item::MacroDef(d)),
+			Token::Ident("use") => Use::parse(tokens.tail()).map(|u| Item::Use(u)),
 			_ => ExprMeta::parse_parenthesized(tokens).map(|e| Item::Expr(e)),
 		}
 	}
@@ -511,13 +605,6 @@ fn extract_items(items: Vec<Item>)
 
 impl AST {
 	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		parse_items(tokens).and_then(|items| {
-			let (macro_defs, uses, consts, exprs) = extract_items(items);
-			if !exprs.is_empty() {
-				Err(format!("AST::parse: Expression(s) found in AST root"))
-			} else {
-				Ok(AST{ macro_defs: macro_defs, uses:uses, const_defs: consts })
-			}
-		})
+		Block::parse(tokens).map(|block| AST{ block: block })
 	}
 }

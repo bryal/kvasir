@@ -25,6 +25,15 @@ Pragmas:
 			`(#no-cte (fn (foo) (foo)))`
 		* Prefer CTE:
 			`(#prefer-cte (fn (! n) (* n (! (dec n)))))`
+Macros:
+	Definition:
+		`(def-macro-rules if (then else)
+			((predicate then consequence else otherwise)
+			 (cond (predicate consequence) (else otherwise))))`
+	Application and expandion:
+		`(if (> 3 x) then (display "Yes") else (display "No"))`
+		=>
+		`(cond ((> 3 x) (display "Yes")) (else (display "No"))`
 
 
 ## Idéas

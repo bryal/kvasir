@@ -24,5 +24,5 @@ pub use self::lex::Token;
 
 pub mod lex;
 pub mod parse;
-pub mod inference;
+mod inference;
 pub mod core_lib;
