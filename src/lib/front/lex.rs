@@ -24,197 +24,122 @@
 pub enum Token<'a> {
 	LParen,
 	RParen,
-	LBracket,
-	RBracket,
-	LBrace,
-	RBrace,
 	Ident(&'a str),
-	Number(&'a str),
-	String(&'a str),
+	Num(&'a str),
+	Str(&'a str),
 	Colon,
-	Quote,
+	Backtick,
 }
 
-// TODO: Handle comments. Both on own lines, and at end of lines. Should probably be renamed aswell
-// TODO: This whole function is very ugly. Separate string-related logic.
-/// Split code string by whitespace. Preserve whitespace in string literals
-pub fn split_by_whitespace(mut src: &str) -> Result<Vec<&str>, &'static str> {
-	src = src.trim();
+fn try_tokenize<F>(src: &str, i: usize, f: F) -> (Token, usize)
+	where F: Fn(&str) -> Result<(Token, usize), String>
+{
+	match f(&src[i..]) {
+		Ok(x) => x,
+		Err(e) => error_in_source_at(src, i, e)
+	}
+}
 
-	let mut splits = Vec::with_capacity(src.len() / 2);
+fn tokenize_str_lit(src: &str) -> Result<(Token, usize), String> {
+	// Assume first char is a double quote
+	let mut char_it = src.char_indices();
+	char_it.next();
 
-	let mut char_iter = src.char_indices();
-	while let Some((byte_i, c)) = char_iter.next() {
-		if c.is_whitespace() {
-			continue;
-		}
-
-		let from_here = &src[byte_i..];
-
-		// `Some` if item att current index is a string literal
-		let maybe_start_len_and_delim = if let Some(0) = from_here.find('"') {
-			// It's a string. Do not split by space in a string, instead send whole string literal
-			// as a single token. Resume iterating from end of string.
-			Some((1, String::from("\"")))
-		} else if let Some(0) = from_here.find("r\"") {
-			// Same as above, but raw string literal.
-			Some((2, String::from("\"")))
-		} else if let Some(0) = from_here.find("r#") {
-			// Similar to above, but do not delimit by ", but rather "
-			// followed by same number of #'s as preceeding beginning "
-			from_here.find('"').and_then(|i| if from_here[1..i].bytes().all(|c| c == '#' as u8) {
-				let s = String::from("\"") + &from_here[1..i];
-				Some((s.len() + 1, s))
-			} else {
-				None
-			})
-		} else if from_here.starts_with(';') {
-			// Comment. We know from above that we are not in a string, so just skip rest of line
-			let comment_len = from_here.find('\n').map(|i| i + 1).unwrap_or(from_here.len());
-			src = &src[byte_i + comment_len ..];
-			char_iter = src.char_indices();
-			continue;
-		} else {
-			None
-		};
-
-		if let Some((start_len, str_delim)) = maybe_start_len_and_delim {
-			// It's a string literal
-			if let Some(end_i) = from_here[start_len..]
-				.find(&str_delim)
-				.map(|i| i + start_len + str_delim.len())
-			{
-				splits.push(&from_here[..end_i]);
-
-				src = &src[byte_i + end_i ..];
-				char_iter = src.char_indices();
-			} else {
-				return Err("Undelimited string literal")
-			}
-		} else {
-			// Not a string, just split until next space
-			let end_i = from_here.find(|c: char| c.is_whitespace()).unwrap_or(from_here.len());
-			splits.push(&from_here[..end_i]);
-
-			src = &src[byte_i + end_i ..];
-			char_iter = src.char_indices();
+	while let Some((i, c)) = char_it.next() {
+		match c {
+			'\\' => { char_it.next(); },
+			// TODO: Unescape
+			'"' => return Ok((Token::Str(&src[1..i]), i)),
+			_ => (),
 		}
 	}
+	Err("Unterminated string literal".into())
+}
+fn tokenize_raw_str_lit(src: &str) -> Result<(Token, usize), String> {
+	// Assume first char is an 'r'
+	let n_delim_octothorpes = src[1..].chars().take_while(|c| c == '#').count();
 
-	Ok(splits)
+	let delim_octothorpes = &src[1 .. 1 + n_delim_octothorpes];
+
+	let mut char_it = src.char_indices();
+	char_it.next();
+
+	while let Some((i, c)) = char_it.next() {
+		if c == '"' && src[i + 1 ..].starts_with(delim_octothorpes) {
+			return Ok((Token::Str(&src[2 + n_delim_octothorpes .. i]), i + 1))
+		}
+	}
+	Err("Unterminated raw string literal".into())
+}
+fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
+	let mut has_decimal_pt = false;
+	let mut char_it = src.char_indices();
+
+	for (i, c) in  {
+		// TODO: Add 'E' notation, e.g. 3.14E10, 5E-4
+		match c {
+			'_' | _ if c.is_numeric() => (),
+			'.' if !has_decimal_pt => has_decimal_pt = true,
+			_ => return Ok((Token::Num(&src[..i]), i)),
+		}
+	}
+	Err("Invalid numeric literal".into())
+}
+fn tokenize_ident(src: &str) -> Result<(Token, usize), String> {
+	// Assume first characted has already been checked to be valid
+	for (i, c) in src.char_indices() {
+		match c {
+			')' | ']' | '}' => return Ok((Token::Ident(&src[0..i]), i)),
+			_ => (),
+		}
+	}
+	Err("Invalid ident".into())
 }
 
-fn is_ident_char(c: char) -> bool {
-	match c {
-		// TODO: Instead of allowing certain chars, just allow all non-reserved chars
-		'_' | '?' | '/' | '+' | '-' | '*' | '=' | '&' | '→' | '>' | '<' | '\\' | '.' => true,
-		c if c.is_alphanumeric() => true,
-		_ => false,
+struct Tokens<'a> {
+	src: &'a str,
+	start_i: usize,
+}
+impl From<&str> for Tokens {
+	fn from(src: &str) -> Tokens { Tokens{ src: src, debug_src_i: 0 } }
+}
+impl Iterator for Tokens {
+	type Item = Token;
+
+	fn next(&mut self) -> Option<Token> {
+		let mut char_it = self.src[self.start_i..]
+			.char_indices()
+			.map(|(i, c)| (i + self.start_i, c));
+
+		while let Some((i, c)) in char_it.next() {
+			let (t, len) = match c {
+				_ if c.is_whitespace() => continue,
+				';' => {
+					while let Some((_, c)) = char_it.next() {
+						if c == '\n' { break; }
+					}
+					continue
+				},
+				'`' => (Token::Backtick, 1),
+				':' => (Token::Colon, 1),
+				'(' => (Token::LParen, 1), ')' => (Token::RParen, 1),
+				'"' => try_tokenize(self.src, i, tokenize_str_lit),
+				'r' if self.src[i + 1 ..].starts_with(|c: char| c == '"' || c == '#') =>
+					try_tokenize(self.src, i, tokenize_raw_str_lit),
+				_ if c.is_numeric() =>
+					try_tokenize(self.src, i, tokenize_num_lit),
+				_ => try_tokenize(self.src, i, tokenize_ident),
+			};
+
+			self.start_i = i + len;
+			return Some(t);
+		}
+		None
 	}
 }
-
-/// Tokenize a whitespace-less string of code (except in string literals)
-pub fn tokenize_word(mut word: &str) -> Result<Vec<Token>, String> {
-	if word.starts_with('"') || word.starts_with(r#"r""#) || word.starts_with("r#") {
-		// The word is a string
-		return Ok(vec![Token::String(word)]);
-	}
-
-	let mut tokens = Vec::with_capacity((word.len() * 3) / 2);
-
-	while let Some(c) = word.chars().next() {
-		let shift = match c {
-			'(' => { tokens.push(Token::LParen); 1 },
-			')' => { tokens.push(Token::RParen); 1 },
-			'[' => { tokens.push(Token::LBracket); 1 },
-			']' => { tokens.push(Token::RBracket); 1 },
-			'{' => { tokens.push(Token::LBrace); 1 },
-			'}' => { tokens.push(Token::RBrace); 1 },
-			':' => { tokens.push(Token::Colon); 1 },
-			'\'' => { tokens.push(Token::Quote); 1 },
-			c if c.is_numeric() => {
-				let end_i = word.find(|c: char| !c.is_numeric() && c != '.' && c != '_')
-					.unwrap_or(word.len());
-				tokens.push(Token::Number(&word[..end_i]));
-
-				end_i
-			},
-			c if is_ident_char(c) => {
-				let end_i = word.find(|c: char| !is_ident_char(c))
-					.map(|end_i| if word[end_i..].starts_with('!') {
-						end_i + 1
-					} else {
-						end_i
-					})
-					.unwrap_or(word.len());
-				tokens.push(Token::Ident(&word[..end_i]));
-
-				end_i
-			},
-			c => return Err(format!("tokenize_word:: Unexpected character `{}`", c))
-		};
-		word = &word[shift..];
-	}
-
-	Ok(tokens)
-}
-
-/// Tokenize any string of code
-pub fn tokenize_string(src: &str) -> Result<Vec<Token>, String> {
-	match split_by_whitespace(src) {
-		Ok(words) => {
-			let mut out_tokens = Vec::with_capacity(src.len() / 2);
-			for word in words {
-				match tokenize_word(word) {
-					Ok(tokens) => out_tokens.extend(tokens),
-					Err(e) => return Err(e)
-				}
-			}
-			Ok(out_tokens)
-		},
-		Err(e) => Err(e.into())
-	}
-}
-
 
 #[cfg(test)]
 mod test {
 	use super::*;
 	use super::Token::*;
-
-	#[test]
-	fn test_split_by_whitespace() {
-		let src = r##"(foo _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
-		assert_eq!(&split_by_whitespace(src).unwrap(), &[
-			"(foo", "_Bar", r#"r"b a ""#, r##"r#"s 1 4"#"##, "4_100.125:", "Xyz"
-		]);
-	}
-
-	#[test]
-	fn test_tokenize_word() {
-		let src = "(:4_100.125)";
-		assert_eq!(&tokenize_word(src).unwrap(), &[
-			LParen, Colon, Number("4_100.125"), RParen
-		]);
-	}
-
-	#[test]
-	fn test_tokenize_string() {
-		let src = r##"(f00 _Bar r"b a " r#"s 1 4"# 4_100.125: Xyz"##;
-		assert_eq!(&tokenize_string(src).unwrap(), &[
-			LParen,
-			Ident("f00"),
-			Ident("_Bar"),
-			String(r#"r"b a ""#),
-			String(r##"r#"s 1 4"#"##),
-			Number("4_100.125"),
-			Colon,
-			Ident("Xyz")
-		]);
-
-		let src = r#"[foo?::<T> _bar_)"#;
-		assert_eq!(&tokenize_string(src).unwrap(), &[
-			LBracket, Ident("foo?"), Colon, Colon, LT, Ident("T"), GT, Ident("_bar_"), RParen
-		]);
-	}
 }
