@@ -87,8 +87,9 @@ use std::io::{ Read };
 use std::fs::File;
 use std::path::PathBuf;
 
-use lib::{ tokenize_string, compile };
-use lib::front::parse;
+use lib::Tokens;
+// use lib::compile;
+// use lib::front::parse;
 
 mod lib;
 
@@ -154,25 +155,26 @@ fn main() {
 		emissions.insert(emission);
 	}
 
-
 	let mut scr_code = String::with_capacity(4_000);
 	File::open(inp_file_name).unwrap().read_to_string(&mut scr_code).unwrap();
 
-	let tokens = tokenize_string(&scr_code).unwrap();
+	for token in Tokens::from(&*scr_code) {
+		println!("{:?}", token);
+	}
 
-	let ast = parse::AST::parse(&tokens).unwrap();
-	println!("AST PARSED:\n{:?}\n", ast);
+	// let ast = parse::AST::parse(&tokens).unwrap();
+	// println!("AST PARSED:\n{:?}\n", ast);
 
 	// ast.expand_macros();
 
-	let mut ast: lib::AST = ast.into();
-	println!("AST MACRO EXPANDED:\n{:?}\n", ast);
+	// let mut ast: lib::AST = ast.into();
+	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);
 
-	ast.remove_unused_consts();
-	println!("AST REMOVED UNUSED:\n{:?}\n", ast);
+	// ast.remove_unused_consts();
+	// println!("AST REMOVED UNUSED:\n{:?}\n", ast);
 
-	ast.infer_types();
-	println!("AST INFERED:\n{:?}\n", ast);
+	// ast.infer_types();
+	// println!("AST INFERED:\n{:?}\n", ast);
 
-	compile(&ast, out_file_name, sysroot, emissions);
+	// compile(&ast, out_file_name, sysroot, emissions);
 }

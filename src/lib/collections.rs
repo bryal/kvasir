@@ -47,6 +47,7 @@ impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>
 	fn deref_mut(&mut self) -> &mut ScopeStack<K, V> { self.scope_stack }
 }
 
+// TODO: Consider using BTreeMap, possible perforance increase. Do benchmarks.
 /// A stack of scopes of something. Fast access due to hashmaps, and guaranteed to contain no
 /// duplications at any point.
 ///

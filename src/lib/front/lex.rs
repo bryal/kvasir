@@ -28,7 +28,19 @@ pub enum Token<'a> {
 	Num(&'a str),
 	Str(&'a str),
 	Colon,
-	Backtick,
+	Quote,
+}
+
+fn error_in_source_at(src: &str, i: usize, e: String) {
+	let mut line_start_i = 0;
+	for (line_n, line) in src.lines().enumerate() {
+		if line_start_i <= i && i < line_start_i + line.len() {
+			println!("{}:{}: Error: {}\n{}: {}", line_n, i - line_start_i, e, line_n, line);
+			return;
+		}
+		line_start_i += line.len();
+	}
+	panic!("error_in_source_at: Index {} not reached. `src.len()`: {}", i, src.len())
 }
 
 fn try_tokenize<F>(src: &str, i: usize, f: F) -> (Token, usize)
@@ -36,7 +48,7 @@ fn try_tokenize<F>(src: &str, i: usize, f: F) -> (Token, usize)
 {
 	match f(&src[i..]) {
 		Ok(x) => x,
-		Err(e) => error_in_source_at(src, i, e)
+		Err(e) => panic!(error_in_source_at(src, i, e))
 	}
 }
 
@@ -49,7 +61,7 @@ fn tokenize_str_lit(src: &str) -> Result<(Token, usize), String> {
 		match c {
 			'\\' => { char_it.next(); },
 			// TODO: Unescape
-			'"' => return Ok((Token::Str(&src[1..i]), i)),
+			'"' => return Ok((Token::Str(&src[1..i]), i + 1)),
 			_ => (),
 		}
 	}
@@ -57,7 +69,7 @@ fn tokenize_str_lit(src: &str) -> Result<(Token, usize), String> {
 }
 fn tokenize_raw_str_lit(src: &str) -> Result<(Token, usize), String> {
 	// Assume first char is an 'r'
-	let n_delim_octothorpes = src[1..].chars().take_while(|c| c == '#').count();
+	let n_delim_octothorpes = src[1..].chars().take_while(|&c| c == '#').count();
 
 	let delim_octothorpes = &src[1 .. 1 + n_delim_octothorpes];
 
@@ -73,9 +85,8 @@ fn tokenize_raw_str_lit(src: &str) -> Result<(Token, usize), String> {
 }
 fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
 	let mut has_decimal_pt = false;
-	let mut char_it = src.char_indices();
 
-	for (i, c) in  {
+	for (i, c) in src.char_indices() {
 		// TODO: Add 'E' notation, e.g. 3.14E10, 5E-4
 		match c {
 			'_' | _ if c.is_numeric() => (),
@@ -85,33 +96,42 @@ fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
 	}
 	Err("Invalid numeric literal".into())
 }
+
+fn is_ident_char(c: char) -> bool {
+	match c {
+		'(' | ')' | '[' | ']' | '{' | '}' | ';' | '\'' | ':' | '"' => false,
+		_ if c.is_whitespace() => false,
+		_ => true,
+	}
+}
 fn tokenize_ident(src: &str) -> Result<(Token, usize), String> {
 	// Assume first characted has already been checked to be valid
 	for (i, c) in src.char_indices() {
-		match c {
-			')' | ']' | '}' => return Ok((Token::Ident(&src[0..i]), i)),
-			_ => (),
+		if !is_ident_char(c) {
+			return Ok((Token::Ident(&src[0..i]), i))
 		}
 	}
 	Err("Invalid ident".into())
 }
 
-struct Tokens<'a> {
+#[derive(Debug)]
+pub struct Tokens<'a> {
 	src: &'a str,
 	start_i: usize,
 }
-impl From<&str> for Tokens {
-	fn from(src: &str) -> Tokens { Tokens{ src: src, debug_src_i: 0 } }
+impl<'a> From<&'a str> for Tokens<'a> {
+	fn from(src: &'a str) -> Tokens { Tokens{ src: src, start_i: 0 } }
 }
-impl Iterator for Tokens {
-	type Item = Token;
+impl<'a> Iterator for Tokens<'a> {
+	type Item = Token<'a>;
 
-	fn next(&mut self) -> Option<Token> {
-		let mut char_it = self.src[self.start_i..]
+	fn next(&mut self) -> Option<Token<'a>> {
+		let start_i = self.start_i;
+		let mut char_it = self.src[start_i..]
 			.char_indices()
-			.map(|(i, c)| (i + self.start_i, c));
+			.map(|(i, c)| (i + start_i, c));
 
-		while let Some((i, c)) in char_it.next() {
+		while let Some((i, c)) = char_it.next() {
 			let (t, len) = match c {
 				_ if c.is_whitespace() => continue,
 				';' => {
@@ -120,15 +140,17 @@ impl Iterator for Tokens {
 					}
 					continue
 				},
-				'`' => (Token::Backtick, 1),
+				'\'' => (Token::Quote, 1),
 				':' => (Token::Colon, 1),
-				'(' => (Token::LParen, 1), ')' => (Token::RParen, 1),
+				'(' => (Token::LParen, 1),
+				')' => (Token::RParen, 1),
 				'"' => try_tokenize(self.src, i, tokenize_str_lit),
 				'r' if self.src[i + 1 ..].starts_with(|c: char| c == '"' || c == '#') =>
 					try_tokenize(self.src, i, tokenize_raw_str_lit),
 				_ if c.is_numeric() =>
 					try_tokenize(self.src, i, tokenize_num_lit),
-				_ => try_tokenize(self.src, i, tokenize_ident),
+				_ if is_ident_char(c) => try_tokenize(self.src, i, tokenize_ident),
+				_ => panic!(error_in_source_at(self.src, i, format!("Unexpected char `{}`", c))),
 			};
 
 			self.start_i = i + len;

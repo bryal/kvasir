@@ -23,6 +23,6 @@
 pub use self::lex::Token;
 
 pub mod lex;
-pub mod parse;
-mod inference;
-pub mod core_lib;
+// pub mod parse;
+// mod inference;
+// pub mod core_lib;

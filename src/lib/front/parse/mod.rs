@@ -36,8 +36,6 @@ mod ast;
 fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
 	let delim = match open_token {
 		Token::LParen => Token::RParen,
-		Token::LBracket => Token::RBracket,
-		Token::LBrace => Token::RBrace,
 		_ => return None,
 	};
 
@@ -81,18 +79,12 @@ impl Type {
 		}
 	}
 
-	/// Parse tuple type from tokens assumed to be within parentheses
-	fn parse_tuple(tokens: &[Token]) -> Result<Type, String> {
-		parse_types(tokens).map(|tys| Type::Tuple(tys))
-	}
-
 	/// Parse a type from tokens. On success, return parsed type and number of tokens used
 	pub fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {
 		tokens.get(0).ok_or("Type::parse: no tokens".into()).and_then(|&token| match token {
 			Token::Ident("_") => Ok((Type::Inferred, 1)),
 			Token::Ident(ident) => Ok((Type::Basic(ident.into()), 1)),
-			Token::LBrace => parse_brackets(tokens, Type::parse_construct),
-			Token::LParen => parse_brackets(tokens, Type::parse_tuple),
+			Token::LParen => parse_brackets(tokens, Type::parse_construct),
 			t => Err(format!("Type::parse: unexpected token `{:?}`", t))
 		})
 	}
@@ -531,8 +523,8 @@ impl Expr {
 				Token::Quote =>
 					Expr::parse_quoted(tokens.tail()).map(|(quoted, len)| (quoted, len+1)),
 				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
-				Token::String(s) => Ok((Expr::StrLit(s.into()), 1)),
-				Token::Number(n) => Ok((Expr::NumLit(n.into()), 1)),
+				Token::Str(s) => Ok((Expr::StrLit(s.into()), 1)),
+				Token::Num(n) => Ok((Expr::NumLit(n.into()), 1)),
 				Token::Ident(_) => Path::parse(tokens).map(|ident| (Expr::Binding(ident), 1)),
 				t => Err(format!("Expr::parse: unexpected token `{:?}`", t)),
 			}
