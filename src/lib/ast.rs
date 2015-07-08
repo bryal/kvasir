@@ -28,6 +28,7 @@ fn list_items_to_string<T: Debug>(list: &[T]) -> String {
 	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
 }
 
+// TODO: Remove in favor of macros?
 static FUNCTION_CONSTRUCTORS: &'static [&'static str] = &["→", "fn", "->"];
 
 #[derive(Clone, PartialEq, Eq)]

@@ -20,27 +20,16 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+use lib::error_in_source_at;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Token<'a> {
+enum Token<'a> {
 	LParen,
 	RParen,
 	Ident(&'a str),
 	Num(&'a str),
 	Str(&'a str),
-	Colon,
 	Quote,
-}
-
-fn error_in_source_at(src: &str, i: usize, e: String) {
-	let mut line_start_i = 0;
-	for (line_n, line) in src.lines().enumerate() {
-		if line_start_i <= i && i < line_start_i + line.len() {
-			println!("{}:{}: Error: {}\n{}: {}", line_n, i - line_start_i, e, line_n, line);
-			return;
-		}
-		line_start_i += line.len();
-	}
-	panic!("error_in_source_at: Index {} not reached. `src.len()`: {}", i, src.len())
 }
 
 fn try_tokenize<F>(src: &str, i: usize, f: F) -> (Token, usize)
@@ -115,7 +104,7 @@ fn tokenize_ident(src: &str) -> Result<(Token, usize), String> {
 }
 
 #[derive(Debug)]
-pub struct Tokens<'a> {
+struct Tokens<'a> {
 	src: &'a str,
 	start_i: usize,
 }
@@ -123,9 +112,9 @@ impl<'a> From<&'a str> for Tokens<'a> {
 	fn from(src: &'a str) -> Tokens { Tokens{ src: src, start_i: 0 } }
 }
 impl<'a> Iterator for Tokens<'a> {
-	type Item = Token<'a>;
+	type Item = (Token<'a>, usize);
 
-	fn next(&mut self) -> Option<Token<'a>> {
+	fn next(&mut self) -> Option<(Token<'a>, usize)> {
 		let start_i = self.start_i;
 		let mut char_it = self.src[start_i..]
 			.char_indices()
@@ -141,7 +130,7 @@ impl<'a> Iterator for Tokens<'a> {
 					continue
 				},
 				'\'' => (Token::Quote, 1),
-				':' => (Token::Colon, 1),
+				':' => (Token::Ident(":"), 1),
 				'(' => (Token::LParen, 1),
 				')' => (Token::RParen, 1),
 				'"' => try_tokenize(self.src, i, tokenize_str_lit),
@@ -154,9 +143,64 @@ impl<'a> Iterator for Tokens<'a> {
 			};
 
 			self.start_i = i + len;
-			return Some(t);
+			return Some((t, i));
 		}
 		None
+	}
+}
+
+#[derive(Debug, Clone)]
+pub enum TokenTree<'a> {
+	List(Vec<(TokenTree<'a>, usize)>),
+	Ident(&'a str),
+	Num(&'a str),
+	Str(&'a str),
+}
+impl<'a> TokenTree<'a> {
+	fn from_token(token: Token<'a>, nexts: &mut Tokens<'a>) -> Result<TokenTree<'a>, String> {
+		match token {
+			Token::LParen => tokens_to_trees_until(nexts, Some(&Token::RParen))
+				.map(|list| TokenTree::List(list)),
+			Token::Ident(ident) => Ok(TokenTree::Ident(ident)),
+			Token::Num(num) => Ok(TokenTree::Num(num)),
+			Token::Str(s) => Ok(TokenTree::Str(s)),
+			Token::Quote => nexts.next()
+				.ok_or("Free quote".into())
+				.and_then(|(next, next_pos)| TokenTree::from_token(next, nexts)
+					.map(|quoted| TokenTree::List(vec![
+						(TokenTree::Ident("quote"), next_pos - 1),
+						(quoted, next_pos)
+					]))),
+			t => Err(format!("Unexpected token `{:?}`", t)),
+		}
+	}
+}
+
+fn tokens_to_trees_until<'a>(tokens: &mut Tokens<'a>, delim: Option<&Token>)
+	-> Result<Vec<(TokenTree<'a>, usize)>, String>
+{
+	let mut tts = Vec::new();
+
+	while let Some((token, t_pos)) = tokens.next() {
+		match token {
+			_ if Some(&token) == delim => return Ok(tts),
+			_ => match TokenTree::from_token(token, tokens) {
+				Ok(tt) => tts.push((tt, t_pos)),
+				Err(e) => panic!(error_in_source_at(tokens.src, t_pos, e)),
+			},
+		}
+	}
+	match delim {
+		None => Ok(tts),
+		Some(t) => Err(format!("Undelimited item. No closing `{:?}` found", t))
+	}
+}
+
+pub fn token_trees_from_src(src: &str) -> Vec<(TokenTree, usize)> {
+	let mut tokens = Tokens::from(src);
+	match tokens_to_trees_until(&mut tokens, None) {
+		Ok(tts) => tts,
+		Err(e) => panic!(error_in_source_at(src, 0, e))
 	}
 }
 

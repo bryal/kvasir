@@ -20,7 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-pub use self::front::lex::Tokens;
+use std::iter::repeat;
+
+pub use self::front::lex::token_trees_from_src;
 // pub use self::back::compile;
 // pub use self::ast::*;
 // pub use self::collections::ScopeStack;
@@ -30,3 +32,24 @@ pub mod front;
 // pub mod back;
 // pub mod ast;
 // pub mod collections;
+
+pub fn error_in_source_at(src: &str, i: usize, e: String) {
+	let mut line_start_i = 0;
+	for (line_n, line) in src.lines().enumerate().map(|(n, l)| (n+1, l)) {
+		let line_len = line.chars().count() + 1; // Include length of newline char
+
+		if line_start_i <= i && i < line_start_i + line_len {
+			let col = i - line_start_i;
+			println!("\
+					{}:{}: Error: {}\n\
+					{}: {}\n\
+					{}▲",
+				line_n, col, e,
+				line_n, line,
+				repeat(' ').take(col + (line_n as f32).log10() as usize + 3).collect::<String>());
+			return;
+		}
+		line_start_i += line_len;
+	}
+	panic!("error_in_source_at: Index {} not reached. `src.len()`: {}", i, src.len())
+}

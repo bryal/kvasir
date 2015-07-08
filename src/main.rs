@@ -73,7 +73,7 @@
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
 
-#![feature(non_ascii_idents, box_patterns, rustc_private, collections, collections_drain)]
+#![feature(non_ascii_idents, box_patterns)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -87,7 +87,7 @@ use std::io::{ Read };
 use std::fs::File;
 use std::path::PathBuf;
 
-use lib::Tokens;
+use lib::token_trees_from_src;
 // use lib::compile;
 // use lib::front::parse;
 
@@ -155,12 +155,10 @@ fn main() {
 		emissions.insert(emission);
 	}
 
-	let mut scr_code = String::with_capacity(4_000);
-	File::open(inp_file_name).unwrap().read_to_string(&mut scr_code).unwrap();
+	let mut src_code = String::with_capacity(4_000);
+	File::open(inp_file_name).unwrap().read_to_string(&mut src_code).unwrap();
 
-	for token in Tokens::from(&*scr_code) {
-		println!("{:?}", token);
-	}
+	println!("{:#?}", token_trees_from_src(&src_code));
 
 	// let ast = parse::AST::parse(&tokens).unwrap();
 	// println!("AST PARSED:\n{:?}\n", ast);

@@ -2,37 +2,7 @@
     ((predicate consequence otherwise)
      (cond (predicate consequence) (else otherwise))))
 
-;(def-macro-rules def-func ()
-;    (((name args ...) body)
-;     (def-const name (lambda (args ...) body))))
-
-;(def-func dec (lambda (n) (- n 1)))
-;(def-func inc (lambda (n) (+ n 1)))
-
-;(def-const max (lambda (a b) (if (> a b) a b)))
-
-(def-const fib (lambda (n)
-    (cond ((= n 0) 0)
-          ((= n 1) 1)
-          (else (+ (fib (- n 1)) (fib (- n 2)))))))
-
-;(def-const neg (lambda (x) (- 0 x)))
-;
-;(def-const or (lambda (a b)
-;    (cond (a true)
-;          (b true)
-;          (else false))))
-;
-;(def-const gteq (lambda (a b) (or (> a b) (= a b))))
-;
-;(def-const max (lambda (a b)
-;    (if_ (gteq a b)
-;         a
-;         b)))
+(def-const max (lambda ) (a b) (if (> a b) a b))
 
 (def-const main (lambda ()
-    (println! "{:?}" (block
-        ;(def-const a 10)
-        ;(fib a)
-        ;(max 10 20)
-        ))))
+    (println! "{:?}" (max 14 (- 13 42)))))
