@@ -74,30 +74,52 @@ fn tokenize_raw_str_lit(src: &str) -> Result<(Token, usize), String> {
 }
 fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
 	let mut has_decimal_pt = false;
+	let mut has_e = false;
+	let mut prev_was_e = false;
 
 	for (i, c) in src.char_indices() {
 		// TODO: Add 'E' notation, e.g. 3.14E10, 5E-4
 		match c {
-			'_' | _ if c.is_numeric() => (),
+			'_' => (),
+			'E' if !has_e => {
+				has_e = true;
+				prev_was_e = true
+			},
+			'-' if prev_was_e => (),
+			_ if c.is_numeric() => (),
 			'.' if !has_decimal_pt => has_decimal_pt = true,
-			_ => return Ok((Token::Num(&src[..i]), i)),
+			_ if is_delim_char(c) => return Ok((Token::Num(&src[..i]), i)),
+			_ => break
+		}
+		if c != 'E' {
+			prev_was_e = false;
 		}
 	}
 	Err("Invalid numeric literal".into())
 }
 
+fn is_delim_char(c: char) -> bool {
+	match c {
+		'(' | ')' | '[' | ']' | '{' | '}' | ';' => true,
+		_ if c.is_whitespace() => true,
+		_ => false,
+	}
+}
+
 fn is_ident_char(c: char) -> bool {
 	match c {
-		'(' | ')' | '[' | ']' | '{' | '}' | ';' | '\'' | ':' | '"' => false,
-		_ if c.is_whitespace() => false,
+		'\'' | ':' | '"' => false,
+		_ if is_delim_char(c) => false,
 		_ => true,
 	}
 }
 fn tokenize_ident(src: &str) -> Result<(Token, usize), String> {
 	// Assume first characted has already been checked to be valid
 	for (i, c) in src.char_indices() {
-		if !is_ident_char(c) {
+		if is_delim_char(c) {
 			return Ok((Token::Ident(&src[0..i]), i))
+		} else if !is_ident_char(c) {
+			break
 		}
 	}
 	Err("Invalid ident".into())

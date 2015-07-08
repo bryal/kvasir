@@ -5,4 +5,4 @@
 (def-const max (lambda ) (a b) (if (> a b) a b))
 
 (def-const main (lambda ()
-    (println! "{:?}" (max 14 (- 13 42)))))
+    (println! "{:?}" (max 14.2_E3 (- 13E-2 42_4)))))
