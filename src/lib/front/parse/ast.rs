@@ -26,17 +26,7 @@ use std::convert::Into;
 use lib;
 use lib::{ Path, Use, Type, TypedBinding };
 
-#[derive(Clone, Debug)]
-pub enum MacroPattern {
-	Ident(String),
-	List(Vec<MacroPattern>),
-}
 
-#[derive(Clone, Debug)]
-pub struct MacroRules {
-	pub literal_idents: Vec<String>,
-	pub rules: Vec<(MacroPattern, Expr)>,
-}
 
 #[derive(Clone, Debug)]
 pub struct SExpr {

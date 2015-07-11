@@ -63,7 +63,7 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 	fn split_from(&mut self, from: usize) -> Vec<HashMap<K, V>> { self.0.split_off(from) }
 
 	fn push(&mut self, scope: HashMap<K, V>) {
-		if scope.keys().any(|key| self.contains_def(key)) {
+		if scope.keys().any(|key| self.contains_key(key)) {
 			panic!("ScopeStack::push: Key already exists in scope");
 		}
 		self.0.push(scope);
@@ -96,13 +96,13 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 	pub fn map_push_local<'a, E, ItIn, F, ItOut, Fi>(&'a mut self,
 		borrowed: &'a mut HashMap<K, E>,
 		f: F,
-		f_inverse: Fi)
-			-> BorrowGuard<K, E, V, ItOut, Fi>
-			where
-				ItIn: Iterator<Item=(K, V)>,
-				ItOut: Iterator<Item=(K, E)>,
-				F: Fn(IntoIter<K, E>) -> ItIn,
-				Fi: Fn(IntoIter<K, V>) -> ItOut
+		f_inverse: Fi
+	) -> BorrowGuard<K, E, V, ItOut, Fi>
+		where
+			ItIn: Iterator<Item=(K, V)>,
+			ItOut: Iterator<Item=(K, E)>,
+			F: Fn(IntoIter<K, E>) -> ItIn,
+			Fi: Fn(IntoIter<K, V>) -> ItOut
 	{
 		let map = replace(borrowed, HashMap::new());
 
@@ -111,8 +111,8 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		BorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: f_inverse }
 	}
 
-	pub fn contains_def<Q: ?Sized>(&self, def_ident: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
-		self.0.iter().any(|scope| scope.contains_key(def_ident))
+	pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
+		self.0.iter().any(|scope| scope.contains_key(key))
 	}
 
 	pub fn get_height<Q: ?Sized>(&self, key: &Q) -> Option<usize> where Q: Hash + Eq, K: Borrow<Q> {

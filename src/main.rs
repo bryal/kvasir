@@ -73,7 +73,7 @@
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
 
-#![feature(non_ascii_idents, box_patterns)]
+#![feature(non_ascii_idents, box_patterns, iter_once, collections, collections_drain)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -87,7 +87,7 @@ use std::io::{ Read };
 use std::fs::File;
 use std::path::PathBuf;
 
-use lib::token_trees_from_src;
+use lib::{ token_trees_from_src, expand_macros };
 // use lib::compile;
 // use lib::front::parse;
 
@@ -158,12 +158,14 @@ fn main() {
 	let mut src_code = String::with_capacity(4_000);
 	File::open(inp_file_name).unwrap().read_to_string(&mut src_code).unwrap();
 
-	println!("{:#?}", token_trees_from_src(&src_code));
+	let token_tree = token_trees_from_src(&src_code);
+
+	println!("TOKEN TREE{:#?}", token_tree);
+
+	println!("MACRO EXPANDED: {:?}", expand_macros(&src_code, token_tree));
 
 	// let ast = parse::AST::parse(&tokens).unwrap();
 	// println!("AST PARSED:\n{:?}\n", ast);
-
-	// ast.expand_macros();
 
 	// let mut ast: lib::AST = ast.into();
 	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);

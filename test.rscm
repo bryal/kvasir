@@ -1,4 +1,4 @@
-(def-macro-rules if ()
+(define-macro if ()
     ((predicate consequence otherwise)
      (cond (predicate consequence) (else otherwise))))
 

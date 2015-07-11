@@ -171,7 +171,7 @@ impl<'a> Iterator for Tokens<'a> {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenTree<'a> {
 	List(Vec<(TokenTree<'a>, usize)>),
 	Ident(&'a str),
