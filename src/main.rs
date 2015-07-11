@@ -73,7 +73,7 @@
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
 
-#![feature(non_ascii_idents, box_patterns, iter_once, collections, collections_drain)]
+#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -162,7 +162,9 @@ fn main() {
 
 	println!("TOKEN TREE{:#?}", token_tree);
 
-	println!("MACRO EXPANDED: {:?}", expand_macros(&src_code, token_tree));
+	println!("MACRO EXPANDED: {:#?}", lib::front::lex::PrettyTokenTree::from_tt(
+		lib::front::lex::TokenTree::List(
+			expand_macros(&src_code, token_tree))));
 
 	// let ast = parse::AST::parse(&tokens).unwrap();
 	// println!("AST PARSED:\n{:?}\n", ast);

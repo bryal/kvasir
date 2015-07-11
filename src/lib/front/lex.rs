@@ -226,6 +226,26 @@ pub fn token_trees_from_src(src: &str) -> Vec<(TokenTree, usize)> {
 	}
 }
 
+/// TokenTree without source positions. Useful for pretty pringing, since tuples don't print well
+#[derive(Debug)]
+pub enum PrettyTokenTree<'a> {
+	List(Vec<PrettyTokenTree<'a>>),
+	Ident(&'a str),
+	Num(&'a str),
+	Str(&'a str),
+}
+impl<'a> PrettyTokenTree<'a> {
+	pub fn from_tt(tt: TokenTree<'a>) -> Self {
+		match tt {
+			TokenTree::List(l) => PrettyTokenTree::List(
+				l.into_iter().map(|(tt, _)| PrettyTokenTree::from_tt(tt)).collect()),
+			TokenTree::Ident(x) => PrettyTokenTree::Ident(x),
+			TokenTree::Num(x) => PrettyTokenTree::Num(x),
+			TokenTree::Str(x) => PrettyTokenTree::Str(x),
+		}
+	}
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;

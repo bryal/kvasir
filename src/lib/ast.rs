@@ -24,8 +24,10 @@ use std::collections::HashMap;
 use std::borrow::Cow;
 use std::fmt::{ self, Debug };
 
-fn list_items_to_string<T: Debug>(list: &[T]) -> String {
-	list.iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
+pub fn list_items_to_string<'a, Item, I, T>(items: T) -> String
+	where Item: Debug, I: Iterator<Item=&'a Item>, T: IntoIterator<IntoIter=I, Item=&'a Item>
+{
+	items.into_iter().fold(String::new(), |acc, e| format!("{} {:?}", acc, e))
 }
 
 // TODO: Remove in favor of macros?

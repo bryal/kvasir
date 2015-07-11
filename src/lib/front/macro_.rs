@@ -208,7 +208,7 @@ fn expand_macros_in_scope<'a, I, T>(
 
 	for (item, pos) in scope_items {
 		if let TokenTree::List(mut sexpr) = item {
-			if let Some(&(TokenTree::Ident("define-macro"), _)) = sexpr.first() {
+			if let Some(&(TokenTree::Ident("def-macro"), _)) = sexpr.first() {
 				let mut parts = sexpr.drain(1..);
 
 				let def_name = match parts.next() {

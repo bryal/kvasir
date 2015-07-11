@@ -23,6 +23,7 @@
 // TODO: Error type that combines message with line, column, file, etc.
 
 use std::iter::repeat;
+use std::fmt::Debug;
 
 pub use self::front::lex::token_trees_from_src;
 pub use self::front::macro_::expand_macros;
