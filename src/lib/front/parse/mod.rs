@@ -20,601 +20,484 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-// TODO: Maybe instead of having special cases while parsing, parse all parens equaly and handle
-//       special cases later separately
-
 // TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
+// TODO: Let the custom error type be based on enum for reusable messages
 
 use std::collections::HashMap;
-use lib::{ Path, Use, Type, TypedBinding };
-use super::*;
-use self::ast::{ MacroPattern, MacroRules, SExpr, Block, Cond, Lambda, Expr };
-pub use self::ast::AST;
+use std::borrow::Cow;
 
-mod ast;
+use super::lex::TokenTree;
+use lib::error_in_source_at;
 
-fn find_closing_delim(open_token: Token, tokens: &[Token]) -> Option<usize> {
-	let delim = match open_token {
-		Token::LParen => Token::RParen,
-		_ => return None,
-	};
+// NOTE: A Symbol should be a wrapper around a static string reference, where
+//       reference equality would imply value equality
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Type<'a> {
+	Unknown,
+	Basic(Cow<'a, str>),
+	Construct(Cow<'a, str>, Vec<Type<'a>>),
+	Poly(Cow<'a, str>),
+}
+/// The tuple has the type constructor `*`, as it is a
+/// [product type](https://en.wikipedia.org/wiki/Product_type).
+/// Nil is implemented as the empty tuple
+impl<'a> Type<'a> {
+	pub fn new_basic<S: Into<Cow<'a, str>>>(t: S) -> Self { Type::Basic(t.into()) }
+	pub fn new_construct<S: Into<Cow<'a, str>>>(constructor: S, args: Vec<Type<'a>>) -> Self {
+		Type::Construct(constructor.into(), args)
+	}
+	pub fn new_poly<S: Into<Cow<'a, str>>>(t: S) -> Self { Type::Poly(t.into()) }
+	pub fn new_tuple(args: Vec<Type<'a>>) -> Self { Type::new_construct("*", args) }
+	pub fn new_nil() -> Self { Type::new_tuple(vec![]) }
+	pub fn new_fn(mut arg_tys: Vec<Type<'a>>, return_ty: Type<'a>) -> Self {
+		arg_tys.push(return_ty);
+		Type::Construct("fn".into(), arg_tys)
+	}
 
-	let mut opens = 0u64;
-	for (i, token) in tokens.iter().enumerate() {
-		if *token == open_token {
-			opens += 1;
-		} else if *token == delim {
-			if opens == 0 {
-				return Some(i)
-			}
-			opens -= 1;
+	pub fn is_unknown(&self) -> bool {
+		match self {
+			&Type::Unknown => true,
+			_ => false
 		}
 	}
-	None
-}
-
-/// Parse content within brackets using provided function.
-///
-/// Return parsed content and num of used tokens. The type of bracket is denoted by the first token.
-fn parse_brackets<F, T>(tokens: &[Token], content_parser: F) -> Result<(T, usize), String>
-	where F: Fn(&[Token]) -> Result<T, String>
-{
-	find_closing_delim(tokens[0], tokens.tail())
-		.map(|delim_i| delim_i + 1)
-		.ok_or("parse_brackets: failed to find closing paren".into())
-		.and_then(|delim_i| content_parser(&tokens[1..delim_i])
-			.map(|paths| (paths, delim_i + 1)))
-}
-
-impl Type {
-	/// Parse construct type from tokens assumed to be within angle brackets
-	fn parse_construct(tokens: &[Token]) -> Result<Type, String> {
-		if tokens.len() == 0 {
-			return Err("Type::parse_construct: no tokens".into())
-		}
-		match tokens[0] {
-			Token::Ident(ident) => parse_types(tokens.tail())
-				.map(|tys| Type::Construct(ident.into(), tys)),
-			t => Err(format!("Type::parse_construct: unexpected token `{:?}`", t))
+	// TODO: Remake into something like `is_known`, include partial constructors etc.
+	pub fn is_partly_known(&self) -> bool {
+		!self.is_unknown()
+	}
+	pub fn is_poly(&self) -> bool {
+		match self {
+			&Type::Poly(_) => true,
+			_ => false
 		}
 	}
 
-	/// Parse a type from tokens. On success, return parsed type and number of tokens used
-	pub fn parse(tokens: &[Token]) -> Result<(Type, usize), String> {
-		tokens.get(0).ok_or("Type::parse: no tokens".into()).and_then(|&token| match token {
-			Token::Ident("_") => Ok((Type::Inferred, 1)),
-			Token::Ident(ident) => Ok((Type::Basic(ident.into()), 1)),
-			Token::LParen => parse_brackets(tokens, Type::parse_construct),
-			t => Err(format!("Type::parse: unexpected token `{:?}`", t))
-		})
-	}
-}
-
-fn parse_types(tokens: &[Token]) -> Result<Vec<Type>, String> {
-	let mut tys = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match Type::parse(&tokens[i..]) {
-			Ok((ty, len)) => {
-				tys.push(ty);
-				i += len;
+	pub fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Type<'a>, (String, usize)> {
+		match *tt {
+			TokenTree::List(ref construct) if ! construct.is_empty() => match construct[0] {
+				(TokenTree::Ident(constructor), _) => construct.tail()
+					.iter()
+					.map(Type::parse)
+					.collect::<Result<_, _>>()
+					.map(|args| Type::new_construct(constructor, args)),
+				(_, c_pos) => Err(("Invalid type constructor".into(), c_pos)),
 			},
-			Err(e) => return Err(e),
+			TokenTree::List(_) => Ok(Type::new_nil()),
+			TokenTree::Ident(basic) => Ok(Type::new_basic(basic)),
+			TokenTree::Num(num) => Err((format!("Expected type, found `{}`", num), pos)),
+			TokenTree::Str(s) => Err((format!("Expected type, found `{:?}`", s), pos)),
 		}
 	}
-
-	Ok(tys)
 }
 
-impl TypedBinding {
-	fn parse_parenthesized(tokens: &[Token]) -> Result<TypedBinding, String> {
-		if tokens.len() == 0 {
-			Err("TypedBinding::parse_parenthesized: No tokens".into())
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedBinding<'a> {
+	pub ident: &'a str,
+	pub typ: Type<'a>,
+	pos: usize,
+}
+impl<'a> TypedBinding<'a> {
+	fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
+		match *tt {
+			TokenTree::List(ref tb) if ! tb.is_empty() && tb[0].0 == TokenTree::Ident(":") =>
+				if tb.len() == 3 {
+					match tb[2] {
+						(TokenTree::Ident(ident), _) => Type::parse(&tb[1])
+							.map(|ty| TypedBinding{ ident: ident, typ: ty, pos: pos }),
+						(_, bpos) => Err(("Invalid binding".into(), bpos))
+					}
+				} else {
+					Err(("Invalid type ascription".into(), pos))
+				},
+			TokenTree::Ident(ident) => Ok(
+				TypedBinding{ ident: ident, typ: Type::Unknown, pos: pos }),
+			_ => Err(("Invalid binding".into(), pos))
+		}
+	}
+}
+
+/// A path to an expression or item. Could be a path to a module in a use statement,
+/// of a path to a function or constant in an expression.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Path<'a> {
+	parts: Vec<&'a str>,
+	is_absolute: bool,
+	pos: usize
+}
+impl<'a> Path<'a> {
+	pub fn is_absolute(&self) -> bool { self.is_absolute }
+
+	pub fn parts(&self) -> &[&str] { &self.parts }
+
+	/// If self is just a simple ident, return it as Some
+	pub fn ident(&self) -> Option<&str> {
+		if ! self.is_absolute { self.parts.first().map(|&s| s) } else { None }
+	}
+
+	/// Concatenates two paths.
+	/// Returns both `self` and `other` as `Err` if right hand path is absolute
+	pub fn concat(mut self, other: Self) -> Result<Self, (Self, Self)> {
+		if other.is_absolute {
+			Err((self, other))
 		} else {
-			if let Token::Colon = tokens[0] {
-				// Type ascription
-				Type::parse(tokens.tail())
-					.and_then(|(ty, len)| if tokens.tail().len() - len != 1 {
-						Err("TypedBinding::parse_parenthesized: \
-							Type ascription not followed by single ident".into())
-					} else if let Token::Ident(ident) = tokens.tail()[len] {
-						Ok(TypedBinding{ ident: ident.into(), type_sig: ty })
-					} else {
-						Err("TypedBinding::parse_parenthesized: \
-							Type ascription not followed by ident".into())
-					})
-			} else {
-				Err("TypedBinding::parse_parenthesized: First token is not colon".into())
-			}
+			self.parts.extend(other.parts);
+			Ok(self)
 		}
 	}
 
-	fn parse(tokens: &[Token]) -> Result<(TypedBinding, usize), String> {
-		if tokens.len() == 0 {
-			Err("TypedBinding::parse: No tokens".into())
-		} else {
-			match tokens[0] {
-				Token::LParen => parse_brackets(tokens, TypedBinding::parse_parenthesized),
-				Token::Ident(ident) => Ok((TypedBinding{
-						ident: ident.into(),
-						type_sig: Type::Inferred
-					},
-					1)),
-				t => Err(format!("TypedBinding::parse: Unexpected token `{:?}`", t))
-			}
-		}
-	}
-}
-
-fn parse_typed_bindings(tokens: &[Token]) -> Result<Vec<TypedBinding>, String> {
-	let mut bindings = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		let (binding, binding_len) = try!(TypedBinding::parse(&tokens[i..]));
-
-		bindings.push(binding);
-
-		i += binding_len;
+	pub fn to_string(&self) -> String {
+		format!(
+			"{}{}{}",
+			if self.is_absolute() { "\\" } else { "" },
+			self.parts[0],
+			self.parts[1..].iter().fold(String::new(), |acc, p| acc + "\\" + p))
 	}
 
-	Ok(bindings)
-}
-
-impl Path {
 	/// Parse an ident
-	fn parse(tokens: &[Token]) -> Result<Path, String> {
-		if tokens.len() == 0 {
-			return Err("Ident::parse: no tokens".into());
-		}
-		match tokens[0] {
-			Token::Ident(s) => Path::parse_str(s),
-			t => Err(format!("Ident::parse: unexpexted token `{:?}`", t)),
+	fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
+		match *tt {
+			TokenTree::Ident(s) => Path::from_str(s, pos),
+			_ => Err(("Invalid path".into(), pos)),
 		}
 	}
 
-	fn parse_str(path_s: &str) -> Result<Path, String> {
-		let (is_absolute, path_s) = if path_s.starts_with('\\') {
-			if path_s.len() == 1 {
-				return Err("Ident::parse_str: Path is a lone `\\`".into());
-			} else {
-				(true, &path_s[1..])
+	fn from_str(path_str: &'a str, pos: usize) -> Result<Self, (String, usize)> {
+		let (is_absolute, path_str) = if path_str.ends_with("\\") {
+			return Err(("Path ends with `\\`".into(), pos));
+		} else if path_str.starts_with('\\') {
+			if path_str.len() == 1 {
+				return Err(("Path is a lone `\\`".into(), pos));
 			}
+			(true, &path_str[1..])
 		} else {
-			(false, path_s)
+			(false, path_str)
 		};
 
-		if path_s.ends_with("\\") {
-			return Err("Path::parse_str: Path ends with `\\`".into());
-		}
-
-		let mut parts = Vec::new();
-
-		for part in path_s.split('\\') {
-			if part == "" {
-				return Err(format!("Path::parse_str: Invalid path `{}`", path_s));
-			}
-			parts.push(part.into());
-		}
-
-		Ok(Path::new(parts, is_absolute))
+		path_str.split('\\')
+			.map(|part| if part == "" {
+				Err(("Invalid path".into(), pos))
+			} else {
+				Ok(part)
+			})
+			.collect::<Result<Vec<_>, _>>()
+			.map(|parts| Path{ parts: parts, is_absolute: is_absolute, pos: pos })
+	}
+}
+impl<'a> PartialEq<str> for Path<'a> {
+	fn eq(&self, rhs: &str) -> bool {
+		self.to_string() == rhs
 	}
 }
 
-fn parse_macro_patterns(tokens: &[Token]) -> Result<Vec<MacroPattern>, String> {
-	let mut patterns = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		let (pat, len) = try!(MacroPattern::parse(&tokens[i..]));
-		patterns.push(pat);
-		i += len;
-	}
-	Ok(patterns)
-}
-
-impl MacroPattern {
-	fn parse(tokens: &[Token]) -> Result<(MacroPattern, usize), String> {
-		if tokens.len() == 0 {
-			Err("MacroPattern::parse: No tokens".into())
-		} else {
-			match tokens[0] {
-				Token::LParen => parse_brackets(tokens, parse_macro_patterns)
-					.map(|(patterns, len)| (MacroPattern::List(patterns), len)),
-				Token::Ident(ident) => Ok((MacroPattern::Ident(ident.into()), 1)),
-				ref t => Err(format!("MacroPattern::parse: Unexpected token `{:?}`", t)),
-			}
-		}
-	}
-}
-
-fn parse_macro_rule(tokens: &[Token]) -> Result<(MacroPattern, Expr), String> {
-	MacroPattern::parse(tokens).and_then(|(pat, len)|
-		// TODO: Should parse as if quoted
-		Expr::parse(&tokens[len..]).map(|(expr, _)| (pat, expr)))
-}
-
-fn parse_macro_rules(tokens: &[Token]) -> Result<Vec<(MacroPattern, Expr)>, String> {
-	let mut macro_rules = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match tokens[i] {
-			Token::LParen => {
-				let (rule, len) = try!(parse_brackets(&tokens[i..], parse_macro_rule));
-				macro_rules.push(rule);
-				i += len;
-			},
-			ref t => return Err(format!("parse_macro_rules: Unexpected token `{:?}`", t)),
-		}
-	}
-	Ok(macro_rules)
-}
-
-impl MacroRules {
-	fn parse(tokens: &[Token]) -> Result<MacroRules, String> {
-		if tokens.len() == 0 {
-			return Err("MacroRules::parse: No tokens".into())
-		}
-		match tokens[0] {
-			Token::LParen => parse_brackets(tokens, |tokens| {
-					let mut lits = Vec::new();
-					for token in tokens {
-						match token {
-							&Token::Ident(ident) => lits.push(ident.into()),
-							t => return Err(format!(
-								"MacroRules::parse: In parse_brackets, unexpected token `{:?}`",
-								t)),
-						}
-					}
-					Ok(lits)
-				})
-				.and_then(|(literal_idents, len)| parse_macro_rules(&tokens[len..])
-					.map(|rules| MacroRules{ literal_idents: literal_idents, rules: rules })),
-			ref t => Err(format!("MacroRules::parse: Unexpected token `{:?}`", t))
-		}
+/// # Rust equivalent
+///
+/// `path\to\item` => `path::to::item`
+/// (path\to\module sub\item1 item2) == path::to::module{ sub::item1, item2 }
+/// (lvl1::lvl2 (lvl2a lvl3a lvl3b) lvl2b) == use lvl1::lvl2::{ lvl2a::{ lvl3a, lvl3b}, lvl2b }
+fn parse_compound_path<'a>(&(ref tt, pos): &(TokenTree<'a>, usize))
+	-> Result<Vec<Path<'a>>, (String, usize)>
+{
+	match *tt {
+		TokenTree::List(ref compound) if ! compound.is_empty() => Path::parse(&compound[0])
+			.and_then(|head| compound.tail()
+				.iter()
+				.map(parse_compound_path)
+				.collect::<Result<Vec<_>, _>>()
+				.and_then(|vs| vs.into_iter()
+					.flat_map(|v| v)
+					.map(|sub| head.clone()
+						.concat(sub)
+						.map_err(|(_, sub)|
+							(format!("`{}` is absolute", sub.to_string()), sub.pos)))
+					.collect::<Result<_, _>>())),
+		TokenTree::List(_) => Err(("Empty path compound".into(), pos)),
+		TokenTree::Ident(ident) => Path::from_str(ident, pos).map(|path| vec![path]),
+		TokenTree::Num(num) => Err((format!("Expected path, found `{}`", num), pos)),
+		TokenTree::Str(s) => Err((format!("Expected path, found `{:?}`", s), pos)),
 	}
 }
 
-fn parse_macro_def(tokens: &[Token]) -> Result<(String, MacroRules), String> {
-	if tokens.len() == 0 {
-		Err("parse_macro_def: No tokens".into())
+#[derive(Clone, Debug)]
+pub struct Use<'a> {
+	pub paths: Vec<Path<'a>>,
+}
+impl<'a> Use<'a> {
+	fn parse(tts: &[(TokenTree<'a>, usize)]) -> Result<Use<'a>, (String, usize)> {
+		tts.iter()
+			.map(parse_compound_path)
+			.collect::<Result<Vec<_>, _>>()
+			.map(|vs| Use{
+				paths: vs.into_iter().flat_map(|paths| paths).collect()
+			})
+	}
+}
+
+fn parse_definition<'a>(tts: &[(TokenTree<'a>, usize)], pos: usize)
+	-> Result<(&'a str, Expr<'a>), (String, usize)>
+{
+	if tts.len() != 2 {
+		Err(("`def-const` expects 2 arguments".into(), pos))
 	} else {
-		match tokens[0] {
-			Token::Ident(ident) => MacroRules::parse(tokens.tail())
-				.map(|macro_rules| (ident.into(), macro_rules)),
-			t => Err(format!("parse_macro_def: Expected ident, found `{:?}`", t))
+		match tts[0] {
+			(TokenTree::Ident(name), _) => Expr::parse(&tts[1]).map(|body| (name, body)),
+			(_, npos) => Err(("Invalid constant name. Expected identifier".into(), npos)),
 		}
 	}
 }
 
-// (prefix::path item1 item2) => [prefix::path::item1, prefix::path::item2]
-fn parse_prefixed_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
-	match Path::parse(tokens) {
-		Ok(head) => parse_use_paths(tokens.tail())
-			.and_then(|tails| {
-				let mut paths = Vec::new();
-
-				for tail in tails.into_iter() {
-					match head.clone().concat(tail) {
-						Err(e) => return Err(e),
-						Ok(o) => paths.push(o),
-					}
-				}
-
-				Ok(paths)
-			}),
-		Err(e) => Err(e),
+#[derive(Clone, Debug)]
+pub struct SExpr<'a> {
+	pub proced: Expr<'a>,
+	pub args: Vec<Expr<'a>>,
+	pos: usize,
+}
+impl<'a> SExpr<'a> {
+	fn parse(proc_tt: &(TokenTree<'a>, usize), args_tts: &[(TokenTree<'a>, usize)], expr_pos: usize)
+		-> Result<Self, (String, usize)>
+	{
+		Expr::parse(proc_tt)
+			.and_then(|proced| args_tts.iter()
+				.map(Expr::parse)
+				.collect::<Result<_, _>>()
+				.map(|args| SExpr{ proced: proced, args: args, pos: expr_pos }))
 	}
 }
 
-impl Use {
-	// (use path\to\item} == use path::to::item;
-	// (use (path\to\module sub\item1 item2)) == use path::to::module{ sub::item1, item2 }
-	fn parse(tokens: &[Token]) -> Result<Use, String> {
-		if tokens.len() == 0 {
-			return Err("Use::parse: no tokens".into());
-		}
-
-		parse_use_paths(tokens).map(|paths| Use{ paths: paths })
-	}
+#[derive(Clone, Debug)]
+pub struct Block<'a> {
+	pub uses: Vec<Use<'a>>,
+	pub const_defs: HashMap<&'a str, (Expr<'a>, usize)>,
+	pub exprs: Vec<Expr<'a>>,
+	pos: usize
 }
-
-fn parse_use_paths(tokens: &[Token]) -> Result<Vec<Path>, String> {
-	let mut all_paths = Vec::new();
-
-	let mut i = 0;
-	while let Some(token) = tokens.get(i) {
-		match *token {
-			Token::Ident(_) => match Path::parse(&tokens[i..]) {
-				Ok(path) => {
-					all_paths.push(path);
-					i += 1;
-				},
-				Err(e) => return Err(e)
-			},
-			Token::LParen => match parse_brackets(tokens, parse_prefixed_paths) {
-				Ok((paths, n_used_tokens)) => {
-					all_paths.extend(paths);
-					i += n_used_tokens;
-				},
-				Err(e) => return Err(e)
-			},
-			t => return Err(format!("parse_use_paths: unexpected token `{:?}`", t))
-		}
-	}
-
-	Ok(all_paths)
-}
-
-fn parse_definition(tokens: &[Token]) -> Result<(String, Expr), String> {
-	if tokens.len() == 0 {
-		Err("parse_definition: No tokens".into())
-	} else {
-		match tokens[0] {
-			Token::Ident(ident) => Expr::parse(tokens.tail())
-				.and_then(|(body, body_len)| if body_len == tokens.tail().len() {
-					Ok((ident.into(), body))
-				} else {
-					Err("parse_definition: Tokens remained after parsing body".into())
-				}),
-			t => Err(format!("parse_definition: Expected ident, found `{:?}`", t))
-		}
-	}
-}
-
-impl SExpr {
-	fn parse(tokens: &[Token]) -> Result<SExpr, String> {
-		parse_exprs(tokens).map(|exprs| SExpr{ func: exprs[0].clone(), args: exprs[1..].to_vec() })
-	}
-}
-
-impl Block {
-	fn parse(tokens: &[Token]) -> Result<Block, String> {
-		parse_items(tokens).map(|items| {
-			let (macro_defs, uses, const_defs, exprs) = extract_items(items);
-			Block{
-				macro_defs: macro_defs,
-				uses: uses,
-				const_defs: const_defs,
-				exprs: exprs
-			}
+impl<'a> Block<'a> {
+	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
+		parse_items(tts).map(|(uses, const_defs, exprs)| Block{
+			uses: uses,
+			const_defs: const_defs,
+			exprs: exprs,
+			pos: pos
 		})
 	}
 }
 
-impl Cond {
-	fn parse(tokens: &[Token]) -> Result<Cond, String> {
-		if tokens.len() == 0 {
-			return Err("Cond::parse: no tokens".into());
-		}
+#[derive(Clone, Debug)]
+pub struct Cond<'a> {
+	pub clauses: Vec<(Expr<'a>, Expr<'a>)>,
+	pub else_clause: Option<Expr<'a>>,
+	pos: usize,
+}
+impl<'a> Cond<'a> {
+	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
+		let mut clauses = Vec::new();
+		let mut else_clause = None;
 
-		let mut cond = Cond{ clauses: Vec::new(), else_clause: None };
-
-		let mut i = 0;
-		while let Some(&token) = tokens.get(i) {
-			if let Token::LParen = token {
-				match parse_brackets(&tokens[i..], parse_exprs) {
-					Ok((exprs, n_tokens)) => if exprs.len() == 2 {
-						if let Expr::Binding(ref path) = exprs[0] {
-							if path == "else" {
-								cond.else_clause = Some(exprs[1].clone());
-								return Ok(cond);
-							}
+		for &(ref tt, tt_pos) in tts {
+			match *tt {
+				TokenTree::List(ref clause) if clause.len() == 2 =>
+					if let TokenTree::Ident("else") = clause[0].0 {
+						if else_clause.is_none() {
+							else_clause = Some(try!(Expr::parse(&clause[1])))
+						} else {
+							return Err(("Duplicate `else` clause".into(), clause[0].1))
 						}
-						cond.clauses.push((exprs[0].clone(), exprs[1].clone()));
-						i += n_tokens;
 					} else {
-						return Err(format!(
-							"Cond::parse: clause is not a pair of expressions: `{:?}`",
-							exprs));
+						clauses.push((try!(Expr::parse(&clause[0])), try!(Expr::parse(&clause[1]))))
 					},
-					Err(e) => return Err(e)
-				}
-			} else {
-				return Err(format!("Cond::parse: unexpected token `{:?}`", token));
+				_ => return Err(("Invalid cond clause".into(), tt_pos)),
 			}
 		}
 
-		Ok(cond)
+		Ok(Cond{ clauses: clauses, else_clause: else_clause, pos: pos })
 	}
 }
 
-impl Lambda {
-	fn parse(tokens: &[Token]) -> Result<Lambda, String> {
-		if tokens.len() == 0 {
-			Err("Lambda::parse: no tokens".into())
+// TODO: Add support for capturing all args as a list, like `(lambda all-eq xs (for-all xs eq))`
+//       for variadic expressions like `(all-eq a b c d)`
+#[derive(Clone, Debug)]
+pub struct Lambda<'a> {
+	pub params: Vec<TypedBinding<'a>>,
+	pub body: Expr<'a>,
+	pos: usize,
+}
+impl<'a> Lambda<'a> {
+	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
+		if tts.len() != 2 {
+			Err((format!("Arity mismatch. Expected {}, found {}", 2, tts.len()), pos))
 		} else {
-			if let Token::LParen = tokens[0] {
-				parse_brackets(tokens, parse_typed_bindings)
-					.and_then(|(binds, body_i)| Expr::parse(&tokens[body_i..])
-						.map(|(body, _)| Lambda{ arg_bindings: binds, body: body }))
-			} else {
-				Err(format!("Lambda::parse: unexpected token `{:?}`", tokens[0]))
+			match tts[0] {
+				(TokenTree::List(ref params), _) => params.iter()
+					.map(TypedBinding::parse)
+					.collect::<Result<_, _>>()
+					.and_then(|params| Expr::parse(&tts[1])
+						.map(|body| Lambda{ params: params, body: body, pos: pos })),
+				(_, apos) => Err(("Expected parameter list".into(), apos)),
 			}
 		}
 	}
 }
 
-/// Parse tokens as a list of expressions
-fn parse_exprs(tokens: &[Token]) -> Result<Vec<Expr>, String> {
-	if tokens.len() == 0 {
-		return Err("parse_exprs: no tokens".into());
+// TODO: Separate into declaration and assignment. Let VarDecl create an l-value
+#[derive(Clone, Debug)]
+pub struct VarDef<'a> {
+	pub binding: TypedBinding<'a>,
+	pub mutable: bool,
+	pub body: Expr<'a>,
+	pos: usize
+}
+
+#[derive(Clone, Debug)]
+pub struct Assign<'a> {
+	pub lvalue: &'a str,
+	pub rvalue: Expr<'a>,
+	pos: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprVariant<'a> {
+	Nil(usize),
+	NumLit(&'a str, usize),
+	StrLit(&'a str, usize),
+	Bool(&'a str, usize),
+	Binding(Path<'a>),
+	SExpr(SExpr<'a>),
+	Block(Block<'a>),
+	Cond(Cond<'a>),
+	Lambda(Lambda<'a>),
+	VarDef(VarDef<'a>),
+	Assign(Assign<'a>),
+	Symbol(&'a str, usize),
+	List(Vec<Expr<'a>>, usize)
+}
+impl<'a> ExprVariant<'a> {
+	pub fn is_var_def(&self) -> bool { if let &ExprVariant::VarDef(_) = self { true } else { false } }
+
+	fn pos(&self) -> usize {
+		match *self {
+			ExprVariant::Nil(p) | ExprVariant::Symbol(_, p) | ExprVariant::NumLit(_, p)
+				| ExprVariant::StrLit(_, p) | ExprVariant::Bool(_, p) | ExprVariant::List(_, p)
+			=> p,
+			ExprVariant::Binding(ref path) => path.pos,
+			ExprVariant::SExpr(ref sexpr) => sexpr.pos,
+			ExprVariant::Block(ref block) => block.pos,
+			ExprVariant::Cond(ref cond) => cond.pos,
+			ExprVariant::Lambda(ref l) => l.pos,
+			ExprVariant::VarDef(ref def) => def.pos,
+			ExprVariant::Assign(ref a) => a.pos,
+		}
 	}
 
-	let mut exprs = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match Expr::parse(&tokens[i..]) {
-			Ok((expr, len)) => {
-				exprs.push(expr);
-				i += len;
+	fn parse_quoted(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
+		match *tt {
+			TokenTree::List(ref list) => list.iter()
+				.map(|li| ExprVariant::parse_quoted(li).map(|e| Expr::new(e, Type::Unknown)))
+				.collect::<Result<Vec<_>, _>>()
+				.map(|list| ExprVariant::List(list, pos)),
+			TokenTree::Ident(ident) => Ok(ExprVariant::Symbol(ident, pos)),
+			TokenTree::Num(num) => Ok(ExprVariant::NumLit(num, pos)),
+			TokenTree::Str(s) => Ok(ExprVariant::StrLit(s, pos)),
+		}
+	}
+	pub fn parse(tt_and_pos: &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
+		let pos = tt_and_pos.1;
+		match tt_and_pos.0 {
+			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].0 {
+				TokenTree::Ident("quote") if sexpr.len() == 2 =>
+					ExprVariant::parse_quoted(&sexpr[1]),
+				TokenTree::Ident("quote") =>
+					Err(("Arity mismatch. Expected 1 argument".into(), pos)),
+				TokenTree::Ident("cond") => Cond::parse(sexpr.tail(), pos).map(ExprVariant::Cond),
+				TokenTree::Ident("lambda") =>
+					Lambda::parse(sexpr.tail(), pos).map(ExprVariant::Lambda),
+				TokenTree::Ident("block") =>
+					Block::parse(sexpr.tail(), pos).map(ExprVariant::Block),
+				_ => SExpr::parse(&sexpr[0], sexpr.tail(), pos).map(ExprVariant::SExpr),
 			},
-			Err(e) => return Err(e),
-		}
-	}
-
-	Ok(exprs)
-}
-
-impl Expr {
-	fn parse_parenthesized_quoted(tokens: &[Token]) -> Result<Expr, String> {
-		if tokens.len() == 0 {
-			Ok(Expr::Nil)
-		} else if let Token::Colon = tokens[0] {
-			Type::parse(tokens.tail())
-				.and_then(|(ty, len)| Expr::parse_quoted(&tokens.tail()[len..])
-					.map(|(expr, _)| Expr::TypeAscr(ty, Box::new(expr))))
-		} else {
-			let mut items = Vec::new();
-
-			let mut i = 0;
-			while i < tokens.len() {
-				let (e, len) = try!(Expr::parse_quoted(&tokens[i..]));
-				items.push(e);
-
-				i += len;
-			}
-			Ok(Expr::List(items))
-		}
-	}
-	/// Parse an expression from tokens within parentheses
-	fn parse_parenthesized(tokens: &[Token]) -> Result<Expr, String> {
-		if tokens.len() == 0 {
-			return Ok(Expr::Nil);
-		}
-		// Handle special forms
-		match tokens[0] {
-			// Type ascription. `(:TYPE EXPR)`
-			Token::Colon => Type::parse(tokens.tail())
-				.and_then(|(ty, len)| Expr::parse(&tokens.tail()[len..])
-					.map(|(expr, _)| Expr::TypeAscr(ty, Box::new(expr)))),
-			Token::Ident("cond") =>
-				Cond::parse(tokens.tail()).map(|c| Expr::Cond(Box::new(c))),
-			Token::Ident("lambda") =>
-				Lambda::parse(tokens.tail()).map(|λ| Expr::Lambda(Box::new(λ))),
-			Token::Ident("block") =>
-				Block::parse(tokens.tail()).map(|block| Expr::Block(Box::new(block))),
-			Token::Ident("quote") => Expr::parse_quoted(tokens.tail()).map(|(q, _)| q),
-			_ => SExpr::parse(tokens).map(|se| Expr::SExpr(Box::new(se))),
-		}
-	}
-
-	fn parse_quoted(tokens: &[Token]) -> Result<(Expr, usize), String> {
-		if tokens.len() == 0 {
-			Err("Expr::parse_quoted: No tokens".into())
-		} else {
-			match tokens[0] {
-				Token::Quote => Expr::parse_quoted(tokens.tail())
-					.map(|(q, len)| (Expr::List(vec![Expr::Symbol("quote".into()), q]), len + 1)),
-				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized_quoted),
-				Token::Ident(ident) => Ok((Expr::Symbol(ident.into()), 1)),
-				_ => Expr::parse(tokens),
-			}
-		}
-	}
-	pub fn parse(tokens: &[Token]) -> Result<(Expr, usize), String> {
-		if tokens.len() == 0 {
-			Err("Expr::parse: No tokens".into())
-		} else {
-			match tokens[0] {
-				Token::Quote =>
-					Expr::parse_quoted(tokens.tail()).map(|(quoted, len)| (quoted, len+1)),
-				Token::LParen => parse_brackets(tokens, Expr::parse_parenthesized),
-				Token::Str(s) => Ok((Expr::StrLit(s.into()), 1)),
-				Token::Num(n) => Ok((Expr::NumLit(n.into()), 1)),
-				Token::Ident(_) => Path::parse(tokens).map(|ident| (Expr::Binding(ident), 1)),
-				t => Err(format!("Expr::parse: unexpected token `{:?}`", t)),
-			}
+			TokenTree::List(_) => Ok(ExprVariant::Nil(pos)),
+			TokenTree::Ident(path) => Path::parse(tt_and_pos)
+				.map(|path| ExprVariant::Binding(path)),
+			TokenTree::Num(num) => Ok(ExprVariant::NumLit(num, pos)),
+			TokenTree::Str(s) => Ok(ExprVariant::StrLit(s, pos)),
 		}
 	}
 }
 
-#[derive(Debug)]
-pub enum Item {
-	MacroDef((String, MacroRules)),
-	Use(Use),
-	ConstDef((String, Expr)),
-	Expr(Expr),
+/// An expression with additional attributes such as type information
+#[derive(Clone, Debug)]
+pub struct Expr<'a> {
+	pub val: Box<ExprVariant<'a>>,
+	pub typ: Type<'a>,
 }
-impl Item {
-	/// Parse an expression from tokens within parentheses
-	fn parse_parenthesized(tokens: &[Token]) -> Result<Item, String> {
-		if tokens.len() == 0 {
-			return Ok(Item::Expr(Expr::Nil));
-		}
-
-		match tokens[0] {
-			Token::Ident("def-const") =>
-				parse_definition(tokens.tail()).map(|d| Item::ConstDef(d)),
-			Token::Ident("def-macro-rules") =>
-				parse_macro_def(tokens.tail()).map(|d| Item::MacroDef(d)),
-			Token::Ident("use") => Use::parse(tokens.tail()).map(|u| Item::Use(u)),
-			_ => Expr::parse_parenthesized(tokens).map(|e| Item::Expr(e)),
-		}
+impl<'a> Expr<'a> {
+	pub fn new(value: ExprVariant<'a>, typ: Type<'a>) -> Self {
+		Expr{ val: Box::new(value), typ: typ }
 	}
+	// pub fn new_true() -> Expr { Expr::new(Expr::Bool(true), Type::new_basic("bool")) }
+	// pub fn new_false() -> Expr { Expr::new(Expr::Bool(false), Type::new_basic("bool")) }
+	// pub fn new_nil() -> Expr { Expr::new(Expr::Nil, Type::new_nil()) }
 
-	fn parse(tokens: &[Token]) -> Result<(Item, usize), String> {
-		if tokens.len() == 0 {
-			return Err("Item::parse: no tokens".into());
-		}
+	fn pos(&self) -> usize { self.val.pos() }
 
-		match tokens[0] {
-			Token::LParen => parse_brackets(tokens, Item::parse_parenthesized),
-			_ => Expr::parse(tokens).map(|(e, len)| (Item::Expr(e), len)),
+	pub fn parse(tt_and_pos: &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
+		let pos = tt_and_pos.1;
+		match tt_and_pos.0 {
+			// Check for type ascription around expression, e.g. `(:F64 12)`
+			TokenTree::List(ref sexpr) if sexpr.len() != 0 && sexpr[0].0 == TokenTree::Ident(":") =>
+				if sexpr.len() == 3 {
+					Type::parse(&sexpr[1]).and_then(|ty|
+						ExprVariant::parse(&sexpr[2]).map(|val|
+							Expr::new(val, ty)))
+				} else {
+					Err(("Invalid type ascription".into(), pos))
+				},
+			_ => ExprVariant::parse(tt_and_pos).map(|val| Expr::new(val, Type::Unknown))
 		}
 	}
 }
 
-/// Parse tokens as a list of items
-fn parse_items(tokens: &[Token]) -> Result<Vec<Item>, String> {
-	if tokens.len() == 0 {
-		return Err("parse_items: no tokens".into());
-	}
-
-	let mut items = Vec::new();
-
-	let mut i = 0;
-	while i < tokens.len() {
-		match Item::parse(&tokens[i..]) {
-			Ok((item, len)) => {
-				items.push(item);
-				i += len;
-			},
-			Err(e) => return Err(e),
-		}
-	}
-
-	Ok(items)
-}
-
-fn extract_items(items: Vec<Item>)
-	-> (HashMap<String, MacroRules>, Vec<Use>, HashMap<String, Expr>, Vec<Expr>)
+/// Parse TokenTree:s as a list of items
+fn parse_items<'a>(tts: &[(TokenTree<'a>, usize)])
+	-> Result<(Vec<Use<'a>>, HashMap<&'a str, (Expr<'a>, usize)>, Vec<Expr<'a>>), (String, usize)>
 {
-	let (mut macro_defs, mut uses, mut const_defs, mut exprs)
-		= (HashMap::new(), Vec::new(), HashMap::new(), Vec::new());
+	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), HashMap::new(), Vec::new());
 
-	for item in items {
-		match item {
-			Item::MacroDef((name, m)) => if let Some(_) = macro_defs.insert(name, m) {
-				panic!("extract_items: Macro already exists in map")
+	for tt_and_pos in tts {
+		match *tt_and_pos {
+			(TokenTree::List(ref sexpr), pos) if ! sexpr.is_empty() => match sexpr[0].0 {
+				TokenTree::Ident("use") => uses.push(try!(Use::parse(sexpr.tail()))),
+				TokenTree::Ident("def-const") => try!(parse_definition(sexpr.tail(), pos)
+					.and_then(|(ident, body)| match const_defs.insert(ident, (body, pos)) {
+						Some(_) => Err((format!("Duplicate constant definition `{}`", ident), pos)),
+						None => Ok(()),
+					})),
+				_ => exprs.push(try!(Expr::parse(tt_and_pos))),
 			},
-			Item::Use(u) => uses.push(u),
-			Item::ConstDef((name, val)) => match const_defs.insert(name, val) {
-				None => (),
-				Some(_) => panic!("extract_items: Constant already exists in map"),
-			},
-			Item::Expr(e) => exprs.push(e),
+			_ => exprs.push(try!(Expr::parse(tt_and_pos))),
 		}
 	}
 
-	(macro_defs, uses, const_defs, exprs)
+	Ok((uses, const_defs, exprs))
 }
 
-impl AST {
-	pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-		Block::parse(tokens).map(|block| AST{ block: block })
+#[derive(Clone, Debug)]
+pub struct AST<'a> {
+	pub uses: Vec<Use<'a>>,
+	pub const_defs: HashMap<&'a str, (Expr<'a>, usize)>,
+}
+impl<'a> AST<'a> {
+	pub fn parse(tts: &[(TokenTree<'a>, usize)]) -> Result<AST<'a>, (String, usize)> {
+		let (uses, const_defs, exprs) = try!(parse_items(tts));
+
+		for expr in exprs {
+			return Err(("Expression at top level".into(), expr.pos()));
+		}
+
+		Ok(AST{ uses: uses, const_defs: const_defs })
+	}
+}
+
+pub fn parse_ast<'a>(src: &str, tts: &[(TokenTree<'a>, usize)]) -> AST<'a> {
+	match AST::parse(tts) {
+		Ok(ast) => ast,
+		Err((e, pos)) => panic!(error_in_source_at(src, pos, e))
 	}
 }

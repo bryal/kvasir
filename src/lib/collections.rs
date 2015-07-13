@@ -26,6 +26,7 @@ use std::hash::Hash;
 use std::mem::replace;
 use std::borrow::Borrow;
 use std::ops::{ Deref, DerefMut };
+use std::fmt;
 
 struct BorrowGuard<'a, K: 'a + Hash + Eq, E: 'a, V: 'a, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> {
 	scope_stack: &'a mut ScopeStack<K, V>,
@@ -174,5 +175,10 @@ impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 		*self.get_at_height_mut(key, height).unwrap() = Some(item);
 
 		self.extend(above);
+	}
+}
+impl<K: fmt::Debug + Hash + Eq, V: fmt::Debug> fmt::Debug for ScopeStack<K, V> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Debug::fmt(&self.0, f)
 	}
 }

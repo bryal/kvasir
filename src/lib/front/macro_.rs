@@ -136,7 +136,7 @@ impl<'a> MacroRules<'a> {
 			if ! pattern.matches(&args, &self.literals) {
 				continue;
 			}
-
+			
 			return template.0
 				.clone()
 				.expand_macros(macros, &pattern.bind(args, &self.literals))
@@ -161,7 +161,7 @@ impl<'a> TokenTree<'a> {
 	{
 		match self {
 			TokenTree::Ident(ident) if syntax_vars.contains_key(ident) =>
-				Ok(syntax_vars[ident].clone()),
+				syntax_vars[ident].clone().expand_macros(macros, &HashMap::new()),
 			TokenTree::List(ref l) if l.len() == 0 => Ok(TokenTree::List(l.clone())),
 			TokenTree::List(mut sexpr) => match sexpr[0] {
 				(TokenTree::Ident("quote"), _) => Ok(TokenTree::List(sexpr)),
@@ -170,10 +170,7 @@ impl<'a> TokenTree<'a> {
 						.map(|expanded| TokenTree::List(
 							once((TokenTree::Ident("begin"), pos)).chain(expanded).collect())),
 				(TokenTree::Ident(macro_name), pos) if macros.contains_key(macro_name) => {
-					let macro_rules = {
-						let (macro_rules, _) = macros.get(macro_name).unwrap();
-						macro_rules.clone()
-					};
+					let macro_rules = macros.get(macro_name).unwrap().0.clone();
 
 					let args = sexpr.drain(1..)
 						.map(|(arg, p)| (arg.substitute_syntax_vars(syntax_vars), p))

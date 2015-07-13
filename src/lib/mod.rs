@@ -28,13 +28,11 @@ use std::fmt::Debug;
 pub use self::front::lex::token_trees_from_src;
 pub use self::front::macro_::expand_macros;
 // pub use self::back::compile;
-// pub use self::ast::*;
 pub use self::collections::ScopeStack;
 
 pub mod front;
 // pub mod middle;
 // pub mod back;
-// pub mod ast;
 pub mod collections;
 
 // TODO: Make this a macro so that it will be recognized to panic

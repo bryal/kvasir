@@ -73,7 +73,7 @@
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
 
-#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off)]
+#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off, slice_extras)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -89,7 +89,7 @@ use std::path::PathBuf;
 
 use lib::{ token_trees_from_src, expand_macros };
 // use lib::compile;
-// use lib::front::parse;
+use lib::front::parse;
 
 mod lib;
 
@@ -162,12 +162,14 @@ fn main() {
 
 	println!("TOKEN TREE{:#?}", token_tree);
 
-	println!("MACRO EXPANDED: {:#?}", lib::front::lex::PrettyTokenTree::from_tt(
-		lib::front::lex::TokenTree::List(
-			expand_macros(&src_code, token_tree))));
+	let expanded_macros = expand_macros(&src_code, token_tree);
 
-	// let ast = parse::AST::parse(&tokens).unwrap();
-	// println!("AST PARSED:\n{:?}\n", ast);
+	println!("MACRO EXPANDED: {:#?}", expanded_macros);
+	// println!("MACRO EXPANDED: {:#?}", lib::front::lex::PrettyTokenTree::from_tt(
+	// 	lib::front::lex::TokenTree::List(expanded_macros.clone())));
+
+	let ast = parse::AST::parse(&expanded_macros).unwrap();
+	println!("AST PARSED:\n{:#?}\n", ast);
 
 	// let mut ast: lib::AST = ast.into();
 	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);

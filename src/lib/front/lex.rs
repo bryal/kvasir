@@ -20,6 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// TODO: Instead of tuples with (item, position), make position part of item.
+// TODO: Include end pos for items and bundle start and end pos together in Pos struct
+
 use lib::error_in_source_at;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
