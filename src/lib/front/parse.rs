@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use std::borrow::Cow;
 
 use super::lex::TokenTree;
-use lib::error_in_source_at;
 
 // NOTE: A Symbol should be a wrapper around a static string reference, where
 //       reference equality would imply value equality
@@ -484,7 +483,7 @@ pub struct AST<'a> {
 	pub const_defs: HashMap<&'a str, (Expr<'a>, usize)>,
 }
 impl<'a> AST<'a> {
-	pub fn parse(tts: &[(TokenTree<'a>, usize)]) -> Result<AST<'a>, (String, usize)> {
+	pub fn parse(tts: &[TokenTreeMeta<'a>]) -> Result<AST<'a>, (String, usize)> {
 		let (uses, const_defs, exprs) = try!(parse_items(tts));
 
 		for expr in exprs {
@@ -492,12 +491,5 @@ impl<'a> AST<'a> {
 		}
 
 		Ok(AST{ uses: uses, const_defs: const_defs })
-	}
-}
-
-pub fn parse_ast<'a>(src: &str, tts: &[(TokenTree<'a>, usize)]) -> AST<'a> {
-	match AST::parse(tts) {
-		Ok(ast) => ast,
-		Err((e, pos)) => panic!(error_in_source_at(src, pos, e))
 	}
 }

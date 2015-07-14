@@ -20,68 +20,158 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-// TODO: Instead of tuples with (item, position), make position part of item.
-// TODO: Include end pos for items and bundle start and end pos together in Pos struct
+use std::fmt;
 
-use lib::error_in_source_at;
+/// A position or interval in a string of source code
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SrcPos<'a> {
+	pub src: &'a str,
+	pub start: usize,
+	pub end: Option<usize>,
+}
+impl<'a> SrcPos<'a> {
+	/// Construct a new `SrcPos` representing a position in `src`
+	fn new_pos(src: &'a str, pos: usize) -> Self {
+		SrcPos{ src: src, start: pos, end: None }
+	}
+	/// Construct a new `SrcPos` representing an interval in `src`
+	fn new_interval(src: &'a str, start: usize, end: usize) -> Self {
+		SrcPos{ src: src, start: start, end: Some(end) }
+	}
+}
+impl<'a> fmt::Debug for SrcPos<'a> {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		match self.end {
+			Some(end) => write!(fmt, "SrcPos {{ start: {}, end: {} }}", self.start, end),
+			None => write!(fmt, "SrcPos {{ start: {} }}", self.start),
+		}
+	}
+}
 
+/// Print an error together with information regarding position in source and panic.
+macro_rules! src_error_panic {
+	($src:expr, $pos:expr, $msg:expr) => {
+		src_error_panic!(SrcPos::new_pos($src, $pos), $msg)
+	};
+	($pos:expr, $msg:expr) => {{
+		use term;
+
+		let (start, mut line_start) = ($pos.start, 0);
+		for (line_n, line) in $pos.src.lines().enumerate().map(|(n, line)| (n+1, line)) {
+			let line_len = line.len() + 1; // Include length of newline char
+
+			if line_start <= start && start < line_start + line_len {
+				let mut t = term::stdout().expect("Could not acquire access to stdout");
+
+				let col = start - line_start;
+
+				print!("{}:{}: ", line_n, col);
+				t.fg(term::color::BRIGHT_RED).unwrap();
+				print!("Error: ");
+				t.reset().unwrap();
+				println!("{}", $msg);
+				println!("{}: {}", line_n, line);
+				t.fg(term::color::BRIGHT_RED).unwrap();
+				println!("{}^{}",
+					::std::iter::repeat(' ').take(col + (line_n as f32).log10() as usize + 3)
+						.collect::<String>(),
+					::std::iter::repeat('~')
+						.take(::std::cmp::min(
+							$pos.end.map(|e| e - start - 1).unwrap_or(0),
+							line_len - col))
+						.collect::<String>()
+				);
+				t.reset().unwrap();
+
+				println!("Error occured. Terminating compilation.");
+				::std::process::exit(0);
+			}
+			line_start += line_len;
+		}
+		panic!("Internal compiler error: src_error_panic: Index {} not reached. src.len(): {}",
+			$pos.start,
+			$pos.src.len())
+	}};
+}
+
+/// A string literal.
+///
+/// Can be either a `Plain` string literal, where *escapes* such as newline, '\n',
+/// can be produced using backslash, `\`, or a `Raw` string literal,
+/// where escape sequences are not processed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrLit<'a> {
+	Plain(&'a str),
+	Raw(&'a str),
+}
+
+/// A token
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token<'a> {
 	LParen,
 	RParen,
 	Ident(&'a str),
 	Num(&'a str),
-	Str(&'a str),
+	Str(StrLit<'a>),
 	Quote,
 }
 
-fn try_tokenize<F>(src: &str, i: usize, f: F) -> (Token, usize)
-	where F: Fn(&str) -> Result<(Token, usize), String>
-{
-	match f(&src[i..]) {
-		Ok(x) => x,
-		Err(e) => panic!(error_in_source_at(src, i, e))
-	}
-}
-
-fn tokenize_str_lit(src: &str) -> Result<(Token, usize), String> {
-	// Assume first char is a double quote
-	let mut char_it = src.char_indices();
-	char_it.next();
+/// Tokenize the string literal in `src` at `start`.
+/// Return the `Token` and it's length, including delimiting characters, in the source.
+///
+/// # Panics
+/// Panics if the string literal is unterminated
+fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
+	let str_body_src = &src[start + 1 ..];
+	let mut char_it = str_body_src.char_indices();
 
 	while let Some((i, c)) = char_it.next() {
 		match c {
-			'\\' => { char_it.next(); },
-			// TODO: Unescape
-			'"' => return Ok((Token::Str(&src[1..i]), i + 1)),
+			// TODO: Unescape escape sequences
+			// '\\' => { char_it.next(); },
+			'"' => return (Token::Str(StrLit::Plain(&str_body_src[..i])), i + 2),
 			_ => (),
 		}
 	}
-	Err("Unterminated string literal".into())
+	src_error_panic!(src, start, "Unterminated string literal")
 }
-fn tokenize_raw_str_lit(src: &str) -> Result<(Token, usize), String> {
-	// Assume first char is an 'r'
-	let n_delim_octothorpes = src[1..].chars().take_while(|&c| c == '#').count();
 
-	let delim_octothorpes = &src[1 .. 1 + n_delim_octothorpes];
+/// Tokenize the raw string literal in `src` at `start`.
+/// Return the `Token` and it's length, including delimiting characters, in the source.
+///
+/// # Panics
+/// Panics if the raw string literal is unterminated
+fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
+	let str_src = &src[start + 1 ..];
+	let n_delim_octothorpes = str_src.chars().take_while(|&c| c == '#').count();
 
-	let mut char_it = src.char_indices();
-	char_it.next();
+	if ! str_src[n_delim_octothorpes..].starts_with('"') {
+		src_error_panic!(src, start, "Invalid raw string delim");
+	}
 
-	while let Some((i, c)) = char_it.next() {
-		if c == '"' && src[i + 1 ..].starts_with(delim_octothorpes) {
-			return Ok((Token::Str(&src[2 + n_delim_octothorpes .. i]), i + 1))
+	let delim_octothorpes = &str_src[.. 1 + n_delim_octothorpes];
+
+	let str_body_src = &str_src[n_delim_octothorpes + 1 ..];
+	for (i, c) in str_body_src.char_indices() {
+		if c == '"' && str_body_src[i + 1 ..].starts_with(delim_octothorpes) {
+			return (Token::Str(StrLit::Raw(&str_body_src[..i])), n_delim_octothorpes + 2 + i)
 		}
 	}
-	Err("Unterminated raw string literal".into())
+	src_error_panic!(src, start, "Unterminated raw string literal")
 }
-fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
+
+/// Tokenize the numeric literal in `src` at `start`.
+/// Return the `Token` and it's length in the source.
+///
+/// # Panics
+/// Panics if the literal is not a valid numeric literal
+fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
+	let src_num = &src[start..];
 	let mut has_decimal_pt = false;
 	let mut has_e = false;
 	let mut prev_was_e = false;
 
-	for (i, c) in src.char_indices() {
-		// TODO: Add 'E' notation, e.g. 3.14E10, 5E-4
+	for (i, c) in src_num.char_indices() {
 		match c {
 			'_' => (),
 			'E' if !has_e => {
@@ -91,16 +181,17 @@ fn tokenize_num_lit(src: &str) -> Result<(Token, usize), String> {
 			'-' if prev_was_e => (),
 			_ if c.is_numeric() => (),
 			'.' if !has_decimal_pt => has_decimal_pt = true,
-			_ if is_delim_char(c) => return Ok((Token::Num(&src[..i]), i)),
+			_ if is_delim_char(c) => return (Token::Num(&src_num[..i]), i),
 			_ => break
 		}
 		if c != 'E' {
 			prev_was_e = false;
 		}
 	}
-	Err("Invalid numeric literal".into())
+	src_error_panic!(src, start, "Invalid numeric literal")
 }
 
+/// Returns whether `c` delimits tokens
 fn is_delim_char(c: char) -> bool {
 	match c {
 		'(' | ')' | '[' | ']' | '{' | '}' | ';' => true,
@@ -109,6 +200,7 @@ fn is_delim_char(c: char) -> bool {
 	}
 }
 
+/// Returns whether `c` is a valid character of an ident
 fn is_ident_char(c: char) -> bool {
 	match c {
 		'\'' | ':' | '"' => false,
@@ -116,37 +208,44 @@ fn is_ident_char(c: char) -> bool {
 		_ => true,
 	}
 }
-fn tokenize_ident(src: &str) -> Result<(Token, usize), String> {
-	// Assume first characted has already been checked to be valid
-	for (i, c) in src.char_indices() {
+
+/// Tokenize the numeric literal in `src` at `start`.
+/// Return the `Token` and it's length in the source.
+///
+/// # Panics
+/// Panics if the literal is not a valid numeric literal
+fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
+	let src_ident = &src[start..];
+	for (i, c) in src_ident.char_indices() {
 		if is_delim_char(c) {
-			return Ok((Token::Ident(&src[0..i]), i))
-		} else if !is_ident_char(c) {
+			return (Token::Ident(&src_ident[..i]), i)
+		} else if ! is_ident_char(c) {
 			break
 		}
 	}
-	Err("Invalid ident".into())
+	src_error_panic!(src, start, "Invalid ident")
 }
 
+/// An iterator of `Token`s and their position in some source code
 #[derive(Debug)]
 struct Tokens<'a> {
 	src: &'a str,
-	start_i: usize,
+	pos: usize,
 }
 impl<'a> From<&'a str> for Tokens<'a> {
-	fn from(src: &'a str) -> Tokens { Tokens{ src: src, start_i: 0 } }
+	fn from(src: &'a str) -> Tokens { Tokens{ src: src, pos: 0 } }
 }
 impl<'a> Iterator for Tokens<'a> {
-	type Item = (Token<'a>, usize);
+	type Item = (Token<'a>, SrcPos<'a>);
 
-	fn next(&mut self) -> Option<(Token<'a>, usize)> {
-		let start_i = self.start_i;
-		let mut char_it = self.src[start_i..]
+	fn next(&mut self) -> Option<(Token<'a>, SrcPos<'a>)> {
+		let pos = self.pos;
+		let mut char_it = self.src[pos..]
 			.char_indices()
-			.map(|(i, c)| (i + start_i, c));
+			.map(|(n, c)| (pos + n, c));
 
 		while let Some((i, c)) = char_it.next() {
-			let (t, len) = match c {
+			let (token, len) = match c {
 				_ if c.is_whitespace() => continue,
 				';' => {
 					while let Some((_, c)) = char_it.next() {
@@ -158,95 +257,94 @@ impl<'a> Iterator for Tokens<'a> {
 				':' => (Token::Ident(":"), 1),
 				'(' => (Token::LParen, 1),
 				')' => (Token::RParen, 1),
-				'"' => try_tokenize(self.src, i, tokenize_str_lit),
+				'"' => tokenize_str_lit(self.src, i),
 				'r' if self.src[i + 1 ..].starts_with(|c: char| c == '"' || c == '#') =>
-					try_tokenize(self.src, i, tokenize_raw_str_lit),
-				_ if c.is_numeric() =>
-					try_tokenize(self.src, i, tokenize_num_lit),
-				_ if is_ident_char(c) => try_tokenize(self.src, i, tokenize_ident),
-				_ => panic!(error_in_source_at(self.src, i, format!("Unexpected char `{}`", c))),
+					tokenize_raw_str_lit(self.src, i),
+				_ if c.is_numeric() => tokenize_num_lit(self.src, i),
+				_ if is_ident_char(c) => tokenize_ident(self.src, i),
+				_ => src_error_panic!(self.src, i, "Unexpected char"),
 			};
 
-			self.start_i = i + len;
-			return Some((t, i));
+			self.pos = i + len;
+			return Some((token, SrcPos{ src: self.src, start: i, end: Some(self.pos) }));
 		}
 		None
 	}
 }
 
+/// A tree of lists, identifiers, and literals
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenTree<'a> {
-	List(Vec<(TokenTree<'a>, usize)>),
+	List(Vec<TokenTreeMeta<'a>>),
 	Ident(&'a str),
 	Num(&'a str),
-	Str(&'a str),
+	Str(StrLit<'a>),
 }
-impl<'a> TokenTree<'a> {
-	fn from_token(token: Token<'a>, nexts: &mut Tokens<'a>) -> Result<TokenTree<'a>, String> {
-		match token {
-			Token::LParen => tokens_to_trees_until(nexts, Some(&Token::RParen))
-				.map(|list| TokenTree::List(list)),
-			Token::Ident(ident) => Ok(TokenTree::Ident(ident)),
-			Token::Num(num) => Ok(TokenTree::Num(num)),
-			Token::Str(s) => Ok(TokenTree::Str(s)),
-			Token::Quote => nexts.next()
-				.ok_or("Free quote".into())
-				.and_then(|(next, next_pos)| TokenTree::from_token(next, nexts)
-					.map(|quoted| TokenTree::List(vec![
-						(TokenTree::Ident("quote"), next_pos - 1),
-						(quoted, next_pos)
-					]))),
-			t => Err(format!("Unexpected token `{:?}`", t)),
-		}
+
+/// A `TokenTree` with meta-data
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenTreeMeta<'a> {
+	pub tt: TokenTree<'a>,
+	pub pos: SrcPos<'a>,
+}
+impl<'a> TokenTreeMeta<'a> {
+	/// Construct a new `TokenTreeMeta` from a `TokenTree` and a source position
+	pub fn new(tt: TokenTree<'a>, pos: SrcPos<'a>) -> Self { TokenTreeMeta{ tt: tt, pos: pos } }
+
+	pub fn new_list(tts: Vec<TokenTreeMeta<'a>>, pos: SrcPos<'a>) -> Self {
+		TokenTreeMeta{ tt: TokenTree::List(tts), pos: pos }
+	}
+
+	/// Construct a new `TokenTreeMeta` from a token with a position, and the tokens following
+	fn from_token((token, mut pos): (Token<'a>, SrcPos<'a>), nexts: &mut Tokens<'a>) -> Self {
+		let tt = match token {
+			Token::LParen => {
+				let (list, end) = tokens_to_trees_until(nexts, Some((pos, &Token::RParen)));
+				pos.end = end;
+				TokenTree::List(list)
+			},
+			Token::Ident(ident) => TokenTree::Ident(ident),
+			Token::Num(num) => TokenTree::Num(num),
+			Token::Str(s) => TokenTree::Str(s),
+			Token::Quote => TokenTree::List(vec![
+				TokenTreeMeta::new(TokenTree::Ident("quote"), pos),
+				TokenTreeMeta::from_token(
+					nexts.next().unwrap_or(src_error_panic!(pos, "Free quote")),
+					nexts)
+			]),
+			_ => src_error_panic!(pos, "Unexpected token"),
+		};
+		TokenTreeMeta::new(tt, pos)
 	}
 }
 
-fn tokens_to_trees_until<'a>(tokens: &mut Tokens<'a>, delim: Option<&Token>)
-	-> Result<Vec<(TokenTree<'a>, usize)>, String>
+/// Construct trees from `tokens` until a lone `delim` is encountered.
+///
+/// Returns trees and index of closing delimiter if one was supplied.
+fn tokens_to_trees_until<'a>(tokens: &mut Tokens<'a>, start_and_delim: Option<(SrcPos, &Token)>)
+	-> (Vec<TokenTreeMeta<'a>>, Option<usize>)
 {
+	let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t)))
+		.unwrap_or((None, None));
+
 	let mut tts = Vec::new();
 
 	while let Some((token, t_pos)) = tokens.next() {
-		match token {
-			_ if Some(&token) == delim => return Ok(tts),
-			_ => match TokenTree::from_token(token, tokens) {
-				Ok(tt) => tts.push((tt, t_pos)),
-				Err(e) => panic!(error_in_source_at(tokens.src, t_pos, e)),
-			},
+		if Some(&token) == delim {
+			return (tts, t_pos.end)
+		} else {
+			tts.push(TokenTreeMeta::from_token((token, t_pos), tokens))
 		}
 	}
-	match delim {
-		None => Ok(tts),
-		Some(t) => Err(format!("Undelimited item. No closing `{:?}` found", t))
+	match start {
+		None => (tts, None),
+		Some(pos) => src_error_panic!(pos, "Undelimited item"),
 	}
 }
 
-pub fn token_trees_from_src(src: &str) -> Vec<(TokenTree, usize)> {
-	let mut tokens = Tokens::from(src);
-	match tokens_to_trees_until(&mut tokens, None) {
-		Ok(tts) => tts,
-		Err(e) => panic!(error_in_source_at(src, 0, e))
-	}
-}
-
-/// TokenTree without source positions. Useful for pretty pringing, since tuples don't print well
-#[derive(Debug)]
-pub enum PrettyTokenTree<'a> {
-	List(Vec<PrettyTokenTree<'a>>),
-	Ident(&'a str),
-	Num(&'a str),
-	Str(&'a str),
-}
-impl<'a> PrettyTokenTree<'a> {
-	pub fn from_tt(tt: TokenTree<'a>) -> Self {
-		match tt {
-			TokenTree::List(l) => PrettyTokenTree::List(
-				l.into_iter().map(|(tt, _)| PrettyTokenTree::from_tt(tt)).collect()),
-			TokenTree::Ident(x) => PrettyTokenTree::Ident(x),
-			TokenTree::Num(x) => PrettyTokenTree::Num(x),
-			TokenTree::Str(x) => PrettyTokenTree::Str(x),
-		}
-	}
+/// Represent some source code as `TokenTreeMeta`s
+pub fn token_trees_from_src(src: &str) -> Vec<TokenTreeMeta> {
+	tokens_to_trees_until(&mut Tokens::from(src), None).0
 }
 
 #[cfg(test)]

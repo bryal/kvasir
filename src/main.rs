@@ -80,6 +80,7 @@ extern crate lazy_static;
 extern crate getopts;
 #[macro_use]
 extern crate bitflags;
+extern crate term;
 
 use getopts::Options;
 use std::env;
@@ -89,7 +90,7 @@ use std::path::PathBuf;
 
 use lib::{ token_trees_from_src, expand_macros };
 // use lib::compile;
-use lib::front::parse;
+// use lib::front::parse;
 
 mod lib;
 
@@ -160,16 +161,16 @@ fn main() {
 
 	let token_tree = token_trees_from_src(&src_code);
 
-	println!("TOKEN TREE{:#?}", token_tree);
+	// println!("TOKEN TREE{:#?}", token_tree);
 
-	let expanded_macros = expand_macros(&src_code, token_tree);
+	let expanded_macros = expand_macros(token_tree);
 
 	println!("MACRO EXPANDED: {:#?}", expanded_macros);
 	// println!("MACRO EXPANDED: {:#?}", lib::front::lex::PrettyTokenTree::from_tt(
 	// 	lib::front::lex::TokenTree::List(expanded_macros.clone())));
 
-	let ast = parse::AST::parse(&expanded_macros).unwrap();
-	println!("AST PARSED:\n{:#?}\n", ast);
+	// let ast = parse::AST::parse(&expanded_macros).unwrap();
+	// println!("AST PARSED:\n{:#?}\n", ast);
 
 	// let mut ast: lib::AST = ast.into();
 	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);
