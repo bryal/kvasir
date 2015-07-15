@@ -23,20 +23,39 @@
 use std::fmt;
 
 /// A position or interval in a string of source code
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct SrcPos<'a> {
 	pub src: &'a str,
 	pub start: usize,
 	pub end: Option<usize>,
+	pub in_expansion: Option<Box<SrcPos<'a>>>
 }
 impl<'a> SrcPos<'a> {
 	/// Construct a new `SrcPos` representing a position in `src`
 	fn new_pos(src: &'a str, pos: usize) -> Self {
-		SrcPos{ src: src, start: pos, end: None }
+		SrcPos{ src: src, start: pos, end: None, in_expansion: None }
 	}
 	/// Construct a new `SrcPos` representing an interval in `src`
 	fn new_interval(src: &'a str, start: usize, end: usize) -> Self {
-		SrcPos{ src: src, start: start, end: Some(end) }
+		SrcPos{ src: src, start: start, end: Some(end), in_expansion: None }
+	}
+	/// Construct a new `SrcPos` representing a position in `src` in the expansion of a macro
+	fn new_pos_in_expansion(src: &'a str, pos: usize, parent: SrcPos<'a>) -> Self {
+		SrcPos{ src: src, start: pos, end: None, in_expansion: Some(Box::new(parent)) }
+	}
+	/// Construct a new `SrcPos` representing an interval in `src` in the expansion of a macro
+	fn new_interval_in_expansion(src: &'a str, start: usize, end: usize, parent: SrcPos<'a>)
+		-> Self
+	{
+		SrcPos{ src: src, start: start, end: Some(end), in_expansion: Some(Box::new(parent)) }
+	}
+
+	pub fn add_expansion_site(&mut self, exp: SrcPos<'a>) {
+		if self.in_expansion.is_none() {
+			self.in_expansion = Some(Box::new(exp));
+		} else {
+			panic!("Internal compiler error: add_expansion_site: in_expansion not `None`")
+		}
 	}
 }
 impl<'a> fmt::Debug for SrcPos<'a> {
@@ -56,41 +75,78 @@ macro_rules! src_error_panic {
 	($pos:expr, $msg:expr) => {{
 		use term;
 
-		let (start, mut line_start) = ($pos.start, 0);
-		for (line_n, line) in $pos.src.lines().enumerate().map(|(n, line)| (n+1, line)) {
-			let line_len = line.len() + 1; // Include length of newline char
+		fn line_len_row_col<'a>(pos: &SrcPos<'a>) -> (&'a str, usize, usize, usize) {
+			let mut line_start = 0;
 
-			if line_start <= start && start < line_start + line_len {
-				let mut t = term::stdout().expect("Could not acquire access to stdout");
+			for (row, line) in pos.src.lines().enumerate().map(|(n, line)| (n+1, line)) {
+				let line_len = line.len() + 1; // Include length of newline char
 
-				let col = start - line_start;
+				if line_start <= pos.start && pos.start < line_start + line_len {
+					let col = pos.start - line_start;
 
-				print!("{}:{}: ", line_n, col);
-				t.fg(term::color::BRIGHT_RED).unwrap();
-				print!("Error: ");
-				t.reset().unwrap();
-				println!("{}", $msg);
-				println!("{}: {}", line_n, line);
-				t.fg(term::color::BRIGHT_RED).unwrap();
-				println!("{}^{}",
-					::std::iter::repeat(' ').take(col + (line_n as f32).log10() as usize + 3)
-						.collect::<String>(),
-					::std::iter::repeat('~')
-						.take(::std::cmp::min(
-							$pos.end.map(|e| e - start - 1).unwrap_or(0),
-							line_len - col))
-						.collect::<String>()
-				);
-				t.reset().unwrap();
-
-				println!("Error occured. Terminating compilation.");
-				::std::process::exit(0);
+					return (line, line_len, row, col);
+				}
+				line_start += line_len;
 			}
-			line_start += line_len;
+			panic!("Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): {}",
+				pos,
+				pos.src.len())
 		}
-		panic!("Internal compiler error: src_error_panic: Index {} not reached. src.len(): {}",
-			$pos.start,
-			$pos.src.len())
+
+		fn in_expansion(pos: &SrcPos, t: &mut Box<term::StdoutTerminal>) {
+			if let Some(ref exp) = pos.in_expansion {
+				in_expansion(exp, t);
+			}
+
+			let (line, line_len, row, col) = line_len_row_col(pos);
+
+			print!("{}:{}: ", row, col);
+			t.fg(term::color::BRIGHT_MAGENTA).unwrap();
+			println!("In expansion");
+			t.reset().unwrap();
+			println!("{}: {}", row, line);
+			t.fg(term::color::BRIGHT_MAGENTA).unwrap();
+			println!("{}^{}",
+				::std::iter::repeat(' ').take(col + (row as f32).log10() as usize + 3)
+					.collect::<String>(),
+				::std::iter::repeat('~')
+					.take(::std::cmp::min(
+						pos.end.unwrap_or(pos.start + 1) - pos.start - 1,
+						line_len - col))
+					.collect::<String>()
+			);
+			t.reset().unwrap();
+		}
+
+		let pos = $pos;
+		let (line, line_len, row, col) = line_len_row_col(&pos);
+
+		let mut t = term::stdout().expect("Could not acquire access to stdout");
+
+		if let Some(ref exp) = pos.in_expansion {
+			in_expansion(exp, &mut t);
+		}
+
+		print!("{}:{}: ", row, col);
+		t.fg(term::color::BRIGHT_RED).unwrap();
+		print!("Error: ");
+		t.reset().unwrap();
+		println!("{}", $msg);
+		println!("{}: {}", row, line);
+		t.fg(term::color::BRIGHT_RED).unwrap();
+		println!("{}^{}",
+			::std::iter::repeat(' ').take(col + (row as f32).log10() as usize + 3)
+				.collect::<String>(),
+			::std::iter::repeat('~')
+				.take(::std::cmp::min(
+					pos.end.unwrap_or(pos.start + 1) - pos.start - 1,
+					line_len - col))
+				.collect::<String>()
+		);
+		t.reset().unwrap();
+
+		println!("\nError occured. Terminating compilation.\n");
+		::std::process::exit(0);
 	}};
 }
 
@@ -268,7 +324,7 @@ impl<'a> Iterator for Tokens<'a> {
 			};
 
 			self.pos = i + len;
-			return Some((token, SrcPos{ src: self.src, start: i, end: Some(self.pos) }));
+			return Some((token, SrcPos::new_interval(self.src, i, self.pos)));
 		}
 		None
 	}
@@ -301,7 +357,7 @@ impl<'a> TokenTreeMeta<'a> {
 	fn from_token((token, mut pos): (Token<'a>, SrcPos<'a>), nexts: &mut Tokens<'a>) -> Self {
 		let tt = match token {
 			Token::LParen => {
-				let (list, end) = tokens_to_trees_until(nexts, Some((pos, &Token::RParen)));
+				let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
 				pos.end = end;
 				TokenTree::List(list)
 			},
@@ -309,9 +365,9 @@ impl<'a> TokenTreeMeta<'a> {
 			Token::Num(num) => TokenTree::Num(num),
 			Token::Str(s) => TokenTree::Str(s),
 			Token::Quote => TokenTree::List(vec![
-				TokenTreeMeta::new(TokenTree::Ident("quote"), pos),
+				TokenTreeMeta::new(TokenTree::Ident("quote"), pos.clone()),
 				TokenTreeMeta::from_token(
-					nexts.next().unwrap_or_else(|| src_error_panic!(pos, "Free quote")),
+					nexts.next().unwrap_or_else(|| src_error_panic!(&pos, "Free quote")),
 					nexts)
 			]),
 			_ => src_error_panic!(pos, "Unexpected token"),
@@ -319,12 +375,13 @@ impl<'a> TokenTreeMeta<'a> {
 		TokenTreeMeta::new(tt, pos)
 	}
 
-	pub fn relocate(self, pos: SrcPos<'a>) -> TokenTreeMeta<'a> {
-		match self.tt {
-			TokenTree::List(list) => TokenTreeMeta::new_list(
-				list.map_in_place(|li| li.relocate(pos)),
-				pos),
-			tt => TokenTreeMeta::new(tt, pos),
+	pub fn add_expansion_site(&mut self, exp: SrcPos<'a>) {
+		self.pos.add_expansion_site(exp.clone());
+
+		if let TokenTree::List(ref mut list) = self.tt {
+			for li in list {
+				li.add_expansion_site(exp.clone())
+			}
 		}
 	}
 }

@@ -152,9 +152,11 @@ impl<'a> MacroRules<'a> {
 				continue;
 			}
 
-			return template.clone()
-				.relocate(pos)
-				.expand_macros(macros, &pattern.bind(TokenTreeMeta::new(args, pos), &self.literals))
+			let mut template = template.clone();
+			template.add_expansion_site(pos.clone());
+			return template.expand_macros(
+					macros,
+					&pattern.bind(TokenTreeMeta::new(args, pos), &self.literals))
 		}
 
 		src_error_panic!(pos, "No rule matched in macro invocation")

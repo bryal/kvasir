@@ -60,15 +60,9 @@
 // TODO: Compile time execution. By marking functions as pure,
 //       enable calculation of constants from these functions at compile time.
 // TODO: Higher Kinded Types. Like Functor which would provide map for a generic container
-// TODO: Find errors in code. When lexing, produce a map of token indices =>
-//       line and col in source. When parsing, pass along token index.
-// TODO: In cases like: `map f [] = []` and `map f (first:rest) = f first : map f rest`,
-//       do not try to infer type, instead, leave types of f, first, and rest as type variables
 // TODO: Formally prove that all type inference is correct using
 //       [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
 //       [Good explanation](http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
-// TODO: Per default, expect that all functions are pure, but make it possible to explicitly
-//       mark them as unpure. Similar to unsafe in Rust.
 // TODO: Make symbols interned. Maybe at compile time, build a table of all symbols and substitute
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
@@ -81,7 +75,7 @@
 //       =>
 //           (list (Syntax\String "foo") (Syntax\Symbol 'bar) (Syntax\Number 42))
 
-#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off, slice_extras)]
+#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off, slice_extras, fs_canonicalize)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -93,7 +87,7 @@ extern crate term;
 use getopts::Options;
 use std::env;
 use std::io::{ Read };
-use std::fs::File;
+use std::fs::{ File, canonicalize };
 use std::path::PathBuf;
 
 use lib::{ token_trees_from_src, expand_macros };
@@ -164,6 +158,8 @@ fn main() {
 	{
 		emissions.insert(emission);
 	}
+
+	println!("    Compiling {}", canonicalize(inp_file_name.as_path()).unwrap().to_string_lossy());
 
 	let mut src_code = String::with_capacity(4_000);
 	File::open(inp_file_name).unwrap().read_to_string(&mut src_code).unwrap();
