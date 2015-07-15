@@ -72,6 +72,14 @@
 // TODO: Make symbols interned. Maybe at compile time, build a table of all symbols and substitute
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
+// TODO: Simple creation of heterogenous list by supplying a sum type that implements From for
+//       all different elements. For `quote` it would be something like:
+//           (enum Syntax (Symbol Symbol) (List (List Syntax)) (Number Number) (String String))
+//           (impl From (Symbol) for Syntax ((define (from s) (Syntax\Symbol s))))
+//           ...
+//           (list of Syntax "foo" 'bar 42))
+//       =>
+//           (list (Syntax\String "foo") (Syntax\Symbol 'bar) (Syntax\Number 42))
 
 #![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off, slice_extras)]
 
@@ -166,13 +174,10 @@ fn main() {
 
 	let expanded_macros = expand_macros(token_tree);
 
-	// println!("MACRO EXPANDED: {:#?}", expanded_macros);
+	println!("MACRO EXPANDED: {:#?}", expanded_macros);
 
 	let ast = parse::AST::parse(&expanded_macros);
 	println!("AST PARSED:\n{:#?}\n", ast);
-
-	// let mut ast: lib::AST = ast.into();
-	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);
 
 	// ast.remove_unused_consts();
 	// println!("AST REMOVED UNUSED:\n{:?}\n", ast);

@@ -183,7 +183,11 @@ impl<'a> TokenTreeMeta<'a> {
 			TokenTree::List(ref l) if l.len() == 0 =>
 				TokenTreeMeta::new_list(vec![], self.pos),
 			TokenTree::List(mut sexpr) => match sexpr[0].tt {
-				TokenTree::Ident("quote") => TokenTreeMeta::new_list(sexpr, self.pos),
+				TokenTree::Ident("quote") => TokenTreeMeta::new_list(
+					once(sexpr[0].clone())
+						.chain(sexpr.drain(1..).map(|arg| arg.substitute_syntax_vars(syntax_vars)))
+						.collect(),
+					self.pos),
 				TokenTree::Ident("begin") => TokenTreeMeta::new_list(once(sexpr[0].clone())
 						.chain(expand_macros_in_scope(sexpr.drain(1..), macros, syntax_vars))
 						.collect(),

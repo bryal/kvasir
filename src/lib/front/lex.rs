@@ -311,7 +311,7 @@ impl<'a> TokenTreeMeta<'a> {
 			Token::Quote => TokenTree::List(vec![
 				TokenTreeMeta::new(TokenTree::Ident("quote"), pos),
 				TokenTreeMeta::from_token(
-					nexts.next().unwrap_or(src_error_panic!(pos, "Free quote")),
+					nexts.next().unwrap_or_else(|| src_error_panic!(pos, "Free quote")),
 					nexts)
 			]),
 			_ => src_error_panic!(pos, "Unexpected token"),
