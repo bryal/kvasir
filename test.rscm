@@ -1,4 +1,5 @@
-(use (\std mem (ptr Unique Raw)) \std\iter\Iterator)
+(use (\std mem (ptr Unique Raw))
+     \std\iter\Iterator)
 
 ; Aliases
 ; (def-macro → () (t (fn t ...)))

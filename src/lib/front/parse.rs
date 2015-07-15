@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::borrow::Cow;
 
-use super::lex::TokenTree;
+use super::lex::{ StrLit, TokenTree, TokenTreeMeta, SrcPos };
 
 // NOTE: A Symbol should be a wrapper around a static string reference, where
 //       reference equality would imply value equality
@@ -70,20 +70,18 @@ impl<'a> Type<'a> {
 		}
 	}
 
-	pub fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Type<'a>, (String, usize)> {
-		match *tt {
-			TokenTree::List(ref construct) if ! construct.is_empty() => match construct[0] {
-				(TokenTree::Ident(constructor), _) => construct.tail()
-					.iter()
-					.map(Type::parse)
-					.collect::<Result<_, _>>()
-					.map(|args| Type::new_construct(constructor, args)),
-				(_, c_pos) => Err(("Invalid type constructor".into(), c_pos)),
+	pub fn parse(ttm: &TokenTreeMeta<'a>) -> Type<'a> {
+		match ttm.tt {
+			TokenTree::List(ref construct) if ! construct.is_empty() => match construct[0].tt {
+				TokenTree::Ident(constructor) => Type::new_construct(
+					constructor,
+					construct.tail().iter().map(Type::parse).collect()),
+				_ => src_error_panic!(construct[0].pos, "Invalid type constructor"),
 			},
-			TokenTree::List(_) => Ok(Type::new_nil()),
-			TokenTree::Ident(basic) => Ok(Type::new_basic(basic)),
-			TokenTree::Num(num) => Err((format!("Expected type, found `{}`", num), pos)),
-			TokenTree::Str(s) => Err((format!("Expected type, found `{:?}`", s), pos)),
+			TokenTree::List(_) => Type::new_nil(),
+			TokenTree::Ident(basic) => Type::new_basic(basic),
+			TokenTree::Num(num) => src_error_panic!(ttm.pos, "Expected type"),
+			TokenTree::Str(s) => src_error_panic!(ttm.pos, "Expected type"),
 		}
 	}
 }
@@ -92,24 +90,24 @@ impl<'a> Type<'a> {
 pub struct TypedBinding<'a> {
 	pub ident: &'a str,
 	pub typ: Type<'a>,
-	pos: usize,
+	pos: SrcPos<'a>,
 }
 impl<'a> TypedBinding<'a> {
-	fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
-		match *tt {
-			TokenTree::List(ref tb) if ! tb.is_empty() && tb[0].0 == TokenTree::Ident(":") =>
+	fn parse(ttm: &TokenTreeMeta<'a>) -> Self {
+		match ttm.tt {
+			TokenTree::List(ref tb) if ! tb.is_empty() && tb[0].tt == TokenTree::Ident(":") =>
 				if tb.len() == 3 {
-					match tb[2] {
-						(TokenTree::Ident(ident), _) => Type::parse(&tb[1])
-							.map(|ty| TypedBinding{ ident: ident, typ: ty, pos: pos }),
-						(_, bpos) => Err(("Invalid binding".into(), bpos))
+					match tb[2].tt {
+						TokenTree::Ident(ident) =>
+							TypedBinding{ ident: ident, typ: Type::parse(&tb[1]), pos: ttm.pos },
+						_ => src_error_panic!(tb[2].pos, "Invalid binding"),
 					}
 				} else {
-					Err(("Invalid type ascription".into(), pos))
+					src_error_panic!(ttm.pos, "Invalid type ascription")
 				},
-			TokenTree::Ident(ident) => Ok(
-				TypedBinding{ ident: ident, typ: Type::Unknown, pos: pos }),
-			_ => Err(("Invalid binding".into(), pos))
+			TokenTree::Ident(ident) =>
+				TypedBinding{ ident: ident, typ: Type::Unknown, pos: ttm.pos },
+			_ => src_error_panic!(ttm.pos, "Invalid binding")
 		}
 	}
 }
@@ -120,7 +118,7 @@ impl<'a> TypedBinding<'a> {
 pub struct Path<'a> {
 	parts: Vec<&'a str>,
 	is_absolute: bool,
-	pos: usize
+	pos: SrcPos<'a>
 }
 impl<'a> Path<'a> {
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
@@ -133,52 +131,55 @@ impl<'a> Path<'a> {
 	}
 
 	/// Concatenates two paths.
-	/// Returns both `self` and `other` as `Err` if right hand path is absolute
-	pub fn concat(mut self, other: Self) -> Result<Self, (Self, Self)> {
+	///
+	/// Returns both `self` as `Err` if right hand path is absolute
+	pub fn concat(mut self, other: &Self) -> Result<Self, Self> {
 		if other.is_absolute {
-			Err((self, other))
+			Err(self)
 		} else {
-			self.parts.extend(other.parts);
+			self.parts.extend(other.parts.iter());
 			Ok(self)
 		}
 	}
 
 	pub fn to_string(&self) -> String {
-		format!(
-			"{}{}{}",
+		format!("{}{}{}",
 			if self.is_absolute() { "\\" } else { "" },
 			self.parts[0],
 			self.parts[1..].iter().fold(String::new(), |acc, p| acc + "\\" + p))
 	}
 
 	/// Parse an ident
-	fn parse(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
-		match *tt {
-			TokenTree::Ident(s) => Path::from_str(s, pos),
-			_ => Err(("Invalid path".into(), pos)),
+	fn parse(ttm: &TokenTreeMeta<'a>) -> Self {
+		match ttm.tt {
+			TokenTree::Ident(s) => Path::from_str(s, ttm.pos),
+			_ => src_error_panic!(ttm.pos, "Expected path"),
 		}
 	}
 
-	fn from_str(path_str: &'a str, pos: usize) -> Result<Self, (String, usize)> {
+	fn from_str(path_str: &'a str, pos: SrcPos<'a>) -> Self {
 		let (is_absolute, path_str) = if path_str.ends_with("\\") {
-			return Err(("Path ends with `\\`".into(), pos));
+			src_error_panic!(pos, "Path ends with `\\`")
 		} else if path_str.starts_with('\\') {
 			if path_str.len() == 1 {
-				return Err(("Path is a lone `\\`".into(), pos));
+				src_error_panic!(pos, "Path is a lone `\\`")
 			}
 			(true, &path_str[1..])
 		} else {
 			(false, path_str)
 		};
 
-		path_str.split('\\')
-			.map(|part| if part == "" {
-				Err(("Invalid path".into(), pos))
-			} else {
-				Ok(part)
-			})
-			.collect::<Result<Vec<_>, _>>()
-			.map(|parts| Path{ parts: parts, is_absolute: is_absolute, pos: pos })
+		Path{
+			parts: path_str.split('\\')
+				.map(|part| if part == "" {
+					src_error_panic!(pos, "Invalid path")
+				} else {
+					part
+				})
+				.collect(),
+			is_absolute: is_absolute,
+			pos: pos
+		}
 	}
 }
 impl<'a> PartialEq<str> for Path<'a> {
@@ -190,123 +191,122 @@ impl<'a> PartialEq<str> for Path<'a> {
 /// # Rust equivalent
 ///
 /// `path\to\item` => `path::to::item`
-/// (path\to\module sub\item1 item2) == path::to::module{ sub::item1, item2 }
-/// (lvl1::lvl2 (lvl2a lvl3a lvl3b) lvl2b) == use lvl1::lvl2::{ lvl2a::{ lvl3a, lvl3b}, lvl2b }
-fn parse_compound_path<'a>(&(ref tt, pos): &(TokenTree<'a>, usize))
-	-> Result<Vec<Path<'a>>, (String, usize)>
-{
-	match *tt {
-		TokenTree::List(ref compound) if ! compound.is_empty() => Path::parse(&compound[0])
-			.and_then(|head| compound.tail()
+/// `(path\to\module sub\item1 item2)` == `path::to::module{ sub::item1, item2 }``
+/// `(lvl1::lvl2 (lvl2a lvl3a lvl3b) lvl2b)` == `use lvl1::lvl2::{ lvl2a::{ lvl3a, lvl3b}, lvl2b }`
+fn parse_compound_path<'a>(ttm: &TokenTreeMeta<'a>) -> Vec<Path<'a>> {
+	match ttm.tt {
+		TokenTree::List(ref compound) if ! compound.is_empty() => {
+			let head = Path::parse(&compound[0]);
+			compound.tail()
 				.iter()
 				.map(parse_compound_path)
-				.collect::<Result<Vec<_>, _>>()
-				.and_then(|vs| vs.into_iter()
-					.flat_map(|v| v)
-					.map(|sub| head.clone()
-						.concat(sub)
-						.map_err(|(_, sub)|
-							(format!("`{}` is absolute", sub.to_string()), sub.pos)))
-					.collect::<Result<_, _>>())),
-		TokenTree::List(_) => Err(("Empty path compound".into(), pos)),
-		TokenTree::Ident(ident) => Path::from_str(ident, pos).map(|path| vec![path]),
-		TokenTree::Num(num) => Err((format!("Expected path, found `{}`", num), pos)),
-		TokenTree::Str(s) => Err((format!("Expected path, found `{:?}`", s), pos)),
+				.flat_map(|v| v)
+				.map(|sub| head.clone()
+					.concat(&sub)
+					.unwrap_or_else(|_| src_error_panic!(sub.pos, "Sub-path is absolute")))
+				.collect()
+		},
+		TokenTree::List(_) => src_error_panic!(ttm.pos, "Empty path compound"),
+		TokenTree::Ident(ident) => vec![Path::from_str(ident, ttm.pos)],
+		TokenTree::Num(_) | TokenTree::Str(_) => src_error_panic!(ttm.pos, "Expected path"),
 	}
 }
 
 #[derive(Clone, Debug)]
 pub struct Use<'a> {
 	pub paths: Vec<Path<'a>>,
+	pos: SrcPos<'a>,
 }
 impl<'a> Use<'a> {
-	fn parse(tts: &[(TokenTree<'a>, usize)]) -> Result<Use<'a>, (String, usize)> {
-		tts.iter()
-			.map(parse_compound_path)
-			.collect::<Result<Vec<_>, _>>()
-			.map(|vs| Use{
-				paths: vs.into_iter().flat_map(|paths| paths).collect()
-			})
+	fn parse(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> Use<'a> {
+		Use{
+			paths: tts.iter().map(parse_compound_path).flat_map(|paths| paths).collect(),
+			pos: pos,
+		}
 	}
 }
 
-fn parse_definition<'a>(tts: &[(TokenTree<'a>, usize)], pos: usize)
-	-> Result<(&'a str, Expr<'a>), (String, usize)>
-{
+#[derive(Clone, Debug)]
+pub struct ConstDef<'a> {
+	body: ExprMeta<'a>,
+	pos: SrcPos<'a>,
+}
+
+fn parse_definition<'a>(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> (&'a str, ExprMeta<'a>) {
 	if tts.len() != 2 {
-		Err(("`def-const` expects 2 arguments".into(), pos))
+		src_error_panic!(pos, format!("Arity mismatch. Expected 2, found {}", tts.len()))
 	} else {
-		match tts[0] {
-			(TokenTree::Ident(name), _) => Expr::parse(&tts[1]).map(|body| (name, body)),
-			(_, npos) => Err(("Invalid constant name. Expected identifier".into(), npos)),
+		match tts[0].tt {
+			TokenTree::Ident(name) => (name, ExprMeta::parse(&tts[1])),
+			_ => src_error_panic!(tts[0].pos, "Expected identifier"),
 		}
 	}
 }
 
 #[derive(Clone, Debug)]
 pub struct SExpr<'a> {
-	pub proced: Expr<'a>,
-	pub args: Vec<Expr<'a>>,
-	pos: usize,
+	pub proced: ExprMeta<'a>,
+	pub args: Vec<ExprMeta<'a>>,
+	pos: SrcPos<'a>,
 }
 impl<'a> SExpr<'a> {
-	fn parse(proc_tt: &(TokenTree<'a>, usize), args_tts: &[(TokenTree<'a>, usize)], expr_pos: usize)
-		-> Result<Self, (String, usize)>
+	fn parse(proc_ttm: &TokenTreeMeta<'a>, args_tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>)
+		-> Self
 	{
-		Expr::parse(proc_tt)
-			.and_then(|proced| args_tts.iter()
-				.map(Expr::parse)
-				.collect::<Result<_, _>>()
-				.map(|args| SExpr{ proced: proced, args: args, pos: expr_pos }))
+		SExpr{
+			proced: ExprMeta::parse(proc_ttm),
+			args: args_tts.iter().map(ExprMeta::parse).collect(),
+			pos: pos
+		}
 	}
 }
 
 #[derive(Clone, Debug)]
 pub struct Block<'a> {
 	pub uses: Vec<Use<'a>>,
-	pub const_defs: HashMap<&'a str, (Expr<'a>, usize)>,
-	pub exprs: Vec<Expr<'a>>,
-	pos: usize
+	pub const_defs: HashMap<&'a str, ConstDef<'a>>,
+	pub exprs: Vec<ExprMeta<'a>>,
+	pos: SrcPos<'a>
 }
 impl<'a> Block<'a> {
-	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
-		parse_items(tts).map(|(uses, const_defs, exprs)| Block{
+	fn parse(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> Self {
+		let (uses, const_defs, exprs) = parse_items(tts);
+		Block{
 			uses: uses,
 			const_defs: const_defs,
 			exprs: exprs,
 			pos: pos
-		})
+		}
 	}
 }
 
 #[derive(Clone, Debug)]
 pub struct Cond<'a> {
-	pub clauses: Vec<(Expr<'a>, Expr<'a>)>,
-	pub else_clause: Option<Expr<'a>>,
-	pos: usize,
+	pub clauses: Vec<(ExprMeta<'a>, ExprMeta<'a>)>,
+	pub else_clause: Option<ExprMeta<'a>>,
+	pos: SrcPos<'a>,
 }
 impl<'a> Cond<'a> {
-	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
+	fn parse(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> Self {
 		let mut clauses = Vec::new();
 		let mut else_clause = None;
 
-		for &(ref tt, tt_pos) in tts {
-			match *tt {
+		for ttm in tts {
+			match ttm.tt {
 				TokenTree::List(ref clause) if clause.len() == 2 =>
-					if let TokenTree::Ident("else") = clause[0].0 {
+					if let TokenTree::Ident("else") = clause[0].tt {
 						if else_clause.is_none() {
-							else_clause = Some(try!(Expr::parse(&clause[1])))
+							else_clause = Some(ExprMeta::parse(&clause[1]))
 						} else {
-							return Err(("Duplicate `else` clause".into(), clause[0].1))
+							src_error_panic!(clause[0].pos, "Duplicate `else` clause")
 						}
 					} else {
-						clauses.push((try!(Expr::parse(&clause[0])), try!(Expr::parse(&clause[1]))))
+						clauses.push((ExprMeta::parse(&clause[0]), ExprMeta::parse(&clause[1])))
 					},
-				_ => return Err(("Invalid cond clause".into(), tt_pos)),
+				_ => src_error_panic!(ttm.pos, "Expected list"),
 			}
 		}
-
-		Ok(Cond{ clauses: clauses, else_clause: else_clause, pos: pos })
+		Cond{ clauses: clauses, else_clause: else_clause, pos: pos }
 	}
 }
 
@@ -315,21 +315,21 @@ impl<'a> Cond<'a> {
 #[derive(Clone, Debug)]
 pub struct Lambda<'a> {
 	pub params: Vec<TypedBinding<'a>>,
-	pub body: Expr<'a>,
-	pos: usize,
+	pub body: ExprMeta<'a>,
+	pos: SrcPos<'a>,
 }
 impl<'a> Lambda<'a> {
-	fn parse(tts: &[(TokenTree<'a>, usize)], pos: usize) -> Result<Self, (String, usize)> {
+	fn parse(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> Self {
 		if tts.len() != 2 {
-			Err((format!("Arity mismatch. Expected {}, found {}", 2, tts.len()), pos))
+			src_error_panic!(pos, format!("Arity mismatch. Expected 2, found {}", tts.len()))
 		} else {
-			match tts[0] {
-				(TokenTree::List(ref params), _) => params.iter()
-					.map(TypedBinding::parse)
-					.collect::<Result<_, _>>()
-					.and_then(|params| Expr::parse(&tts[1])
-						.map(|body| Lambda{ params: params, body: body, pos: pos })),
-				(_, apos) => Err(("Expected parameter list".into(), apos)),
+			match tts[0].tt {
+				TokenTree::List(ref params) => Lambda{
+					params: params.iter().map(TypedBinding::parse).collect(),
+					body: ExprMeta::parse(&tts[1]),
+					pos: pos
+				},
+				_ => src_error_panic!(tts[0].pos, "Expected list"),
 			}
 		}
 	}
@@ -340,23 +340,23 @@ impl<'a> Lambda<'a> {
 pub struct VarDef<'a> {
 	pub binding: TypedBinding<'a>,
 	pub mutable: bool,
-	pub body: Expr<'a>,
-	pos: usize
+	pub body: ExprMeta<'a>,
+	pos: SrcPos<'a>
 }
 
 #[derive(Clone, Debug)]
 pub struct Assign<'a> {
 	pub lvalue: &'a str,
-	pub rvalue: Expr<'a>,
-	pos: usize,
+	pub rvalue: ExprMeta<'a>,
+	pos: SrcPos<'a>,
 }
 
 #[derive(Clone, Debug)]
-pub enum ExprVariant<'a> {
-	Nil(usize),
-	NumLit(&'a str, usize),
-	StrLit(&'a str, usize),
-	Bool(&'a str, usize),
+pub enum Expr<'a> {
+	Nil(SrcPos<'a>),
+	NumLit(&'a str, SrcPos<'a>),
+	StrLit(StrLit<'a>, SrcPos<'a>),
+	Bool(&'a str, SrcPos<'a>),
 	Binding(Path<'a>),
 	SExpr(SExpr<'a>),
 	Block(Block<'a>),
@@ -364,132 +364,132 @@ pub enum ExprVariant<'a> {
 	Lambda(Lambda<'a>),
 	VarDef(VarDef<'a>),
 	Assign(Assign<'a>),
-	Symbol(&'a str, usize),
-	List(Vec<Expr<'a>>, usize)
+	Symbol(&'a str, SrcPos<'a>),
+	List(Vec<ExprMeta<'a>>, SrcPos<'a>)
 }
-impl<'a> ExprVariant<'a> {
-	pub fn is_var_def(&self) -> bool { if let &ExprVariant::VarDef(_) = self { true } else { false } }
+impl<'a> Expr<'a> {
+	pub fn is_var_def(&self) -> bool {
+		if let &Expr::VarDef(_) = self { true } else { false }
+	}
 
-	fn pos(&self) -> usize {
+	fn pos(&self) -> SrcPos<'a> {
 		match *self {
-			ExprVariant::Nil(p) | ExprVariant::Symbol(_, p) | ExprVariant::NumLit(_, p)
-				| ExprVariant::StrLit(_, p) | ExprVariant::Bool(_, p) | ExprVariant::List(_, p)
+			Expr::Nil(p) | Expr::Symbol(_, p) | Expr::NumLit(_, p)
+				| Expr::StrLit(_, p) | Expr::Bool(_, p) | Expr::List(_, p)
 			=> p,
-			ExprVariant::Binding(ref path) => path.pos,
-			ExprVariant::SExpr(ref sexpr) => sexpr.pos,
-			ExprVariant::Block(ref block) => block.pos,
-			ExprVariant::Cond(ref cond) => cond.pos,
-			ExprVariant::Lambda(ref l) => l.pos,
-			ExprVariant::VarDef(ref def) => def.pos,
-			ExprVariant::Assign(ref a) => a.pos,
+			Expr::Binding(ref path) => path.pos,
+			Expr::SExpr(ref sexpr) => sexpr.pos,
+			Expr::Block(ref block) => block.pos,
+			Expr::Cond(ref cond) => cond.pos,
+			Expr::Lambda(ref l) => l.pos,
+			Expr::VarDef(ref def) => def.pos,
+			Expr::Assign(ref a) => a.pos,
 		}
 	}
 
-	fn parse_quoted(&(ref tt, pos): &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
-		match *tt {
-			TokenTree::List(ref list) => list.iter()
-				.map(|li| ExprVariant::parse_quoted(li).map(|e| Expr::new(e, Type::Unknown)))
-				.collect::<Result<Vec<_>, _>>()
-				.map(|list| ExprVariant::List(list, pos)),
-			TokenTree::Ident(ident) => Ok(ExprVariant::Symbol(ident, pos)),
-			TokenTree::Num(num) => Ok(ExprVariant::NumLit(num, pos)),
-			TokenTree::Str(s) => Ok(ExprVariant::StrLit(s, pos)),
+	fn parse_quoted(ttm: &TokenTreeMeta<'a>) -> Self {
+		match ttm.tt {
+			TokenTree::List(ref list) => Expr::List(
+				list.iter()
+					.map(|li| ExprMeta::new(Expr::parse_quoted(li), Type::Unknown))
+					.collect(),
+				ttm.pos),
+			TokenTree::Ident(ident) => Expr::Symbol(ident, ttm.pos),
+			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos),
+			TokenTree::Str(s) => Expr::StrLit(s, ttm.pos),
 		}
 	}
-	pub fn parse(tt_and_pos: &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
-		let pos = tt_and_pos.1;
-		match tt_and_pos.0 {
-			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].0 {
-				TokenTree::Ident("quote") if sexpr.len() == 2 =>
-					ExprVariant::parse_quoted(&sexpr[1]),
-				TokenTree::Ident("quote") =>
-					Err(("Arity mismatch. Expected 1 argument".into(), pos)),
-				TokenTree::Ident("cond") => Cond::parse(sexpr.tail(), pos).map(ExprVariant::Cond),
-				TokenTree::Ident("lambda") =>
-					Lambda::parse(sexpr.tail(), pos).map(ExprVariant::Lambda),
-				TokenTree::Ident("block") =>
-					Block::parse(sexpr.tail(), pos).map(ExprVariant::Block),
-				_ => SExpr::parse(&sexpr[0], sexpr.tail(), pos).map(ExprVariant::SExpr),
+	pub fn parse(ttm: &TokenTreeMeta<'a>) -> Self {
+		match ttm.tt {
+			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].tt {
+				TokenTree::Ident("quote") if sexpr.len() == 2 => Expr::parse_quoted(&sexpr[1]),
+				TokenTree::Ident("quote") => src_error_panic!(
+					ttm.pos,
+					format!("Arity mismatch. Expected 1, found {}", sexpr.len())),
+				TokenTree::Ident("cond") => Expr::Cond(Cond::parse(sexpr.tail(), ttm.pos)),
+				TokenTree::Ident("lambda") => Expr::Lambda(Lambda::parse(sexpr.tail(), ttm.pos)),
+				TokenTree::Ident("block") => Expr::Block(Block::parse(sexpr.tail(), ttm.pos)),
+				_ => Expr::SExpr(SExpr::parse(&sexpr[0], sexpr.tail(), ttm.pos)),
 			},
-			TokenTree::List(_) => Ok(ExprVariant::Nil(pos)),
-			TokenTree::Ident(path) => Path::parse(tt_and_pos)
-				.map(|path| ExprVariant::Binding(path)),
-			TokenTree::Num(num) => Ok(ExprVariant::NumLit(num, pos)),
-			TokenTree::Str(s) => Ok(ExprVariant::StrLit(s, pos)),
+			TokenTree::List(_) => Expr::Nil(ttm.pos),
+			TokenTree::Ident(path) => Expr::Binding(Path::parse(ttm)),
+			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos),
+			TokenTree::Str(s) => Expr::StrLit(s, ttm.pos),
 		}
 	}
 }
 
 /// An expression with additional attributes such as type information
 #[derive(Clone, Debug)]
-pub struct Expr<'a> {
-	pub val: Box<ExprVariant<'a>>,
+pub struct ExprMeta<'a> {
+	pub val: Box<Expr<'a>>,
 	pub typ: Type<'a>,
 }
-impl<'a> Expr<'a> {
-	pub fn new(value: ExprVariant<'a>, typ: Type<'a>) -> Self {
-		Expr{ val: Box::new(value), typ: typ }
+impl<'a> ExprMeta<'a> {
+	pub fn new(value: Expr<'a>, typ: Type<'a>) -> Self {
+		ExprMeta{ val: Box::new(value), typ: typ }
 	}
 	// pub fn new_true() -> Expr { Expr::new(Expr::Bool(true), Type::new_basic("bool")) }
 	// pub fn new_false() -> Expr { Expr::new(Expr::Bool(false), Type::new_basic("bool")) }
 	// pub fn new_nil() -> Expr { Expr::new(Expr::Nil, Type::new_nil()) }
 
-	fn pos(&self) -> usize { self.val.pos() }
+	fn pos(&self) -> SrcPos<'a> { self.val.pos() }
 
-	pub fn parse(tt_and_pos: &(TokenTree<'a>, usize)) -> Result<Self, (String, usize)> {
-		let pos = tt_and_pos.1;
-		match tt_and_pos.0 {
+	pub fn parse(ttm: &TokenTreeMeta<'a>) -> Self {
+		match ttm.tt {
 			// Check for type ascription around expression, e.g. `(:F64 12)`
-			TokenTree::List(ref sexpr) if sexpr.len() != 0 && sexpr[0].0 == TokenTree::Ident(":") =>
-				if sexpr.len() == 3 {
-					Type::parse(&sexpr[1]).and_then(|ty|
-						ExprVariant::parse(&sexpr[2]).map(|val|
-							Expr::new(val, ty)))
-				} else {
-					Err(("Invalid type ascription".into(), pos))
-				},
-			_ => ExprVariant::parse(tt_and_pos).map(|val| Expr::new(val, Type::Unknown))
+			TokenTree::List(ref sexpr) if sexpr.len() == 3 && sexpr[0].tt == TokenTree::Ident(":")
+				=> ExprMeta::new(Expr::parse(&sexpr[2]), Type::parse(&sexpr[1])),
+			TokenTree::List(ref sexpr) if sexpr.len() > 0 && sexpr[0].tt == TokenTree::Ident(":")
+				=> src_error_panic!(
+					ttm.pos,
+					format!("Arity mismatch. Expected 2, found {}", sexpr.len() - 1)),
+			_ => ExprMeta::new(Expr::parse(ttm), Type::Unknown)
 		}
 	}
 }
 
 /// Parse TokenTree:s as a list of items
-fn parse_items<'a>(tts: &[(TokenTree<'a>, usize)])
-	-> Result<(Vec<Use<'a>>, HashMap<&'a str, (Expr<'a>, usize)>, Vec<Expr<'a>>), (String, usize)>
+fn parse_items<'a>(tts: &[TokenTreeMeta<'a>])
+	-> (Vec<Use<'a>>, HashMap<&'a str, ConstDef<'a>>, Vec<ExprMeta<'a>>)
 {
 	let (mut uses, mut const_defs, mut exprs) = (Vec::new(), HashMap::new(), Vec::new());
 
-	for tt_and_pos in tts {
-		match *tt_and_pos {
-			(TokenTree::List(ref sexpr), pos) if ! sexpr.is_empty() => match sexpr[0].0 {
-				TokenTree::Ident("use") => uses.push(try!(Use::parse(sexpr.tail()))),
-				TokenTree::Ident("def-const") => try!(parse_definition(sexpr.tail(), pos)
-					.and_then(|(ident, body)| match const_defs.insert(ident, (body, pos)) {
-						Some(_) => Err((format!("Duplicate constant definition `{}`", ident), pos)),
-						None => Ok(()),
-					})),
-				_ => exprs.push(try!(Expr::parse(tt_and_pos))),
+	for ttm in tts {
+		match ttm.tt {
+			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].tt {
+				TokenTree::Ident("use") => uses.push(Use::parse(sexpr.tail(), ttm.pos)),
+				TokenTree::Ident("def-const") => {
+					let (ident, body) = parse_definition(sexpr.tail(), ttm.pos);
+
+					if const_defs.insert(ident, ConstDef{ body: body, pos: ttm.pos }).is_some() {
+						src_error_panic!(
+							ttm.pos,
+							format!("Duplicate constant definition `{}`", ident))
+					}
+				},
+				_ => exprs.push(ExprMeta::parse(ttm)),
 			},
-			_ => exprs.push(try!(Expr::parse(tt_and_pos))),
+			_ => exprs.push(ExprMeta::parse(ttm)),
 		}
 	}
 
-	Ok((uses, const_defs, exprs))
+	(uses, const_defs, exprs)
 }
 
 #[derive(Clone, Debug)]
 pub struct AST<'a> {
 	pub uses: Vec<Use<'a>>,
-	pub const_defs: HashMap<&'a str, (Expr<'a>, usize)>,
+	pub const_defs: HashMap<&'a str, ConstDef<'a>>,
 }
 impl<'a> AST<'a> {
-	pub fn parse(tts: &[TokenTreeMeta<'a>]) -> Result<AST<'a>, (String, usize)> {
-		let (uses, const_defs, exprs) = try!(parse_items(tts));
+	pub fn parse(tts: &[TokenTreeMeta<'a>]) -> AST<'a> {
+		let (uses, const_defs, exprs) = parse_items(tts);
 
 		for expr in exprs {
-			return Err(("Expression at top level".into(), expr.pos()));
+			src_error_panic!(expr.pos(), "Expression at top level");
 		}
 
-		Ok(AST{ uses: uses, const_defs: const_defs })
+		AST{ uses: uses, const_defs: const_defs }
 	}
 }

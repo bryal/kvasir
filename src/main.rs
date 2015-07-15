@@ -89,8 +89,9 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use lib::{ token_trees_from_src, expand_macros };
+use lib::front::parse;
 // use lib::compile;
-// use lib::front::parse;
+
 
 mod lib;
 
@@ -165,12 +166,10 @@ fn main() {
 
 	let expanded_macros = expand_macros(token_tree);
 
-	println!("MACRO EXPANDED: {:#?}", expanded_macros);
-	// println!("MACRO EXPANDED: {:#?}", lib::front::lex::PrettyTokenTree::from_tt(
-	// 	lib::front::lex::TokenTree::List(expanded_macros.clone())));
+	// println!("MACRO EXPANDED: {:#?}", expanded_macros);
 
-	// let ast = parse::AST::parse(&expanded_macros).unwrap();
-	// println!("AST PARSED:\n{:#?}\n", ast);
+	let ast = parse::AST::parse(&expanded_macros);
+	println!("AST PARSED:\n{:#?}\n", ast);
 
 	// let mut ast: lib::AST = ast.into();
 	// println!("AST MACRO EXPANDED:\n{:?}\n", ast);

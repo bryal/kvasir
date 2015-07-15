@@ -153,6 +153,7 @@ impl<'a> MacroRules<'a> {
 			}
 
 			return template.clone()
+				.relocate(pos)
 				.expand_macros(macros, &pattern.bind(TokenTreeMeta::new(args, pos), &self.literals))
 		}
 
@@ -177,7 +178,8 @@ impl<'a> TokenTreeMeta<'a> {
 	) -> TokenTreeMeta<'a> {
 		match self.tt {
 			TokenTree::Ident(ident) if syntax_vars.contains_key(ident) =>
-				syntax_vars[ident].clone().expand_macros(macros, &HashMap::new()),
+				TokenTreeMeta::new(syntax_vars[ident].tt.clone(), self.pos)
+					.expand_macros(macros, &HashMap::new()),
 			TokenTree::List(ref l) if l.len() == 0 =>
 				TokenTreeMeta::new_list(vec![], self.pos),
 			TokenTree::List(mut sexpr) => match sexpr[0].tt {

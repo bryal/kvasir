@@ -23,7 +23,7 @@
 use std::fmt;
 
 /// A position or interval in a string of source code
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SrcPos<'a> {
 	pub src: &'a str,
 	pub start: usize,
@@ -100,7 +100,7 @@ macro_rules! src_error_panic {
 /// can be produced using backslash, `\`, or a `Raw` string literal,
 /// where escape sequences are not processed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StrLit<'a> {
+pub enum StrLit<'a> {
 	Plain(&'a str),
 	Raw(&'a str),
 }
@@ -315,6 +315,15 @@ impl<'a> TokenTreeMeta<'a> {
 			_ => src_error_panic!(pos, "Unexpected token"),
 		};
 		TokenTreeMeta::new(tt, pos)
+	}
+
+	pub fn relocate(self, pos: SrcPos<'a>) -> TokenTreeMeta<'a> {
+		match self.tt {
+			TokenTree::List(list) => TokenTreeMeta::new_list(
+				list.map_in_place(|li| li.relocate(pos)),
+				pos),
+			tt => TokenTreeMeta::new(tt, pos),
+		}
 	}
 }
 
