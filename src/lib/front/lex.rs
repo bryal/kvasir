@@ -146,15 +146,17 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 	let n_delim_octothorpes = str_src.chars().take_while(|&c| c == '#').count();
 
 	if ! str_src[n_delim_octothorpes..].starts_with('"') {
-		src_error_panic!(src, start, "Invalid raw string delim");
+		src_error_panic!(src, start, "Invalid raw string delimiter");
 	}
 
-	let delim_octothorpes = &str_src[.. 1 + n_delim_octothorpes];
+	let delim_octothorpes = &str_src[..n_delim_octothorpes];
 
 	let str_body_src = &str_src[n_delim_octothorpes + 1 ..];
 	for (i, c) in str_body_src.char_indices() {
 		if c == '"' && str_body_src[i + 1 ..].starts_with(delim_octothorpes) {
-			return (Token::Str(StrLit::Raw(&str_body_src[..i])), n_delim_octothorpes + 2 + i)
+			// octothorpes before and after + 'r' + open and end quotes + str len
+			let literal_len = n_delim_octothorpes * 2 + 3 + i;
+			return (Token::Str(StrLit::Raw(&str_body_src[..i])), literal_len)
 		}
 	}
 	src_error_panic!(src, start, "Unterminated raw string literal")
