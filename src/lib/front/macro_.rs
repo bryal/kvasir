@@ -39,64 +39,156 @@ use super::lex::{ TokenTree, TokenTreeMeta, SrcPos };
 
 type Macros<'a> = ScopeStack<&'a str, MacroRules<'a>>;
 
+fn unambiguous_sequences(patts: &[MacroPattern], literals: &HashSet<&str>) -> bool {
+	let mut ambiguous_sequence = false;
+
+	for patt in patts {
+		match *patt {
+			MacroPattern::Ident("...") if ! ambiguous_sequence => ambiguous_sequence = true,
+			MacroPattern::Ident("...") => return false,
+			MacroPattern::Ident(ident) if literals.contains(ident) => ambiguous_sequence = false,
+			_ => (),
+		}
+	}
+	true
+}
+
 /// A pattern to be matched against a `TokenTree` as part of macro expansion.
 ///
 /// A `MacroPattern` created as part of a macro definition is guaranteed to be valid
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MacroPattern<'a> {
 	Ident(&'a str),
 	List(Vec<MacroPattern<'a>>),
 }
 impl<'a> MacroPattern<'a> {
-	/// Construct a new `MacroPattern` corresponding to a `TokenTree`
-	fn new(ttm: TokenTreeMeta) -> MacroPattern {
+	/// Construct a new, valid `MacroPattern` corresponding to a `TokenTree`
+	fn new(ttm: TokenTreeMeta<'a>, literals: &HashSet<&'a str>) -> Self {
 		match ttm.tt {
 			TokenTree::Ident(ident) => MacroPattern::Ident(ident),
-			TokenTree::List(list) => MacroPattern::List(
-				list.into_iter().map(MacroPattern::new).collect()),
+			TokenTree::List(list) => {
+				let patts: Vec<_> = list.into_iter()
+					.map(|li| MacroPattern::new(li, literals))
+					.collect();
+
+				if unambiguous_sequences(&patts, literals) {
+					MacroPattern::List(patts)
+				} else {
+					src_error_panic!(ttm.pos, "Ambiguous pattern")
+				}
+			},
 			_ => src_error_panic!(ttm.pos, "Expected list or ident")
 		}
 	}
 
-	/// Check whether the provided `TokenTree` matches the pattern of `self`
-	fn matches(&self, arg: &TokenTree<'a>, literals: &HashSet<&'a str>) -> bool {
-		match (self, arg) {
-			(&MacroPattern::Ident(ref pi), &TokenTree::Ident(ref ti)) if literals.contains(pi) =>
-				pi == ti,
-			(&MacroPattern::Ident(_), _) => true,
-			(&MacroPattern::List(ref patts), &TokenTree::List(ref sub_args))
-				if patts.len() == sub_args.len()
-			=>
-				patts.iter().zip(sub_args).all(|(patt, sub_arg)|
-					patt.matches(&sub_arg.tt, literals)),
-			_ => false,
+	fn get_ident(&self) -> Option<&str> {
+		match *self {
+			MacroPattern::Ident(ident) => Some(ident),
+			_ => None,
 		}
 	}
 
 	/// Bind the `TokenTree`, `arg`, to the pattern `self`
 	///
-	/// # Panics
-	/// Panics on pattern mismatch and on invalid pattern
+	/// If pattern matched, return the bound pattern
 	fn bind(&self, arg: TokenTreeMeta<'a>, literals: &HashSet<&'a str>)
-		-> HashMap<&'a str, TokenTreeMeta<'a>>
+		-> Option<HashMap<&'a str, TokenTreeMeta<'a>>>
 	{
-		let mut map = HashMap::with_capacity(1);
-
-		match *self {
-			MacroPattern::Ident(pi) => match arg.tt {
-				TokenTree::Ident(ti) if literals.contains(pi) && pi == ti => (),
-				_ if literals.contains(pi) => unreachable!(),
-				_ => { map.insert(pi, arg); },
+		match arg.tt {
+			TokenTree::List(args) => self.bind_sequence(args, &arg.pos, literals),
+			TokenTree::Ident(ident) => match *self {
+				MacroPattern::Ident(pi) if literals.contains(pi) && pi == ident =>
+					Some(HashMap::new()),
+				MacroPattern::Ident(pi) if literals.contains(pi) => None,
+				MacroPattern::Ident(pi) => Some(once((pi, arg)).collect()),
+				_ => None,
 			},
-			MacroPattern::List(ref patts) => if let TokenTree::List(sub_args) = arg.tt {
-				map.extend(patts.iter()
-					.zip(sub_args)
-					.flat_map(|(patt, sub_arg)| patt.bind(sub_arg, literals)))
-			} else {
-				src_error_panic!(arg.pos, "Pattern mismatch. Expected list")
+			_ => match *self {
+				MacroPattern::Ident(pi) if literals.contains(pi) => None,
+				MacroPattern::Ident(pi) => Some(once((pi, arg)).collect()),
+				_ => None,
 			},
 		}
-		map
+	}
+
+	// `pos` is a fallback in case `args` is empty
+	fn bind_sequence(&self,
+		args: Vec<TokenTreeMeta<'a>>,
+		pos: &SrcPos<'a>,
+		literals: &HashSet<&'a str>
+	) -> Option<HashMap<&'a str, TokenTreeMeta<'a>>> {
+		let mut map = HashMap::new();
+
+		let pos_interval = if args.is_empty() {
+			pos.clone()
+		} else {
+			let mut pos_interval = args[0].pos.clone();
+			pos_interval.end = args.last().unwrap().pos.end.clone();
+			pos_interval
+		};
+
+		match *self {
+			MacroPattern::Ident(pi) => if literals.contains(pi) {
+				return None;
+			} else {
+				map.insert(pi, TokenTreeMeta::new_list(args, pos_interval));
+			},
+			MacroPattern::List(ref patts) => {
+				let mut args = args.into_iter().peekable();
+
+				for i in 0 .. patts.len() {
+					if patts[i] == MacroPattern::Ident("...") {
+						continue;
+					}
+					if i + 1 < patts.len() && patts[i + 1] == MacroPattern::Ident("...") {
+						// Followed by ellipsis. It's a repeating sequence
+						let len_til_end = patts[i + 2 ..].iter()
+							.position(|pat| pat.get_ident()
+								.map(|id| literals.contains(id))
+								.unwrap_or(false))
+							.map(|j| j + i + 2)
+							.unwrap_or(patts.len());
+						let keep = len_til_end - (i + 2);
+
+						let mut to_bind = Vec::new();
+						loop {
+							if let Some(arg) = args.peek() {
+								if len_til_end != patts.len()
+									&& arg.tt.get_ident() == patts[len_til_end].get_ident()
+								{
+									break
+								}
+							} else {
+								break
+							}
+							to_bind.push(args.next().unwrap())
+						}
+						if keep > to_bind.len() {
+							return None;
+						}
+
+						let keep_split_pos = to_bind.len() - keep;
+						args = to_bind.split_off(keep_split_pos)
+							.into_iter()
+							.chain(args)
+							.collect::<Vec<_>>()
+							.into_iter()
+							.peekable();
+
+						match patts[i].bind_sequence(to_bind, pos, literals) {
+							Some(bound) => map.extend(bound),
+							None => return None,
+						}
+					} else {
+						match args.next().and_then(|arg| patts[i].bind(arg, literals)) {
+							Some(bound) => map.extend(bound),
+							None => return None,
+						}
+					}
+				}
+			},
+		}
+		Some(map)
 	}
 }
 
@@ -131,7 +223,7 @@ impl<'a> MacroRules<'a> {
 				}
 
 				let template = rule.pop().unwrap();
-				let pattern = MacroPattern::new(rule.pop().unwrap());
+				let pattern = MacroPattern::new(rule.pop().unwrap(), &literals);
 
 				rules.push((pattern, template))
 			} else {
@@ -143,20 +235,16 @@ impl<'a> MacroRules<'a> {
 	}
 
 	/// Apply a macro to some arguments.
-	fn apply_to(&self, args: Vec<TokenTreeMeta<'a>>, pos: SrcPos<'a>, macros: &mut Macros<'a>)
+	fn apply_to(&self, args: Vec<TokenTreeMeta<'a>>, pos: &SrcPos<'a>, macros: &mut Macros<'a>)
 		-> TokenTreeMeta<'a>
 	{
-		let args = TokenTree::List(args);
 		for &(ref pattern, ref template) in &self.rules {
-			if ! pattern.matches(&args, &self.literals) {
-				continue;
-			}
+			if let Some(bound) = pattern.bind_sequence(args.clone(), &pos, &self.literals) {
+				let mut template = template.clone();
+				template.add_expansion_site(pos.clone());
 
-			let mut template = template.clone();
-			template.add_expansion_site(pos.clone());
-			return template.expand_macros(
-					macros,
-					&pattern.bind(TokenTreeMeta::new(args, pos), &self.literals))
+				return template.expand_macros(macros, &bound)
+			}
 		}
 
 		src_error_panic!(pos, "No rule matched in macro invocation")
@@ -200,7 +288,7 @@ impl<'a> TokenTreeMeta<'a> {
 					let args = sexpr.drain(1..)
 						.map(|arg| arg.substitute_syntax_vars(syntax_vars))
 						.collect();
-					macro_rules.apply_to(args, self.pos, macros)
+					macro_rules.apply_to(args, &self.pos, macros)
 				},
 				_ => TokenTreeMeta::new_list(sexpr.into_iter()
 						.map(|arg| arg.expand_macros(macros, syntax_vars))

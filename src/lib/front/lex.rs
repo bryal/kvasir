@@ -338,6 +338,14 @@ pub enum TokenTree<'a> {
 	Num(&'a str),
 	Str(StrLit<'a>),
 }
+impl<'a> TokenTree<'a> {
+	pub fn get_ident(&self) -> Option<&str> {
+		match *self {
+			TokenTree::Ident(ident) => Some(ident),
+			_ => None,
+		}
+	}
+}
 
 /// A `TokenTree` with meta-data
 #[derive(Debug, Clone, PartialEq, Eq)]
