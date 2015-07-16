@@ -50,11 +50,16 @@ impl<'a> SrcPos<'a> {
 		SrcPos{ src: src, start: start, end: Some(end), in_expansion: Some(Box::new(parent)) }
 	}
 
-	pub fn add_expansion_site(&mut self, exp: SrcPos<'a>) {
-		if self.in_expansion.is_none() {
-			self.in_expansion = Some(Box::new(exp));
+	pub fn add_expansion_site(&mut self, exp: &SrcPos<'a>) {
+		if let Some(ref mut self_exp) = self.in_expansion {
+			// Not sure whether this should be an error
+			// panic!("Internal Compiler Error: add_expansion_site: \
+			//         Tried to add expansion site `{:?}` to pos `{:?}`",
+			//	exp,
+			//	self);
+			self_exp.add_expansion_site(exp);
 		} else {
-			panic!("Internal compiler error: add_expansion_site: in_expansion not `None`")
+			self.in_expansion = Some(Box::new(exp.clone()));
 		}
 	}
 }
@@ -361,6 +366,13 @@ impl<'a> TokenTreeMeta<'a> {
 		TokenTreeMeta{ tt: TokenTree::List(tts), pos: pos }
 	}
 
+	pub fn list_len(&self) -> Option<usize> {
+		match self.tt {
+			TokenTree::List(ref list) => Some(list.len()),
+			_ => None,
+		}
+	}
+
 	/// Construct a new `TokenTreeMeta` from a token with a position, and the tokens following
 	fn from_token((token, mut pos): (Token<'a>, SrcPos<'a>), nexts: &mut Tokens<'a>) -> Self {
 		let tt = match token {
@@ -383,12 +395,12 @@ impl<'a> TokenTreeMeta<'a> {
 		TokenTreeMeta::new(tt, pos)
 	}
 
-	pub fn add_expansion_site(&mut self, exp: SrcPos<'a>) {
-		self.pos.add_expansion_site(exp.clone());
+	pub fn add_expansion_site(&mut self, exp: &SrcPos<'a>) {
+		self.pos.add_expansion_site(exp);
 
 		if let TokenTree::List(ref mut list) = self.tt {
 			for li in list {
-				li.add_expansion_site(exp.clone())
+				li.add_expansion_site(exp)
 			}
 		}
 	}

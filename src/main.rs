@@ -168,12 +168,12 @@ fn main() {
 
 	// println!("TOKEN TREE{:#?}", token_tree);
 
-	let expanded_macros = expand_macros(token_tree);
+	let expanded_macros = expand_macros(&token_tree);
 
 	println!("MACRO EXPANDED: {:#?}", expanded_macros);
 
-	let ast = parse::AST::parse(&expanded_macros);
-	println!("AST PARSED:\n{:#?}\n", ast);
+	// let ast = parse::AST::parse(&expanded_macros);
+	// println!("AST PARSED:\n{:#?}\n", ast);
 
 	// ast.remove_unused_consts();
 	// println!("AST REMOVED UNUSED:\n{:?}\n", ast);

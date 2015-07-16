@@ -1,8 +1,18 @@
-(def-macro define ()
-    (((name args ...) body)
-     (def-const name (lambda args body)))
-    ((name body)
-     (def-const name body)))
+; Macro tests
 
-(define (main) (block
-    '(a b c)))
+(def-macro swap (and)
+  ((xs ... x and y ys ...) (pair (list x xs ...) (list ys ... y))))
+(swap 1 2 3 and a b c) ; (pair (list 3 1 2) (list b c a))
+
+(def-macro zip ()
+  (((xs ...) (ys ...)) (list (pair xs ys) ...)))
+(zip (1 2 3) (a b c)) ; (list (pair 1 a) (pair 2 b) (pair 3 c))
+
+;(def-macro multiply-all-by ()
+;  ((name x)
+;   (def-macro name ()
+;     ((ys (... ...)) (list (* x ys) (... ...))))))
+;
+;(multiply-all-by double-all 2)
+;
+;(double-all (1 2 3 4 5))
