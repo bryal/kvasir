@@ -231,8 +231,8 @@ impl<'a> Use<'a> {
 
 #[derive(Clone, Debug)]
 pub struct ConstDef<'a> {
-	body: ExprMeta<'a>,
-	pos: SrcPos<'a>,
+	pub body: ExprMeta<'a>,
+	pub pos: SrcPos<'a>,
 }
 
 fn parse_definition<'a>(tts: &[TokenTreeMeta<'a>], pos: SrcPos<'a>) -> (&'a str, ExprMeta<'a>) {
@@ -310,6 +310,23 @@ impl<'a> Cond<'a> {
 			}
 		}
 		Cond{ clauses: clauses, else_clause: else_clause, pos: pos }
+	}
+
+	/// Iterate over predicates of clauses.
+	/// This excludes the else clause, since it contains no predicate
+	pub fn iter_predicates_mut<'it>(&'it mut self) -> Box<Iterator<Item=&mut ExprMeta<'a>> + 'it> {
+		Box::new(self.clauses.iter_mut().map(|&mut (ref mut p, _)| p))
+	}
+	/// Iterate over all clauses of self, including the else clause
+	pub fn iter_consequences<'it>(&'it self) -> Box<Iterator<Item=&ExprMeta> + 'it> {
+		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))
+	}
+	/// Iterate over all clauses of self, including the else clause
+	pub fn iter_consequences_mut<'it>(&'it mut self) -> Box<Iterator<Item=&mut ExprMeta<'a>> + 'it>
+	{
+		Box::new(self.clauses.iter_mut()
+			.map(|&mut (_, ref mut c)| c)
+			.chain(self.else_clause.iter_mut()))
 	}
 }
 
@@ -434,9 +451,6 @@ impl<'a> ExprMeta<'a> {
 	pub fn new(value: Expr<'a>, typ: Type<'a>) -> Self {
 		ExprMeta{ val: Box::new(value), typ: typ }
 	}
-	// pub fn new_true() -> Expr { Expr::new(Expr::Bool(true), Type::new_basic("bool")) }
-	// pub fn new_false() -> Expr { Expr::new(Expr::Bool(false), Type::new_basic("bool")) }
-	// pub fn new_nil() -> Expr { Expr::new(Expr::Nil, Type::new_nil()) }
 
 	fn pos(&self) -> &SrcPos<'a> { self.val.pos() }
 

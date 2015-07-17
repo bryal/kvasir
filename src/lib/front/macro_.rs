@@ -332,7 +332,6 @@ impl<'a> MacroRules<'a> {
 	{
 		for &(ref pattern, ref template) in &self.rules {
 			if let Some(bound) = pattern.bind_sequence(args, &pos, &self.literals) {
-				println!("\targs: {:?}\n\tpattern: {:?}\n\tbound: {:?}", args, pattern, bound);
 				let mut template = template.subst_syntax_vars(&bound);
 
 				template.add_expansion_site(pos);

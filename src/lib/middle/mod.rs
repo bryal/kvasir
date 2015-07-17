@@ -20,9 +20,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use lib::*;
+use lib::src_warning_print;
+use lib::ScopeStack;
+use lib::front::parse::*;
 
-type ConstDefs = ScopeStack<String, Option<(ExprMeta, Used)>>;
+type ConstDefs<'a> = ScopeStack<&'a str, Option<(ConstDef<'a>, Used)>>;
 
 enum Used {
 	Yes,
@@ -33,7 +35,7 @@ impl Used {
 	fn is_no(&self) -> bool { !self.is_yes() }
 }
 
-impl Path {
+impl<'a> Path<'a> {
 	fn remove_unused_consts(&self, const_defs: &mut ConstDefs) {
 		if let Some(ident) = self.ident() {
 			if let Some(height) = const_defs.get_height(ident) {
@@ -52,9 +54,9 @@ impl Path {
 	}
 }
 
-impl SExpr {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
-		self.func.remove_unused_consts(const_defs);
+impl<'a> SExpr<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
+		self.proced.remove_unused_consts(const_defs);
 
 		for arg in &mut self.args {
 			arg.remove_unused_consts(const_defs);
@@ -62,14 +64,17 @@ impl SExpr {
 	}
 }
 
-impl Block {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+impl<'a> Block<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		let mut const_defs = const_defs.map_push_local(
 			&mut self.const_defs,
-			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
-			|it| it.filter_map(|(k, v)| match v.unwrap() {
-				(e, Used::Yes) => Some((k, e)),
-				(_, Used::No) => { println!("Warning: Unused constant `{}`", k); None },
+			|it| it.map(|(key, def)| (key, Some((def, Used::No)))),
+			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
+				(def, Used::Yes) => Some((key, def)),
+				(def, Used::No) => {
+					src_warning_print(&def.pos, format!("Unused constant `{}`", key));
+					None
+				},
 			}));
 
 		for expr in &mut self.exprs {
@@ -78,8 +83,8 @@ impl Block {
 	}
 }
 
-impl Cond {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+impl<'a> Cond<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		for pred in self.iter_predicates_mut() {
 			pred.remove_unused_consts(const_defs);
 		}
@@ -89,27 +94,27 @@ impl Cond {
 	}
 }
 
-impl Lambda {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+impl<'a> Lambda<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		self.body.remove_unused_consts(const_defs);
 	}
 }
 
-impl VarDef {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+impl<'a> VarDef<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		self.body.remove_unused_consts(const_defs);
 	}
 }
 
-impl Assign {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
+impl<'a> Assign<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		self.rvalue.remove_unused_consts(const_defs);
 	}
 }
 
-impl ExprMeta {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs) {
-		match *self.value {
+impl<'a> ExprMeta<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
+		match *self.val {
 			Expr::Binding(ref path) => path.remove_unused_consts(const_defs),
 			Expr::SExpr(ref mut sexpr) => sexpr.remove_unused_consts(const_defs),
 			Expr::Block(ref mut block) => block.remove_unused_consts(const_defs),
@@ -122,17 +127,26 @@ impl ExprMeta {
 	}
 }
 
-impl AST {
+impl<'a> ConstDef<'a> {
+	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
+		self.body.remove_unused_consts(const_defs)
+	}
+}
+
+impl<'a> AST<'a> {
 	pub fn remove_unused_consts(&mut self) {
 		let mut const_defs = ConstDefs::new();
 
 		// Push the module scope on top of the stack
 		let mut const_defs = const_defs.map_push_local(
 			&mut self.const_defs,
-			|it| it.map(|(k, v)| (k, Some((v, Used::No)))),
-			|it| it.filter_map(|(k, v)| match v.unwrap() {
-				(e, Used::Yes) => Some((k, e)),
-				(_, Used::No) => { println!("Warning: Unused constant `{}`", k); None },
+			|it| it.map(|(key, def)| (key, Some((def, Used::No)))),
+			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
+				(def, Used::Yes) => Some((key, def)),
+				(def, Used::No) => {
+					src_warning_print(&def.pos, format!("Unused constant `{}`", key));
+					None
+				},
 			}));
 
 		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
