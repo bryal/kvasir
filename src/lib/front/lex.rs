@@ -24,33 +24,33 @@ use std::fmt;
 
 /// A position or interval in a string of source code
 #[derive(Clone, Hash, PartialEq, Eq)]
-pub struct SrcPos<'a> {
-	pub src: &'a str,
+pub struct SrcPos<'src> {
+	pub src: &'src str,
 	pub start: usize,
 	pub end: Option<usize>,
-	pub in_expansion: Option<Box<SrcPos<'a>>>
+	pub in_expansion: Option<Box<SrcPos<'src>>>
 }
-impl<'a> SrcPos<'a> {
+impl<'src> SrcPos<'src> {
 	/// Construct a new `SrcPos` representing a position in `src`
-	fn new_pos(src: &'a str, pos: usize) -> Self {
+	fn new_pos(src: &'src str, pos: usize) -> Self {
 		SrcPos{ src: src, start: pos, end: None, in_expansion: None }
 	}
 	/// Construct a new `SrcPos` representing an interval in `src`
-	fn new_interval(src: &'a str, start: usize, end: usize) -> Self {
+	fn new_interval(src: &'src str, start: usize, end: usize) -> Self {
 		SrcPos{ src: src, start: start, end: Some(end), in_expansion: None }
 	}
 	/// Construct a new `SrcPos` representing a position in `src` in the expansion of a macro
-	fn new_pos_in_expansion(src: &'a str, pos: usize, parent: SrcPos<'a>) -> Self {
+	fn new_pos_in_expansion(src: &'src str, pos: usize, parent: SrcPos<'src>) -> Self {
 		SrcPos{ src: src, start: pos, end: None, in_expansion: Some(Box::new(parent)) }
 	}
 	/// Construct a new `SrcPos` representing an interval in `src` in the expansion of a macro
-	fn new_interval_in_expansion(src: &'a str, start: usize, end: usize, parent: SrcPos<'a>)
+	fn new_interval_in_expansion(src: &'src str, start: usize, end: usize, parent: SrcPos<'src>)
 		-> Self
 	{
 		SrcPos{ src: src, start: start, end: Some(end), in_expansion: Some(Box::new(parent)) }
 	}
 
-	pub fn add_expansion_site(&mut self, exp: &SrcPos<'a>) {
+	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
 		if let Some(ref mut self_exp) = self.in_expansion {
 			// Not sure whether this should be an error
 			// panic!("Internal Compiler Error: add_expansion_site: \
@@ -63,7 +63,7 @@ impl<'a> SrcPos<'a> {
 		}
 	}
 }
-impl<'a> fmt::Debug for SrcPos<'a> {
+impl<'src> fmt::Debug for SrcPos<'src> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		match self.end {
 			Some(end) => write!(fmt, "SrcPos {{ start: {}, end: {} }}", self.start, end),
@@ -78,19 +78,19 @@ impl<'a> fmt::Debug for SrcPos<'a> {
 /// can be produced using backslash, `\`, or a `Raw` string literal,
 /// where escape sequences are not processed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrLit<'a> {
-	Plain(&'a str),
-	Raw(&'a str),
+pub enum StrLit<'src> {
+	Plain(&'src str),
+	Raw(&'src str),
 }
 
 /// A token
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Token<'a> {
+enum Token<'src> {
 	LParen,
 	RParen,
-	Ident(&'a str),
-	Num(&'a str),
-	Str(StrLit<'a>),
+	Ident(&'src str),
+	Num(&'src str),
+	Str(StrLit<'src>),
 	Quote,
 }
 
@@ -208,17 +208,17 @@ fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
 
 /// An iterator of `Token`s and their position in some source code
 #[derive(Debug)]
-struct Tokens<'a> {
-	src: &'a str,
+struct Tokens<'src> {
+	src: &'src str,
 	pos: usize,
 }
-impl<'a> From<&'a str> for Tokens<'a> {
-	fn from(src: &'a str) -> Tokens { Tokens{ src: src, pos: 0 } }
+impl<'src> From<&'src str> for Tokens<'src> {
+	fn from(src: &'src str) -> Tokens { Tokens{ src: src, pos: 0 } }
 }
-impl<'a> Iterator for Tokens<'a> {
-	type Item = (Token<'a>, SrcPos<'a>);
+impl<'src> Iterator for Tokens<'src> {
+	type Item = (Token<'src>, SrcPos<'src>);
 
-	fn next(&mut self) -> Option<(Token<'a>, SrcPos<'a>)> {
+	fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
 		let pos = self.pos;
 		let mut char_it = self.src[pos..]
 			.char_indices()
@@ -254,13 +254,13 @@ impl<'a> Iterator for Tokens<'a> {
 
 /// A tree of lists, identifiers, and literals
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenTree<'a> {
-	List(Vec<TokenTreeMeta<'a>>),
-	Ident(&'a str),
-	Num(&'a str),
-	Str(StrLit<'a>),
+pub enum TokenTree<'src> {
+	List(Vec<TokenTreeMeta<'src>>),
+	Ident(&'src str),
+	Num(&'src str),
+	Str(StrLit<'src>),
 }
-impl<'a> TokenTree<'a> {
+impl<'src> TokenTree<'src> {
 	pub fn get_ident(&self) -> Option<&str> {
 		match *self {
 			TokenTree::Ident(ident) => Some(ident),
@@ -271,15 +271,17 @@ impl<'a> TokenTree<'a> {
 
 /// A `TokenTree` with meta-data
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenTreeMeta<'a> {
-	pub tt: TokenTree<'a>,
-	pub pos: SrcPos<'a>,
+pub struct TokenTreeMeta<'src> {
+	pub tt: TokenTree<'src>,
+	pub pos: SrcPos<'src>,
 }
-impl<'a> TokenTreeMeta<'a> {
+impl<'src> TokenTreeMeta<'src> {
 	/// Construct a new `TokenTreeMeta` from a `TokenTree` and a source position
-	pub fn new(tt: TokenTree<'a>, pos: SrcPos<'a>) -> Self { TokenTreeMeta{ tt: tt, pos: pos } }
+	pub fn new(tt: TokenTree<'src>, pos: SrcPos<'src>) -> Self {
+		TokenTreeMeta{ tt: tt, pos: pos }
+	}
 
-	pub fn new_list(tts: Vec<TokenTreeMeta<'a>>, pos: SrcPos<'a>) -> Self {
+	pub fn new_list(tts: Vec<TokenTreeMeta<'src>>, pos: SrcPos<'src>) -> Self {
 		TokenTreeMeta{ tt: TokenTree::List(tts), pos: pos }
 	}
 
@@ -291,7 +293,9 @@ impl<'a> TokenTreeMeta<'a> {
 	}
 
 	/// Construct a new `TokenTreeMeta` from a token with a position, and the tokens following
-	fn from_token((token, mut pos): (Token<'a>, SrcPos<'a>), nexts: &mut Tokens<'a>) -> Self {
+	fn from_token((token, mut pos): (Token<'src>, SrcPos<'src>), nexts: &mut Tokens<'src>)
+		-> Self
+	{
 		let tt = match token {
 			Token::LParen => {
 				let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
@@ -312,7 +316,7 @@ impl<'a> TokenTreeMeta<'a> {
 		TokenTreeMeta::new(tt, pos)
 	}
 
-	pub fn add_expansion_site(&mut self, exp: &SrcPos<'a>) {
+	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
 		self.pos.add_expansion_site(exp);
 
 		if let TokenTree::List(ref mut list) = self.tt {
@@ -326,9 +330,10 @@ impl<'a> TokenTreeMeta<'a> {
 /// Construct trees from `tokens` until a lone `delim` is encountered.
 ///
 /// Returns trees and index of closing delimiter if one was supplied.
-fn tokens_to_trees_until<'a>(tokens: &mut Tokens<'a>, start_and_delim: Option<(SrcPos, &Token)>)
-	-> (Vec<TokenTreeMeta<'a>>, Option<usize>)
-{
+fn tokens_to_trees_until<'src>(
+	tokens: &mut Tokens<'src>,
+	start_and_delim: Option<(SrcPos, &Token)>
+) -> (Vec<TokenTreeMeta<'src>>, Option<usize>) {
 	let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t)))
 		.unwrap_or((None, None));
 

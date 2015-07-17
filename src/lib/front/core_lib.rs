@@ -22,25 +22,27 @@
 
 use std::iter::FromIterator;
 use std::collections::HashMap;
-use lib::Type;
+use lib::front::parse::Type;
 
-macro_rules! core_type {
+macro_rules! core_ty {
 	($constr:expr; $($args:expr),*) => {
 		Type::new_construct($constr, vec![$(Type::new_basic($args)),*])
 	}
 }
 
 lazy_static! {
-	pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type> = HashMap::from_iter(vec![
-		("+", core_type!("→"; "i64", "i64", "i64")),
-		("-", core_type!("→"; "i64", "i64", "i64")),
-		("*", core_type!("→"; "i64", "i64", "i64")),
-		("/", core_type!("→"; "i64", "i64", "i64")),
-		("=", core_type!("→"; "i64", "i64", "bool")),
-		("<", core_type!("→"; "i64", "i64", "bool")),
-		(">", core_type!("→"; "i64", "i64", "bool")),
-		("true", Type::new_basic("bool")),
-		("false", Type::new_basic("bool")),
-		("println!", Type::new_fn(vec![Type::new_basic("&str"), Type::new_poly("T")], Type::new_nil())),
-	]);
+pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type<'static>> = HashMap::from_iter(vec![
+	("+", core_ty!("proc"; "i64", "i64", "i64")),
+	("-", core_ty!("proc"; "i64", "i64", "i64")),
+	("*", core_ty!("proc"; "i64", "i64", "i64")),
+	("/", core_ty!("proc"; "i64", "i64", "i64")),
+	("=", core_ty!("proc"; "i64", "i64", "bool")),
+	("<", core_ty!("proc"; "i64", "i64", "bool")),
+	(">", core_ty!("proc"; "i64", "i64", "bool")),
+	("true", Type::new_basic("bool")),
+	("false", Type::new_basic("bool")),
+	("println!", Type::new_proc(
+		vec![Type::new_basic("&str"), Type::new_poly("T")],
+		Type::new_nil())),
+]);
 }

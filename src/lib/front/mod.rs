@@ -23,5 +23,5 @@
 pub mod lex;
 pub mod macro_;
 pub mod parse;
-// mod inference;
-// pub mod core_lib;
+mod inference;
+pub mod core_lib;
