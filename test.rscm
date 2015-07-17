@@ -8,18 +8,31 @@
 ;  (((xs ...) (ys ...)) (list (pair xs ys) ...)))
 ;(zip (1 2 3) (a b c)) ; (list (pair 1 a) (pair 2 b) (pair 3 c))
 
-(def-macro operation-all ()
-    ((op-name op)
-     (def-macro op-name ()
-        ((name x)
-         (def-macro name ()
-            ((ys (... (... ...))) (list (op x ys) (... (... ...)))))))))
+; (def-macro operation-all ()
+;     ((op-name op)
+;      (def-macro op-name ()
+;         ((name x)
+;          (def-macro name ()
+;             ((ys (... (... ...))) (list (op x ys) (... (... ...)))))))))
 
-(operation-all multiply-all *)
-(operation-all add-all +)
+; (operation-all multiply-all *)
+; (operation-all add-all +)
 
-(multiply-all quadruple-all 4)
-(add-all inc-all 1)
+; (multiply-all quadruple-all 4)
+; (add-all inc-all 1)
 
-(quadruple-all 1 2 3)
-(inc-all 1 2 3)
+; Macros
+
+(def-macro define ()
+    (((proc params ...) body)
+     (def-const proc (lambda (params ...) body)))
+    (((proc params ...) body ...)
+     (define (proc params ...) (block body ...)))
+    ((const val)
+     (def-const const val))
+    ((const vals ...)
+     (def-const const (begin vals ...))))
+
+(define (main)
+    (+ 1 2)
+    (- 3 6))
