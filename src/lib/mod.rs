@@ -23,12 +23,11 @@
 pub use self::compiler_messages::src_warning_print;
 pub use self::front::lex::token_trees_from_src;
 pub use self::front::macro_::expand_macros;
-// pub use self::back::compile;
 pub use self::collections::ScopeStack;
 
 #[macro_use]
 pub mod compiler_messages;
 pub mod front;
 pub mod middle;
-// pub mod back;
+pub mod back;
 pub mod collections;

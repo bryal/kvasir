@@ -92,21 +92,19 @@ use std::path::PathBuf;
 
 use lib::{ token_trees_from_src, expand_macros };
 use lib::front::parse;
-// use lib::compile;
-
 
 mod lib;
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 const BIN_EXTENSION: &'static str = "bin";
 #[cfg(windows)]
 const BIN_EXTENSION: &'static str = "exe";
 
-bitflags! {
-	flags Emit: u16 {
-		const EMIT_RUST = 1,
-	}
-}
+// bitflags! {
+// 	flags Emit: u16 {
+// 		const EMIT_RUST = 1,
+// 	}
+// }
 
 fn print_usage(program: &str, opts: Options) {
 	let brief = format!("Usage: {} [options] SOURCE-FILE", program);
@@ -119,10 +117,6 @@ fn main() {
 
 	let mut opts = Options::new();
 	opts.optopt("o", "out-file", "Set output file name", "NAME");
-	opts.optopt("", "sysroot", "Specify sysroot for when looking for rust libs, \
-		e.g. /usr/local/ or C:/Program Files/Rust/. \
-		Do this when rustc complains about missing crates", "DIR");
-	opts.optflag("", "emit-rust", "Emit transpiled rust code");
 	opts.optflag("h", "help", "Print this help menu");
 
 	let matches = match opts.parse(&args[1..]) {
@@ -150,14 +144,13 @@ fn main() {
 			o
 		}
 	};
-	let sysroot = matches.opt_str("sysroot").map(|s| PathBuf::from(s));
 
-	let mut emissions = Emit::empty();
-	for emission in [(EMIT_RUST, matches.opt_present("emit-rust"))].iter()
-		.filter_map(|&(e, b)| if b { Some(e) } else { None })
-	{
-		emissions.insert(emission);
-	}
+	// let mut emissions = Emit::empty();
+	// for emission in [(EMIT_RUST, matches.opt_present("emit-rust"))].iter()
+	// 	.filter_map(|&(e, b)| if b { Some(e) } else { None })
+	// {
+	// 	emissions.insert(emission);
+	// }
 
 	println!("    Compiling {}", canonicalize(inp_file_name.as_path()).unwrap().to_string_lossy());
 
@@ -180,6 +173,4 @@ fn main() {
 
 	ast.infer_types();
 	println!("AST INFERED:\n{:#?}\n", ast);
-
-	// compile(&ast, out_file_name, sysroot, emissions);
 }
