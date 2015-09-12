@@ -51,13 +51,14 @@ impl<'src> SrcPos<'src> {
 	}
 
 	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
-		if let Some(ref mut self_exp) = self.in_expansion {
+		if self.in_expansion.is_some() {
+		// if let Some(ref mut self_exp) = self.in_expansion {
 			// Not sure whether this should be an error
 			// panic!("Internal Compiler Error: add_expansion_site: \
 			//         Tried to add expansion site `{:?}` to pos `{:?}`",
-			//	exp,
-			//	self);
-			self_exp.add_expansion_site(exp);
+			// 	exp,
+			// 	self);
+			// self_exp.add_expansion_site(exp);
 		} else {
 			self.in_expansion = Some(Box::new(exp.clone()));
 		}

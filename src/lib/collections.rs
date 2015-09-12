@@ -159,8 +159,8 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 	// TODO: `action` could probably take `&mut Self`
 	/// If item is already `None`, do nothing and return false.
-	pub fn do_for_item_at_height<Q: ?Sized, F>(&mut self, key: &Q, height: usize, action: F)
-		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(&mut Self, &mut V)
+	pub fn do_for_item_at_height<Q: ?Sized, R, F>(&mut self, key: &Q, height: usize, action: F) -> R
+		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(&mut Self, &mut V) -> R
 	{
 		let mut item = match self.get_at_height_mut(key, height) {
 			Some(item) => replace(item, None)
@@ -170,11 +170,13 @@ impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 
 		let above = self.split_from(height + 1);
 
-		action(self, &mut item);
+		let result = action(self, &mut item);
 
 		*self.get_at_height_mut(key, height).unwrap() = Some(item);
 
 		self.extend(above);
+
+		result
 	}
 }
 impl<K: fmt::Debug + Hash + Eq, V: fmt::Debug> fmt::Debug for ScopeStack<K, V> {

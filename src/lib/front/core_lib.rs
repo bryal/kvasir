@@ -26,23 +26,18 @@ use lib::front::parse::Type;
 
 macro_rules! core_ty {
 	($constr:expr; $($args:expr),*) => {
-		Type::new_construct($constr, vec![$(Type::new_basic($args)),*])
+		Type::Construct($constr, vec![$(Type::Basic($args)),*])
 	}
 }
 
 lazy_static! {
 pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type<'static>> = HashMap::from_iter(vec![
-	("+", core_ty!("proc"; "i64", "i64", "i64")),
-	("-", core_ty!("proc"; "i64", "i64", "i64")),
-	("*", core_ty!("proc"; "i64", "i64", "i64")),
-	("/", core_ty!("proc"; "i64", "i64", "i64")),
-	("=", core_ty!("proc"; "i64", "i64", "bool")),
-	("<", core_ty!("proc"; "i64", "i64", "bool")),
-	(">", core_ty!("proc"; "i64", "i64", "bool")),
-	("true", Type::new_basic("bool")),
-	("false", Type::new_basic("bool")),
-	("println!", Type::new_proc(
-		vec![Type::new_basic("&str"), Type::new_poly("T")],
-		Type::new_nil())),
+	("+", core_ty!("proc"; "Int64", "Int64", "Int64")),
+	("-", core_ty!("proc"; "Int64", "Int64", "Int64")),
+	("*", core_ty!("proc"; "Int64", "Int64", "Int64")),
+	("/", core_ty!("proc"; "Int64", "Int64", "Int64")),
+	("=", core_ty!("proc"; "Int64", "Int64", "Bool")),
+	("<", core_ty!("proc"; "Int64", "Int64", "Bool")),
+	(">", core_ty!("proc"; "Int64", "Int64", "Bool")),
 ]);
 }

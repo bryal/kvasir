@@ -25,64 +25,50 @@
 
 use std::collections::HashMap;
 use std::borrow::Cow;
+use std::fmt;
 
 use super::lex::{ StrLit, TokenTree, TokenTreeMeta, SrcPos };
 
-// NOTE: A Symbol should be a wrapper around a static string reference, where
-//       reference equality would imply value equality
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<'src> {
 	Unknown,
-	Symbol,
 	Basic(&'src str),
 	Construct(&'src str, Vec<Type<'src>>),
-	Poly(Cow<'src, str>),
 }
 /// The tuple has the type constructor `*`, as it is a
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
 impl<'src> Type<'src> {
-	pub fn new_basic(t: &'src str) -> Self { Type::Basic(t) }
-	pub fn new_construct(constructor: &'src str, args: Vec<Type<'src>>) -> Self {
-		Type::Construct(constructor, args)
-	}
-	pub fn new_poly<S: Into<Cow<'src, str>>>(t: S) -> Self { Type::Poly(t.into()) }
-	pub fn new_tuple(args: Vec<Type<'src>>) -> Self { Type::new_construct("*", args) }
-	pub fn new_nil() -> Self { Type::new_tuple(vec![]) }
+	pub fn new_tuple(args: Vec<Type<'src>>) -> Self { Type::Construct("Tuple", args) }
 	pub fn new_proc(mut arg_tys: Vec<Type<'src>>, return_ty: Type<'src>) -> Self {
 		arg_tys.push(return_ty);
 		Type::Construct("proc", arg_tys)
 	}
-
-	pub fn is_unknown(&self) -> bool {
-		match self {
-			&Type::Unknown => true,
-			_ => false
-		}
-	}
-	// TODO: Remake into something like `is_known`, include partial constructors etc.
-	pub fn is_partially_known(&self) -> bool {
-		!self.is_unknown()
-	}
-	pub fn is_poly(&self) -> bool {
-		match self {
-			&Type::Poly(_) => true,
-			_ => false
-		}
-	}
+	pub fn nil() -> Self { Type::Basic("Nil") }
 
 	pub fn parse(ttm: &TokenTreeMeta<'src>) -> Type<'src> {
 		match ttm.tt {
 			TokenTree::List(ref construct) if ! construct.is_empty() => match construct[0].tt {
-				TokenTree::Ident(constructor) => Type::new_construct(
+				TokenTree::Ident(constructor) => Type::Construct(
 					constructor,
-					construct.tail().iter().map(Type::parse).collect()),
+					construct[1..].iter().map(Type::parse).collect()),
 				_ => src_error_panic!(&construct[0].pos, "Invalid type constructor"),
 			},
-			TokenTree::List(_) => Type::new_nil(),
-			TokenTree::Ident(basic) => Type::new_basic(basic),
+			TokenTree::List(_) => Type::nil(),
+			TokenTree::Ident(basic) => Type::Basic(basic),
 			TokenTree::Num(num) => src_error_panic!(&ttm.pos, "Expected type"),
 			TokenTree::Str(s) => src_error_panic!(&ttm.pos, "Expected type"),
+		}
+	}
+}
+impl<'src> fmt::Display for Type<'src> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			Type::Unknown => write!(f, "_"),
+			Type::Basic(basic) => write!(f, "{}", basic),
+			Type::Construct(constructor, ref args) => write!(f, "({} {})",
+				constructor,
+				args.iter().fold(String::new(), |acc, arg| format!("{} {}", acc, arg))),
 		}
 	}
 }
@@ -91,7 +77,7 @@ impl<'src> Type<'src> {
 pub struct TypedBinding<'src> {
 	pub ident: &'src str,
 	pub typ: Type<'src>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 impl<'src> TypedBinding<'src> {
 	fn parse(ttm: &TokenTreeMeta<'src>) -> Self {
@@ -122,7 +108,7 @@ impl<'src> TypedBinding<'src> {
 pub struct Path<'src> {
 	parts: Vec<&'src str>,
 	is_absolute: bool,
-	pos: SrcPos<'src>
+	pub pos: SrcPos<'src>
 }
 impl<'src> Path<'src> {
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
@@ -199,18 +185,18 @@ impl<'src> PartialEq<str> for Path<'src> {
 /// `(lvl1::lvl2 (lvl2a lvl3a lvl3b) lvl2b)` == `use lvl1::lvl2::{ lvl2a::{ lvl3a, lvl3b}, lvl2b }`
 fn parse_compound_path<'src>(ttm: &TokenTreeMeta<'src>) -> Vec<Path<'src>> {
 	match ttm.tt {
-		TokenTree::List(ref compound) if ! compound.is_empty() => {
-			let head = Path::parse(&compound[0]);
-			compound.tail()
-				.iter()
+		TokenTree::List(ref compound) => if let Some((chead, tail)) = compound.split_first() {
+			let path_head = Path::parse(chead);
+			tail.iter()
 				.map(parse_compound_path)
 				.flat_map(|v| v)
-				.map(|sub| head.clone()
+				.map(|sub| path_head.clone()
 					.concat(&sub)
 					.unwrap_or_else(|_| src_error_panic!(&sub.pos, "Sub-path is absolute")))
 				.collect()
+		} else {
+			src_error_panic!(&ttm.pos, "Empty path compound")
 		},
-		TokenTree::List(_) => src_error_panic!(&ttm.pos, "Empty path compound"),
 		TokenTree::Ident(ident) => vec![Path::from_str(ident, ttm.pos.clone())],
 		TokenTree::Num(_) | TokenTree::Str(_) => src_error_panic!(&ttm.pos, "Expected path"),
 	}
@@ -219,7 +205,7 @@ fn parse_compound_path<'src>(ttm: &TokenTreeMeta<'src>) -> Vec<Path<'src>> {
 #[derive(Clone, Debug)]
 pub struct Use<'src> {
 	pub paths: Vec<Path<'src>>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 impl<'src> Use<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Use<'src> {
@@ -253,7 +239,7 @@ fn parse_definition<'src>(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>)
 pub struct SExpr<'src> {
 	pub proced: ExprMeta<'src>,
 	pub args: Vec<ExprMeta<'src>>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 impl<'src> SExpr<'src> {
 	fn parse(proc_ttm: &TokenTreeMeta<'src>, args_tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>)
@@ -272,7 +258,7 @@ pub struct Block<'src> {
 	pub uses: Vec<Use<'src>>,
 	pub const_defs: HashMap<&'src str, ConstDef<'src>>,
 	pub exprs: Vec<ExprMeta<'src>>,
-	pos: SrcPos<'src>
+	pub pos: SrcPos<'src>
 }
 impl<'src> Block<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Self {
@@ -290,7 +276,7 @@ impl<'src> Block<'src> {
 pub struct Cond<'src> {
 	pub clauses: Vec<(ExprMeta<'src>, ExprMeta<'src>)>,
 	pub else_clause: Option<ExprMeta<'src>>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 impl<'src> Cond<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Self {
@@ -341,7 +327,7 @@ impl<'src> Cond<'src> {
 pub struct Lambda<'src> {
 	pub params: Vec<TypedBinding<'src>>,
 	pub body: ExprMeta<'src>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 impl<'src> Lambda<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Self {
@@ -366,14 +352,14 @@ pub struct VarDef<'src> {
 	pub binding: TypedBinding<'src>,
 	pub mutable: bool,
 	pub body: ExprMeta<'src>,
-	pos: SrcPos<'src>
+	pub pos: SrcPos<'src>
 }
 
 #[derive(Clone, Debug)]
 pub struct Assign<'src> {
 	pub lvalue: &'src str,
 	pub rvalue: ExprMeta<'src>,
-	pos: SrcPos<'src>,
+	pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
@@ -414,11 +400,9 @@ impl<'src> Expr<'src> {
 	fn parse_quoted(ttm: &TokenTreeMeta<'src>) -> Self {
 		match ttm.tt {
 			TokenTree::List(ref list) => Expr::SExpr(SExpr{
-				proced: ExprMeta::new(
-					Expr::Binding(Path::from_str("list", ttm.pos.clone())),
-					Type::Unknown),
+				proced: ExprMeta::new(Expr::Binding(Path::from_str("list", ttm.pos.clone()))),
 				args: list.iter()
-					.map(|li| ExprMeta::new(Expr::parse_quoted(li), Type::Unknown))
+					.map(|li| ExprMeta::new(Expr::parse_quoted(li)))
 					.collect(),
 				pos: ttm.pos.clone(),
 			}),
@@ -429,19 +413,25 @@ impl<'src> Expr<'src> {
 	}
 	pub fn parse(ttm: &TokenTreeMeta<'src>) -> Self {
 		match ttm.tt {
-			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].tt {
-				TokenTree::Ident("quote") if sexpr.len() == 2 => Expr::parse_quoted(&sexpr[1]),
-				TokenTree::Ident("quote") => src_error_panic!(
-					&ttm.pos,
-					format!("Arity mismatch. Expected 1, found {}", sexpr.len())),
-				TokenTree::Ident("cond") => Expr::Cond(Cond::parse(sexpr.tail(), ttm.pos.clone())),
-				TokenTree::Ident("lambda") =>
-					Expr::Lambda(Lambda::parse(sexpr.tail(), ttm.pos.clone())),
-				TokenTree::Ident("block") =>
-					Expr::Block(Block::parse(sexpr.tail(), ttm.pos.clone())),
-				_ => Expr::SExpr(SExpr::parse(&sexpr[0], sexpr.tail(), ttm.pos.clone())),
+			TokenTree::List(ref sexpr) => if let Some((head, tail)) = sexpr.split_first() {
+				match head.tt {
+					TokenTree::Ident("quote") => if let Some(to_quote) = tail.first() {
+						Expr::parse_quoted(to_quote)
+					} else {
+						src_error_panic!(
+							&ttm.pos,
+							format!("Arity mismatch. Expected 1, found {}", sexpr.len()))
+					},
+					TokenTree::Ident("cond") => Expr::Cond(Cond::parse(tail, ttm.pos.clone())),
+					TokenTree::Ident("lambda") =>
+						Expr::Lambda(Lambda::parse(tail, ttm.pos.clone())),
+					TokenTree::Ident("block") =>
+						Expr::Block(Block::parse(tail, ttm.pos.clone())),
+					_ => Expr::SExpr(SExpr::parse(&sexpr[0], tail, ttm.pos.clone())),
+				}
+			} else {
+				Expr::Nil(ttm.pos.clone())
 			},
-			TokenTree::List(_) => Expr::Nil(ttm.pos.clone()),
 			TokenTree::Ident("true") => Expr::Bool(true, ttm.pos.clone()),
 			TokenTree::Ident("false") => Expr::Bool(false, ttm.pos.clone()),
 			TokenTree::Ident(path) => Expr::Binding(Path::parse(ttm)),
@@ -456,24 +446,34 @@ impl<'src> Expr<'src> {
 pub struct ExprMeta<'src> {
 	pub val: Box<Expr<'src>>,
 	pub typ: Type<'src>,
+	pub ty_ascription: Option<(Type<'src>, SrcPos<'src>)>,
 }
 impl<'src> ExprMeta<'src> {
-	pub fn new(value: Expr<'src>, typ: Type<'src>) -> Self {
-		ExprMeta{ val: Box::new(value), typ: typ }
+	pub fn new(value: Expr<'src>) -> Self {
+		ExprMeta{ val: Box::new(value), typ: Type::Unknown, ty_ascription: None }
 	}
 
-	fn pos(&self) -> &SrcPos<'src> { self.val.pos() }
+	pub fn new_type_ascripted(value: Expr<'src>, typ: Type<'src>, pos: SrcPos<'src>) -> Self {
+		ExprMeta{ val: Box::new(value), typ: Type::Unknown, ty_ascription: Some((typ, pos)) }
+	}
+
+	pub fn pos(&self) -> &SrcPos<'src> {
+		self.ty_ascription.as_ref().map(|&(_, ref pos)| pos).unwrap_or(self.val.pos())
+	}
 
 	pub fn parse(ttm: &TokenTreeMeta<'src>) -> Self {
 		match ttm.tt {
 			// Check for type ascription around expression, e.g. `(:F64 12)`
 			TokenTree::List(ref sexpr) if sexpr.len() == 3 && sexpr[0].tt == TokenTree::Ident(":")
-				=> ExprMeta::new(Expr::parse(&sexpr[2]), Type::parse(&sexpr[1])),
+				=> ExprMeta::new_type_ascripted(
+					Expr::parse(&sexpr[2]),
+					Type::parse(&sexpr[1]),
+					ttm.pos.clone()),
 			TokenTree::List(ref sexpr) if sexpr.len() > 0 && sexpr[0].tt == TokenTree::Ident(":")
 				=> src_error_panic!(
 					&ttm.pos,
 					format!("Arity mismatch. Expected 2, found {}", sexpr.len() - 1)),
-			_ => ExprMeta::new(Expr::parse(ttm), Type::Unknown)
+			_ => ExprMeta::new(Expr::parse(ttm))
 		}
 	}
 }
@@ -487,9 +487,9 @@ fn parse_items<'src>(tts: &[TokenTreeMeta<'src>])
 	for ttm in tts {
 		match ttm.tt {
 			TokenTree::List(ref sexpr) if ! sexpr.is_empty() => match sexpr[0].tt {
-				TokenTree::Ident("use") => uses.push(Use::parse(sexpr.tail(), ttm.pos.clone())),
+				TokenTree::Ident("use") => uses.push(Use::parse(&sexpr[1..], ttm.pos.clone())),
 				TokenTree::Ident("def-const") => {
-					let (ident, body) = parse_definition(sexpr.tail(), ttm.pos.clone());
+					let (ident, body) = parse_definition(&sexpr[1..], ttm.pos.clone());
 
 					if const_defs.insert(ident, ConstDef{ body: body, pos: ttm.pos.clone() })
 						.is_some()

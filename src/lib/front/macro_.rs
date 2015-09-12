@@ -369,24 +369,27 @@ impl<'src> TokenTreeMeta<'src> {
 	/// Returns `None` if expansion resulted in nothing, or token tree was a macro definition
 	fn expand_macros(&self, macros: &mut Macros<'src>) -> Option<TokenTreeMeta<'src>> {
 		match self.tt {
-			TokenTree::List(ref l) if l.is_empty() => Some(self.clone()),
-			TokenTree::List(ref sexpr) => match sexpr[0].tt {
-				TokenTree::Ident("quote") => Some(self.clone()),
-				TokenTree::Ident("def-macro") => {
-					define_macro(sexpr.tail(), &self.pos, macros);
-					None
-				},
-				TokenTree::Ident(macro_name) if macros.contains_key(macro_name) => {
-					// The s-expression is a macro call
-					let macro_rules = macros[macro_name].clone();
+			TokenTree::List(ref sexpr) => if let Some((head, tail)) = sexpr.split_first() {
+				match head.tt {
+					TokenTree::Ident("quote") => Some(self.clone()),
+					TokenTree::Ident("def-macro") => {
+						define_macro(tail, &self.pos, macros);
+						None
+					},
+					TokenTree::Ident(macro_name) if macros.contains_key(macro_name) => {
+						// The s-expression is a macro call
+						let macro_rules = macros[macro_name].clone();
 
-					macro_rules.apply_to(sexpr.tail(), &self.pos, macros)
-				},
-				_ => Some(TokenTreeMeta::new_list(
-					sexpr.iter()
-						.filter_map(|arg| arg.expand_macros(macros))
-						.collect(),
-					self.pos.clone())),
+						macro_rules.apply_to(tail, &self.pos, macros)
+					},
+					_ => Some(TokenTreeMeta::new_list(
+						sexpr.iter()
+							.filter_map(|arg| arg.expand_macros(macros))
+							.collect(),
+						self.pos.clone())),
+				}
+			} else {
+				Some(self.clone())
 			},
 			_ => Some(self.clone()),
 		}

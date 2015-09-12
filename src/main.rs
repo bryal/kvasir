@@ -22,7 +22,7 @@
 
 //! Rust and Scheme inspired implementation of LISP
 //!
-//! # Envisioned syntax⊢
+//! # Envisioned syntax
 //! ```scheme
 //! ; Types are static and can be annotated with `(:TYPE EXPR)` or inferred, similar to Rust.
 //!
@@ -74,8 +74,18 @@
 //           (list of Syntax "foo" 'bar 42))
 //       =>
 //           (list (Syntax\String "foo") (Syntax\Symbol 'bar) (Syntax\Number 42))
+// TODO: Allocation should be handled through third-party function, like jemalloc, libc malloc
+// TODO: Specify allocator with cfg flag. This allows for linking with libs using different allocators
+// TODO: Slice representation? Pointer to len and data is probably easiest.
+//       Slice of `T`s with len N: `| len: usize | data: N * sizeof(T) |`
 
-#![feature(non_ascii_idents, box_patterns, map_in_place, drain, split_off, slice_extras, fs_canonicalize)]
+#![feature(
+	non_ascii_idents,
+	box_patterns,
+	drain,
+	split_off,
+	fs_canonicalize,
+	slice_splits)]
 
 #[macro_use]
 extern crate lazy_static;
