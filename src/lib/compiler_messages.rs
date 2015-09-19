@@ -122,7 +122,7 @@ pub fn src_warning_print<'a, S: Display>(pos: &SrcPos<'a>, msg: S) {
 	println!("{}", msg);
 	println!("{}: {}", row, line);
 	t.fg(term::color::BRIGHT_YELLOW).unwrap();
-	println!("{}^{}",
+	println!("{}^{}\n",
 		::std::iter::repeat(' ').take(col + (row as f32).log10() as usize + 3)
 			.collect::<String>(),
 		::std::iter::repeat('~')

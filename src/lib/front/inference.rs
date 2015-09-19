@@ -31,7 +31,6 @@
 //       Maybe encapsulate this using some kind of State object
 // TODO: Add field on things to keep track of whether inference has happened
 
-use lib::compiler_messages::*;
 use lib::front::parse::*;
 use lib::collections::ScopeStack;
 use super::core_lib::CORE_CONSTS_TYPES;
@@ -65,22 +64,6 @@ impl<'src> Type<'src> {
 		}
 	}
 
-	/// Recursively infer all Inferred to the `to` type.
-	/// If types are different and not inferrable, panic.
-	fn infer_to(&self, to: &Type<'src>) -> Self {
-		match (self, to) {
-			(_, _) if self == to => self.clone(),
-			(&Type::Unknown, _) => to.clone(),
-			(&Type::Construct(ref s1, ref as1), &Type::Construct(ref s2, ref as2)) if s1 == s2 =>
-				Type::Construct(
-					s1.clone(),
-					as1.iter()
-						.zip(as2.iter())
-						.map(|(a1, a2)| a1.infer_to(a2)).collect()),
-			_ => panic!("Type::infer_to: Can't infer {:?} to {:?}", self, to),
-		}
-	}
-
 	/// Recursively infer all `Unknown` by the `by` type.
 	/// If types are incompatible, e.g. `(Vec Inferred)` v. `(Option Int32)`, return `None`
 	fn infer_by(&self, by: &Self) -> Option<Self> {
@@ -100,43 +83,19 @@ impl<'src> Type<'src> {
 }
 
 impl<'src> ConstDef<'src> {
-	fn get_type(&self) -> &Type<'src> {
-		&self.body.typ
-	}
-
 	fn infer_types(&mut self,
 		expected_ty: &Type<'src>,
 		var_types: &mut Vec<TypedBinding<'src>>,
 		const_defs: &mut ConstDefs<'src>
 	) -> Type<'src> {
-		match self.body.infer_types(expected_ty, var_types, const_defs) {
-			Ok(ty) => ty,
-			Err(found_ty) => src_error_panic!(&self.pos,
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, found_ty))
-		}
+		self.body.infer_types(expected_ty, var_types, const_defs)
+			.unwrap_or_else(|found_ty| src_error_panic!(
+				self.body.pos(),
+				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, found_ty)))
 	}
 }
 
 impl<'src> Path<'src> {
-	/// Get the type of the item bound to by `self`. If
-	fn get_type(&self, var_types: &[TypedBinding<'src>], const_defs: &ConstDefs<'src>)
-		-> Type<'src>
-	{
-		if let Some(ident) = self.ident() {
-			if let Some(ty) = CORE_CONSTS_TYPES.get(ident) {
-				ty.clone()
-			} else if let Some((def, _)) = const_defs.get(ident) {
-				def.as_ref().map_or(Type::Unknown, |e| e.get_type().clone())
-			} else if let Some(var_stack_ty) = get_var_type(var_types, ident) {
-				var_stack_ty.clone()
-			} else {
-				src_error_panic!(&self.pos, format!("Unresolved path `{}`", ident))
-			}
-		} else {
-			panic!("Path::get_type: Not implemented for anything but simple idents")
-		}
-	}
-
 	fn infer_types(&self,
 		expected_ty: &Type<'src>,
 		var_types: &mut Vec<TypedBinding<'src>>,
@@ -233,7 +192,12 @@ impl<'src> SExpr<'src> {
 			self.args.iter().map(|tb| tb.typ.clone()).collect(),
 			expected_ty.clone());
 
-		self.proced.infer_types(&expected_proc_type, var_types, const_defs);
+		if let Err(err_ty) = self.proced.infer_types(&expected_proc_type, var_types, const_defs) {
+			src_error_panic!(
+				self.proced.pos(),
+				format!("Type mismatch. Expected `{}`, found `{}`", expected_proc_type, err_ty));
+		}
+		
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
@@ -243,16 +207,12 @@ impl<'src> SExpr<'src> {
 			// there's no new data to help with infence
 			self.infer_arg_types(var_types, const_defs);
 		}
-		
-		unpack_proc_typ(&self.proced.typ).unwrap().1
+
+		self.body_type()
 	}
 }
 
 impl<'src> Block<'src> {
-	fn get_type(&self) -> &Type<'src> {
-		&self.exprs.last().expect("Block::get_type: No expressions in block").typ
-	}
-
 	fn infer_types(&mut self,
 		expected_ty: &Type<'src>,
 		var_types: &mut Vec<TypedBinding<'src>>,
@@ -285,7 +245,11 @@ impl<'src> Block<'src> {
 				expr.infer_types(&Type::Unknown, var_types, &mut const_defs).unwrap();
 			}
 		}
-		last.infer_types(expected_ty, var_types, &mut const_defs);
+
+		last.infer_types(expected_ty, var_types, &mut const_defs)
+			.unwrap_or_else(|err_ty| src_error_panic!(
+				last.pos(), 
+				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, err_ty)));
 
 		let mut block_defined_vars = var_types.split_off(old_vars_len).into_iter();
 
@@ -296,23 +260,24 @@ impl<'src> Block<'src> {
 				var_def.infer_types(var_types, &mut const_defs);
 				var_types.push(block_defined_vars.next().unwrap());
 			} else {
-				expr.infer_types(&Type::Unknown, var_types, &mut const_defs);
+				expr.infer_types(&Type::Unknown, var_types, &mut const_defs)
+					.unwrap_or_else(|err_ty| src_error_panic!(
+						expr.pos(), 
+						format!("Type mismatch. Expected `{}`, found `{}`",
+							Type::Unknown,
+							err_ty)));
 			}
 		}
-		last.infer_types(expected_ty, var_types, &mut const_defs);
+		last.infer_types(expected_ty, var_types, &mut const_defs)
+			.unwrap_or_else(|err_ty| src_error_panic!(
+				last.pos(), 
+				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, err_ty)));
 
 		last.typ.clone()
 	}
 }
 
 impl<'src> Cond<'src> {
-	fn get_type<'t>(&'t self) -> &'t Type<'src> {
-		match self.iter_consequences().map(|c| &c.typ).find(|ty| ty.is_partially_known()) {
-			Some(found) => found,
-			None => &self.iter_consequences().next().unwrap().typ
-		}
-	}
-
 	fn infer_types(&mut self,
 		expected_type: &Type<'src>,
 		var_types: &mut Vec<TypedBinding<'src>>,
@@ -323,11 +288,17 @@ impl<'src> Cond<'src> {
 			let mut found_type = None;
 
 			for predicate in self.iter_predicates_mut() {
-				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs);
+				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
+					.unwrap_or_else(|err_ty| src_error_panic!(
+						predicate.pos(), 
+						format!("Type mismatch. Expected `{}`, found `{}`", Type::Basic("bool"), err_ty)));
 			}
 			for consequence in self.iter_consequences_mut() {
 				if consequence.typ.is_partially_known() || {
-					consequence.infer_types(&Type::Unknown, var_types, const_defs);
+					consequence.infer_types(&Type::Unknown, var_types, const_defs)
+						.unwrap_or_else(|err_ty| src_error_panic!(
+							consequence.pos(), 
+							format!("Type mismatch. Expected `{}`, found `{}`", Type::Unknown, err_ty)));
 					consequence.typ.is_partially_known()
 				} {
 					found_type = Some(consequence.typ.clone());
@@ -341,8 +312,14 @@ impl<'src> Cond<'src> {
 			}
 		} else {
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs);
-				consequence.infer_types(expected_type, var_types, const_defs);
+				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
+					.unwrap_or_else(|err_ty| src_error_panic!(
+						predicate.pos(), 
+						format!("Type mismatch. Expected `{}`, found `{}`", Type::Basic("bool"), err_ty)));
+				consequence.infer_types(expected_type, var_types, const_defs)
+					.unwrap_or_else(|err_ty| src_error_panic!(
+						consequence.pos(), 
+						format!("Type mismatch. Expected `{}`, found `{}`", expected_type, err_ty)));
 			}
 			match self.else_clause {
 				Some(ref mut else_clause) =>
@@ -390,23 +367,9 @@ impl<'src> Lambda<'src> {
 
 		// Own type is `Unknown` if no type has been infered yet, or none was inferable
 
-		if self.body.typ.is_partially_known()
-			|| self.params.iter().all(|tb| tb.typ.is_partially_known())
-		{
-			// Not unknown. Only infer further if expected_ty provides something new
-
-			if let Some((infered_params, infered_body)) = self.params.iter()
-				.zip(expected_params.iter())
-				.map(|(param_tb, expected)| param_tb.typ.infer_by(expected))
-				.collect::<Option<Vec<_>>>()
-				.and_then(|infered_params| self.body.typ.infer_by(expected_body)
-					.map(|infered_body| (infered_params, infered_body)))
-			{
-				if self.body.typ == infered_body
-					&& self.params.iter()
-						.zip(infered_params)
-						.all(|(param, infered_param)| param.typ == infered_param)
-				{
+		if self.get_type().is_partially_known() {
+			if let Some(infered) = expected_ty.infer_by(&self.get_type()) {
+				if self.get_type() == infered {
 					// Own type can't be infered further by `expected_ty`
 					return Ok(self.get_type());
 				}
@@ -422,7 +385,10 @@ impl<'src> Lambda<'src> {
 
 		var_types.extend(self.params.clone());
 
-		self.body.infer_types(&expected_body, var_types, const_defs);
+		self.body.infer_types(&expected_body, var_types, const_defs)
+			.unwrap_or_else(|err_ty| src_error_panic!(
+				self.body.pos(),
+				format!("Type mismatch. Expected `{}`, found `{}`", expected_body, err_ty)));
 
 		assert_eq!(var_types.len(), vars_len + n_params);
 
@@ -465,7 +431,7 @@ impl<'src> Expr<'src> {
 				Err(Type::nil())
 			},
 			Expr::Assign(_) => expected_ty.infer_by(&Type::nil()).ok_or(Type::nil()),
-			Expr::NumLit(_, ref pos) => match *expected_ty {
+			Expr::NumLit(_, _) => match *expected_ty {
 				Type::Unknown
 					| Type::Basic("Int8") | Type::Basic("UInt8")
 					| Type::Basic("Int16") | Type::Basic("UInt16")
@@ -502,7 +468,6 @@ impl<'src> ExprMeta<'src> {
 		const_defs: &mut ConstDefs<'src>
 	) -> Result<Type<'src>, Type<'src>> {
 		// Own type is `Unknown` if no type has been infered yet, or none was inferable
-
 		if self.typ.is_partially_known() {
 			if let Some(infered) = expected_ty.infer_by(&self.typ) {
 				if self.typ == infered {
@@ -516,7 +481,7 @@ impl<'src> ExprMeta<'src> {
 		}
 		// Own type is unknown, or `expected_ty` is more known than own type
 
-		// Fill in the gaps of `expect_ty` using own type ascription, if any
+		// Fill in the gaps of `expected_ty` using own type ascription, if any
 		let expected_ty = if let Some(ref ty_ascription) = self.ty_ascription {
 			match expected_ty.infer_by(&ty_ascription.0) {
 				Some(infered) => infered,
@@ -525,11 +490,10 @@ impl<'src> ExprMeta<'src> {
 		} else {
 			expected_ty.clone()
 		};
-
+	
 		let found_type = try!(self.val.infer_types(&expected_ty, var_types, const_defs));
 
 		self.typ = found_type.clone();
-
 		Ok(found_type)
 	}
 }
@@ -542,9 +506,11 @@ impl<'src> AST<'src> {
 		let mut const_defs = const_defs.map_push_local(
 			&mut self.const_defs,
 			|it| it.map(|(k, v)| (k, Some(v))),
-			|it| it.map(|(k, v)| (k, v.unwrap())));
+			|it| it.map(|(k, v)| (
+				k,
+				v.expect(&format!("AST::infer_types: const def `{}` is None", k)))));
 
-		const_defs.do_for_item_at_height("main", 0, |const_defs, main|
-			main.infer_types(&Type::nil(), &mut Vec::new(), const_defs));
+		const_defs.do_for_item_at_height("main", 0, |const_defs, main| 
+			main.infer_types(&Type::new_proc(vec![], Type::nil()), &mut Vec::new(), const_defs));
 	}
 }

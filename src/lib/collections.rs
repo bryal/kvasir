@@ -26,25 +26,38 @@ use std::hash::Hash;
 use std::mem::replace;
 use std::borrow::Borrow;
 use std::ops::{ Deref, DerefMut };
-use std::fmt;
+use std::fmt::{ self, Debug };
 
-struct BorrowGuard<'a, K: 'a + Hash + Eq, E: 'a, V: 'a, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> {
+struct BorrowGuard<
+	'a,
+	K: 'a + Hash + Eq,
+	E: 'a,
+	V: 'a,
+	ItOut: Iterator<Item=(K, E)>,
+	Fi: Fn(IntoIter<K, V>) -> ItOut>
+{
 	scope_stack: &'a mut ScopeStack<K, V>,
 	borrowed_map: &'a mut HashMap<K, E>,
 	f_inverse: Fi
 }
-impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> Drop for BorrowGuard<'a, K, E, V, ItOut, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
+	Drop for BorrowGuard<'a, K, E, V, ItOut, Fi>
+{
 	fn drop(&mut self) {
-		*self.borrowed_map = HashMap::from_iter(
-			(self.f_inverse)(self.scope_stack.pop().unwrap().into_iter())
-		)
+		let scope = self.scope_stack.pop().expect("BorrowGuard::drop: failed to pop stack");
+
+		*self.borrowed_map = (self.f_inverse)(scope.into_iter()).collect();
 	}
 }
-impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> Deref for BorrowGuard<'a, K, E, V, ItOut, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
+	Deref for BorrowGuard<'a, K, E, V, ItOut, Fi>
+{
 	type Target = ScopeStack<K, V>;
 	fn deref(&self) -> &ScopeStack<K, V> { &self.scope_stack }
 }
-impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut> DerefMut for BorrowGuard<'a, K, E, V, ItOut, Fi> {
+impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
+	DerefMut for BorrowGuard<'a, K, E, V, ItOut, Fi>
+{
 	fn deref_mut(&mut self) -> &mut ScopeStack<K, V> { self.scope_stack }
 }
 
@@ -58,8 +71,6 @@ pub struct ScopeStack<K, V>(
 );
 impl<K: Hash + Eq, V> ScopeStack<K, V> {
 	pub fn new() -> ScopeStack<K, V> { ScopeStack(Vec::new()) }
-
-	pub fn height(&self) -> usize { self.0.len() }
 
 	fn split_from(&mut self, from: usize) -> Vec<HashMap<K, V>> { self.0.split_off(from) }
 
@@ -78,26 +89,13 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		}
 	}
 
-	pub fn push_local<'a>(&'a mut self, borrowed: &'a mut HashMap<K, V>)
-		-> BorrowGuard<K, V, V, IntoIter<K, V>, fn(IntoIter<K, V>) -> IntoIter<K, V>>
-	{
-		fn identity<T>(x: T) -> T { x };
-
-		self.push(replace(borrowed, HashMap::new()));
-
-		BorrowGuard{
-			scope_stack: self,
-			borrowed_map: borrowed,
-			f_inverse: identity::<IntoIter<K, V>> as fn(IntoIter<K, V>) -> IntoIter<K, V>
-		}
-	}
-
-	/// Borrows a `HashMap<K, V>`, maps it to a `HashMap<K, E>`, then pushes it onto the stack.
+	/// Borrows a `HashMap<K, E>`, maps it to a `HashMap<K, V>`,
+	/// then pushes it onto the stack as a scope.
 	/// When the returned `BorrowGuard` goes out of scope, pop and replace back the borrowed map.
 	pub fn map_push_local<'a, E, ItIn, F, ItOut, Fi>(&'a mut self,
 		borrowed: &'a mut HashMap<K, E>,
-		f: F,
-		f_inverse: Fi
+		map_f: F,
+		map_f_inverse: Fi
 	) -> BorrowGuard<K, E, V, ItOut, Fi>
 		where
 			ItIn: Iterator<Item=(K, V)>,
@@ -107,9 +105,9 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 	{
 		let map = replace(borrowed, HashMap::new());
 
-		self.push(HashMap::from_iter(f(map.into_iter())));
+		self.push(HashMap::from_iter(map_f(map.into_iter())));
 
-		BorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: f_inverse }
+		BorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: map_f_inverse }
 	}
 
 	pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
@@ -125,14 +123,6 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		None
 	}
 
-	pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<(&V, usize)> where Q: Hash + Eq, K: Borrow<Q> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if let Some(ref def) = scope.get(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
 	pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<(&mut V, usize)>
 		where Q: Hash + Eq, K: Borrow<Q>
 	{
@@ -158,9 +148,8 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 }
 impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 	// TODO: `action` could probably take `&mut Self`
-	/// If item is already `None`, do nothing and return false.
 	pub fn do_for_item_at_height<Q: ?Sized, R, F>(&mut self, key: &Q, height: usize, action: F) -> R
-		where Q: Hash + Eq, K: Borrow<Q>, F: Fn(&mut Self, &mut V) -> R
+		where Q: Hash + Eq + Debug, K: Borrow<Q>, V: Debug, F: Fn(&mut Self, &mut V) -> R
 	{
 		let mut item = match self.get_at_height_mut(key, height) {
 			Some(item) => replace(item, None)
@@ -172,15 +161,17 @@ impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 
 		let result = action(self, &mut item);
 
-		*self.get_at_height_mut(key, height).unwrap() = Some(item);
+		*self.get_at_height_mut(key, height)
+			.expect(&format!("ScopeStack::do_for_item_at_height: key `{:?}` not found", key))
+			= Some(item);
 
 		self.extend(above);
 
 		result
 	}
 }
-impl<K: fmt::Debug + Hash + Eq, V: fmt::Debug> fmt::Debug for ScopeStack<K, V> {
+impl<K: Debug + Hash + Eq, V: Debug> Debug for ScopeStack<K, V> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		fmt::Debug::fmt(&self.0, f)
+		Debug::fmt(&self.0, f)
 	}
 }

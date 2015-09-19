@@ -33,9 +33,7 @@
 
 use std::collections::{ HashMap, HashSet };
 use std::iter::once;
-use std::vec::Drain;
 
-use lib::ScopeStack;
 use super::lex::{ TokenTree, TokenTreeMeta, SrcPos };
 
 type Macros<'src> = HashMap<&'src str, MacroRules<'src>>;

@@ -26,6 +26,7 @@ use lib::front::parse::*;
 
 type ConstDefs<'a> = ScopeStack<&'a str, Option<(ConstDef<'a>, Used)>>;
 
+#[derive(Debug)]
 enum Used {
 	Yes,
 	No,

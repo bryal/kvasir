@@ -13,26 +13,31 @@
 ;      (def-macro op-name ()
 ;         ((name x)
 ;          (def-macro name ()
-;             ((ys (... (... ...))) (list (op x ys) (... (... ...)))))))))
+;             ((ys (... (... ...))) (list (op ys x) (... (... ...)))))))))
 
 ; (operation-all multiply-all *)
+; (operation-all divide-all /)
 ; (operation-all add-all +)
+; (operation-all subtract-all -)
 
-; (multiply-all quadruple-all 4)
+; (multiply-all quintuple-all 4)
+; (divide-all halve-all 2)
 ; (add-all inc-all 1)
+; (subtract-all dec-all 1)
 
 ; Macros
 
-(def-macro define ()
+(def-macro def-proc ()
     (((proc params ...) body)
      (def-const proc (lambda (params ...) body)))
-    (((proc params ...) body ...)
-     (define (proc params ...) (block body ...)))
-    ((const val)
-     (def-const const val))
-    ((const vals ...)
-     (def-const const (begin vals ...))))
+    ((head bodys ...)
+     (def-proc head (block bodys ...))))
 
-(define (main)
+; Constants
+
+(def-proc (unused-1 a b c) (+ a b c))
+(def-const unused-2 a)
+
+(def-proc (main)
     (+ 1 2)
-    (- 3 6))
+    ())

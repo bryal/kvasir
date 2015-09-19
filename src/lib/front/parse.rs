@@ -24,7 +24,6 @@
 // TODO: Let the custom error type be based on enum for reusable messages
 
 use std::collections::HashMap;
-use std::borrow::Cow;
 use std::fmt;
 
 use super::lex::{ StrLit, TokenTree, TokenTreeMeta, SrcPos };
@@ -39,7 +38,6 @@ pub enum Type<'src> {
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
 impl<'src> Type<'src> {
-	pub fn new_tuple(args: Vec<Type<'src>>) -> Self { Type::Construct("Tuple", args) }
 	pub fn new_proc(mut arg_tys: Vec<Type<'src>>, return_ty: Type<'src>) -> Self {
 		arg_tys.push(return_ty);
 		Type::Construct("proc", arg_tys)
@@ -56,8 +54,9 @@ impl<'src> Type<'src> {
 			},
 			TokenTree::List(_) => Type::nil(),
 			TokenTree::Ident(basic) => Type::Basic(basic),
-			TokenTree::Num(num) => src_error_panic!(&ttm.pos, "Expected type"),
-			TokenTree::Str(s) => src_error_panic!(&ttm.pos, "Expected type"),
+			TokenTree::Num(_) =>
+				src_error_panic!(&ttm.pos, "Expected type, found numeric literal"),
+			TokenTree::Str(_) => src_error_panic!(&ttm.pos, "Expected type, found string literal"),
 		}
 	}
 }
@@ -112,8 +111,6 @@ pub struct Path<'src> {
 }
 impl<'src> Path<'src> {
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
-
-	pub fn parts(&self) -> &[&str] { &self.parts }
 
 	/// If self is just a simple ident, return it as Some
 	pub fn ident(&self) -> Option<&str> {
@@ -434,7 +431,7 @@ impl<'src> Expr<'src> {
 			},
 			TokenTree::Ident("true") => Expr::Bool(true, ttm.pos.clone()),
 			TokenTree::Ident("false") => Expr::Bool(false, ttm.pos.clone()),
-			TokenTree::Ident(path) => Expr::Binding(Path::parse(ttm)),
+			TokenTree::Ident(ident) => Expr::Binding(Path::from_str(ident, ttm.pos.clone())),
 			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos.clone()),
 			TokenTree::Str(s) => Expr::StrLit(s, ttm.pos.clone()),
 		}

@@ -39,16 +39,6 @@ impl<'src> SrcPos<'src> {
 	fn new_interval(src: &'src str, start: usize, end: usize) -> Self {
 		SrcPos{ src: src, start: start, end: Some(end), in_expansion: None }
 	}
-	/// Construct a new `SrcPos` representing a position in `src` in the expansion of a macro
-	fn new_pos_in_expansion(src: &'src str, pos: usize, parent: SrcPos<'src>) -> Self {
-		SrcPos{ src: src, start: pos, end: None, in_expansion: Some(Box::new(parent)) }
-	}
-	/// Construct a new `SrcPos` representing an interval in `src` in the expansion of a macro
-	fn new_interval_in_expansion(src: &'src str, start: usize, end: usize, parent: SrcPos<'src>)
-		-> Self
-	{
-		SrcPos{ src: src, start: start, end: Some(end), in_expansion: Some(Box::new(parent)) }
-	}
 
 	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
 		if self.in_expansion.is_some() {
