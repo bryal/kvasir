@@ -32,6 +32,11 @@
      (def-const proc (lambda (params ...) body)))
     ((head bodys ...)
      (def-proc head (block bodys ...))))
+ 
+(def-macro +s ()
+    ((t1 t2 ts ...) (+s (+ t1 t2) ts ...))
+    ((t) t)
+    (() 0))
 
 ; Constants
 
@@ -39,5 +44,5 @@
 (def-const unused-2 a)
 
 (def-proc (main)
-    (+ 1 2)
+    (+s (: _ 1) 2 3 4 5)
     ())

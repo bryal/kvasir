@@ -20,24 +20,39 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//! Infer types where explicit type signatures are not available
+//! Type inference
 
-// TODO: Check for mutual recursion when infering types. Maybe list of function call ancestry.
-//       Like: foo calling bar calling baz calling foo => ERROR
-// TODO: Consider redisigning this module. Maybe have an Inferer that takes expressions instead
-//       of implementing inference for each expression type.
-// TODO: Infer types for incomplete function sig. E.g. (:<→ u32 _> inc) => (:<→ u32 u32> inc)
 // TODO: Almost all `infer_types` takes const map + var stack + caller stack.
-//       Maybe encapsulate this using some kind of State object
-// TODO: Add field on things to keep track of whether inference has happened
+//       Maybe encapsulate this using some kind of state
+// TODO: Replace verbose type error checks with:
+//       `foo.infer_types(...)
+//           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
+use std::fmt::{ self, Display };
 use lib::front::parse::*;
 use lib::collections::ScopeStack;
 use super::core_lib::CORE_CONSTS_TYPES;
+use super::SrcPos;
+use self::InferenceErr::*;
+
+pub enum InferenceErr<'p, 'src: 'p> {
+	/// Type mismatch. (expected, found)
+	TypeMis(&'p Type<'src>, &'p Type<'src>),
+}
+impl<'src, 'p> Display for InferenceErr<'src, 'p> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			TypeMis(expected, found) =>
+				write!(f, "Type mismatch. Expected `{}`, found `{}`", expected, found)
+		}
+	}
+}
 
 type ConstDefs<'src> = ScopeStack<&'src str, Option<ConstDef<'src>>>;
 
-fn get_var_type<'src, 't>(var_types: &'t [TypedBinding<'src>], ident: &str) -> Option<&'t Type<'src>> {
+fn get_var_type<'src, 't>(var_types: &'t [TypedBinding<'src>], ident: &str)
+	-> Option<&'t Type<'src>>
+{
 	var_types.iter().rev().find(|tb| tb.ident == ident).map(|tb| &tb.typ)
 }
 fn get_var_type_mut<'src, 't>(var_types: &'t mut Vec<TypedBinding<'src>>, bnd: &str)
@@ -89,9 +104,7 @@ impl<'src> ConstDef<'src> {
 		const_defs: &mut ConstDefs<'src>
 	) -> Type<'src> {
 		self.body.infer_types(expected_ty, var_types, const_defs)
-			.unwrap_or_else(|found_ty| src_error_panic!(
-				self.body.pos(),
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, found_ty)))
+			.unwrap_or_else(|found_ty| self.body.pos().error(TypeMis(expected_ty, &found_ty)))
 	}
 }
 
@@ -128,7 +141,7 @@ impl<'src> Path<'src> {
 						})
 						.ok_or(stack_bnd_ty.clone())
 				} else {
-					src_error_panic!(&self.pos, format!("Unresolved path `{}`", ident))
+					self.pos.error(format!("Unresolved path `{}`", ident))
 				}
 			}
 		} else {
@@ -162,21 +175,22 @@ impl<'src> SExpr<'src> {
 			match unpack_proc_typ(&self.proced.typ) {
 				Some((param_tys, _)) if param_tys.len() == self.args.len() =>
 					param_tys.iter().collect(),
-				Some((param_tys, _)) => src_error_panic!(&self.pos,
+				Some((param_tys, _)) => self.pos.error(
 					format!("Arity mismatch. Expected {}, found {}",
 						param_tys.len(),
 						self.args.len())),
-				None => src_error_panic!(&self.proced.pos(),
-					format!("Type mismatch. Expected procedure, found `{}`", self.proced.typ)),
+				None => self.proced.pos().error(
+					TypeMis(
+						&Type::new_proc(vec![Type::Unknown], Type::Unknown),
+						&self.proced.typ)),
 			}
 		} else {
 			vec![&self.proced.typ; self.args.len()]
 		};
 
 		for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
-			if let Err(err_ty) = arg.infer_types(expect_ty, var_types, const_defs) {
-				src_error_panic!(arg.pos(),
-					format!("Type mismatch. Expected `{}`, found `{}`", expect_ty, err_ty));
+			if let Err(ref err_ty) = arg.infer_types(expect_ty, var_types, const_defs) {
+				arg.pos().error(TypeMis(expect_ty, err_ty));
 			}
 		}
 	}
@@ -193,9 +207,7 @@ impl<'src> SExpr<'src> {
 			expected_ty.clone());
 
 		if let Err(err_ty) = self.proced.infer_types(&expected_proc_type, var_types, const_defs) {
-			src_error_panic!(
-				self.proced.pos(),
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_proc_type, err_ty));
+			self.proced.pos().error(TypeMis(&expected_proc_type, &err_ty));
 		}
 		
 
@@ -220,9 +232,7 @@ impl<'src> Block<'src> {
 	) -> Type<'src> {
 		let (init, last) = if let Some((last, init)) = self.exprs.split_last_mut() {
 			if last.val.is_var_def() {
-				src_error_panic!(
-					last.pos(),
-					"Block ended with variable definition");
+				last.pos().error("Block ended with variable definition");
 			}
 			(init, last)
 		} else {
@@ -247,9 +257,7 @@ impl<'src> Block<'src> {
 		}
 
 		last.infer_types(expected_ty, var_types, &mut const_defs)
-			.unwrap_or_else(|err_ty| src_error_panic!(
-				last.pos(), 
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, err_ty)));
+			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
 
 		let mut block_defined_vars = var_types.split_off(old_vars_len).into_iter();
 
@@ -261,17 +269,11 @@ impl<'src> Block<'src> {
 				var_types.push(block_defined_vars.next().unwrap());
 			} else {
 				expr.infer_types(&Type::Unknown, var_types, &mut const_defs)
-					.unwrap_or_else(|err_ty| src_error_panic!(
-						expr.pos(), 
-						format!("Type mismatch. Expected `{}`, found `{}`",
-							Type::Unknown,
-							err_ty)));
+					.unwrap_or_else(|err_ty| expr.pos().error(TypeMis(&Type::Unknown, &err_ty)));
 			}
 		}
 		last.infer_types(expected_ty, var_types, &mut const_defs)
-			.unwrap_or_else(|err_ty| src_error_panic!(
-				last.pos(), 
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_ty, err_ty)));
+			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
 
 		last.typ.clone()
 	}
@@ -289,16 +291,14 @@ impl<'src> Cond<'src> {
 
 			for predicate in self.iter_predicates_mut() {
 				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
-					.unwrap_or_else(|err_ty| src_error_panic!(
-						predicate.pos(), 
-						format!("Type mismatch. Expected `{}`, found `{}`", Type::Basic("bool"), err_ty)));
+					.unwrap_or_else(|err_ty|
+						predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
 			}
 			for consequence in self.iter_consequences_mut() {
 				if consequence.typ.is_partially_known() || {
 					consequence.infer_types(&Type::Unknown, var_types, const_defs)
-						.unwrap_or_else(|err_ty| src_error_panic!(
-							consequence.pos(), 
-							format!("Type mismatch. Expected `{}`, found `{}`", Type::Unknown, err_ty)));
+						.unwrap_or_else(|err_ty|
+							consequence.pos().error(TypeMis(&Type::Unknown, &err_ty)));
 					consequence.typ.is_partially_known()
 				} {
 					found_type = Some(consequence.typ.clone());
@@ -313,13 +313,11 @@ impl<'src> Cond<'src> {
 		} else {
 			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
 				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
-					.unwrap_or_else(|err_ty| src_error_panic!(
-						predicate.pos(), 
-						format!("Type mismatch. Expected `{}`, found `{}`", Type::Basic("bool"), err_ty)));
+					.unwrap_or_else(|err_ty|
+						predicate.pos().error(TypeMis(&Type::Basic("bool"), &err_ty)));
 				consequence.infer_types(expected_type, var_types, const_defs)
-					.unwrap_or_else(|err_ty| src_error_panic!(
-						consequence.pos(), 
-						format!("Type mismatch. Expected `{}`, found `{}`", expected_type, err_ty)));
+					.unwrap_or_else(|err_ty|
+						consequence.pos().error(TypeMis(expected_type, &err_ty)));
 			}
 			match self.else_clause {
 				Some(ref mut else_clause) =>
@@ -337,8 +335,7 @@ impl<'src> Lambda<'src> {
 		for (param, expected_param) in self.params.iter_mut().zip(expected_params) {
 			match param.typ.infer_by(&expected_param) {
 				Some(infered) => param.typ = infered,
-				None => src_error_panic!(&param.pos,
-					format!("Type mismatch. Expected `{}`, found `{}`", expected_param, param.typ))
+				None => param.pos.error(TypeMis(expected_param, &param.typ))
 			}
 		}
 	}
@@ -386,9 +383,7 @@ impl<'src> Lambda<'src> {
 		var_types.extend(self.params.clone());
 
 		self.body.infer_types(&expected_body, var_types, const_defs)
-			.unwrap_or_else(|err_ty| src_error_panic!(
-				self.body.pos(),
-				format!("Type mismatch. Expected `{}`, found `{}`", expected_body, err_ty)));
+			.unwrap_or_else(|err_ty| self.body.pos().error(TypeMis(expected_body, &err_ty)));
 
 		assert_eq!(var_types.len(), vars_len + n_params);
 
@@ -409,8 +404,7 @@ impl<'src> VarDef<'src> {
 	{
 		match self.body.infer_types(&self.binding.typ, var_types, const_defs) {
 			Ok(body_ty) =>  self.binding.typ = body_ty.clone(),
-			Err(found) => src_error_panic!(&self.pos,
-				format!("Type mismatch. Expected `{}`, found `{}`", self.binding.typ, found))
+			Err(found) => self.pos.error(TypeMis(&self.binding.typ, &found))
 		}
 	}
 }

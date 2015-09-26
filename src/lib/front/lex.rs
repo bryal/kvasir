@@ -20,48 +20,33 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::fmt;
+use std::fmt::{ self, Display };
+use super::SrcPos;
 
-/// A position or interval in a string of source code
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub struct SrcPos<'src> {
-	pub src: &'src str,
-	pub start: usize,
-	pub end: Option<usize>,
-	pub in_expansion: Option<Box<SrcPos<'src>>>
+use self::LexErr::*;
+
+enum LexErr {
+	/// Type mismatch. (expected, found)
+	UntermStr,
+	InvalidStrDelim,
+	InvalidNum,
+	InvalidIdent,
+	UndelimItem,
+	Unexpected(&'static str)
 }
-impl<'src> SrcPos<'src> {
-	/// Construct a new `SrcPos` representing a position in `src`
-	fn new_pos(src: &'src str, pos: usize) -> Self {
-		SrcPos{ src: src, start: pos, end: None, in_expansion: None }
-	}
-	/// Construct a new `SrcPos` representing an interval in `src`
-	fn new_interval(src: &'src str, start: usize, end: usize) -> Self {
-		SrcPos{ src: src, start: start, end: Some(end), in_expansion: None }
-	}
-
-	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
-		if self.in_expansion.is_some() {
-		// if let Some(ref mut self_exp) = self.in_expansion {
-			// Not sure whether this should be an error
-			// panic!("Internal Compiler Error: add_expansion_site: \
-			//         Tried to add expansion site `{:?}` to pos `{:?}`",
-			// 	exp,
-			// 	self);
-			// self_exp.add_expansion_site(exp);
-		} else {
-			self.in_expansion = Some(Box::new(exp.clone()));
+impl Display for LexErr {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			UntermStr => write!(f, "Unterminated string literal"),
+			InvalidStrDelim => write!(f, "Invalid string literal delimiter"),
+			InvalidNum => write!(f, "Invalid numeric literal"),
+			InvalidIdent => write!(f, "Invalid ident"),
+			UndelimItem => write!(f, "Undelimited item"),
+			Unexpected(s) => write!(f, "Unexpected {}", s),
 		}
 	}
 }
-impl<'src> fmt::Debug for SrcPos<'src> {
-	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-		match self.end {
-			Some(end) => write!(fmt, "SrcPos {{ start: {}, end: {} }}", self.start, end),
-			None => write!(fmt, "SrcPos {{ start: {} }}", self.start),
-		}
-	}
-}
+
 
 /// A string literal.
 ///
@@ -102,7 +87,7 @@ fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
 			_ => (),
 		}
 	}
-	src_error_panic!(src, start, "Unterminated string literal")
+	SrcPos::new_pos(src, start).error(UntermStr)
 }
 
 /// Tokenize the raw string literal in `src` at `start`.
@@ -115,7 +100,7 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 	let n_delim_octothorpes = str_src.chars().take_while(|&c| c == '#').count();
 
 	if ! str_src[n_delim_octothorpes..].starts_with('"') {
-		src_error_panic!(src, start, "Invalid raw string delimiter");
+		SrcPos::new_pos(src, start).error(InvalidStrDelim)
 	}
 
 	let delim_octothorpes = &str_src[..n_delim_octothorpes];
@@ -128,7 +113,7 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 			return (Token::Str(StrLit::Raw(&str_body_src[..i])), literal_len)
 		}
 	}
-	src_error_panic!(src, start, "Unterminated raw string literal")
+	SrcPos::new_pos(src, start).error(UntermStr)
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
@@ -159,7 +144,7 @@ fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
 			prev_was_e = false;
 		}
 	}
-	src_error_panic!(src, start, "Invalid numeric literal")
+	SrcPos::new_pos(src, start).error(InvalidNum)
 }
 
 /// Returns whether `c` delimits tokens
@@ -194,7 +179,7 @@ fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
 			break
 		}
 	}
-	src_error_panic!(src, start, "Invalid ident")
+	SrcPos::new_pos(src, start).error(InvalidIdent)
 }
 
 /// An iterator of `Token`s and their position in some source code
@@ -233,7 +218,7 @@ impl<'src> Iterator for Tokens<'src> {
 					tokenize_raw_str_lit(self.src, i),
 				_ if c.is_numeric() => tokenize_num_lit(self.src, i),
 				_ if is_ident_char(c) => tokenize_ident(self.src, i),
-				_ => src_error_panic!(self.src, i, "Unexpected char"),
+				_ => SrcPos::new_pos(self.src, i).error(Unexpected("character")),
 			};
 
 			self.pos = i + len;
@@ -299,10 +284,10 @@ impl<'src> TokenTreeMeta<'src> {
 			Token::Quote => TokenTree::List(vec![
 				TokenTreeMeta::new(TokenTree::Ident("quote"), pos.clone()),
 				TokenTreeMeta::from_token(
-					nexts.next().unwrap_or_else(|| src_error_panic!(&pos, "Free quote")),
+					nexts.next().unwrap_or_else(|| pos.error(Unexpected("quote"))),
 					nexts)
 			]),
-			_ => src_error_panic!(pos, "Unexpected token"),
+			_ => pos.error(Unexpected("token")),
 		};
 		TokenTreeMeta::new(tt, pos)
 	}
@@ -339,7 +324,7 @@ fn tokens_to_trees_until<'src>(
 	}
 	match start {
 		None => (tts, None),
-		Some(pos) => src_error_panic!(pos, "Undelimited item"),
+		Some(pos) => pos.error(UndelimItem),
 	}
 }
 

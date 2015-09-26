@@ -34,7 +34,8 @@
 use std::collections::{ HashMap, HashSet };
 use std::iter::once;
 
-use super::lex::{ TokenTree, TokenTreeMeta, SrcPos };
+use super::SrcPos;
+use super::lex::{ TokenTree, TokenTreeMeta };
 
 type Macros<'src> = HashMap<&'src str, MacroRules<'src>>;
 type SyntaxVars<'src> = HashMap<&'src str, TokenTreeMeta<'src>>;
@@ -88,7 +89,7 @@ impl<'src> TokenTreeMeta<'src> {
 			Some(max) => (0..max)
 				.filter_map(|i| self.subst_syntax_vars_iteration(i, syntax_vars))
 				.collect(),
-			None => src_error_panic!(&self.pos, "Token tree contained no sequence syntax variables")
+			None => self.pos.error("Token tree contained no sequence syntax variables")
 		}
 	}
 
@@ -99,9 +100,7 @@ impl<'src> TokenTreeMeta<'src> {
 				if let TokenTree::Ident("...") = list[0].tt {
 					// It's an escape
 					if list.len() != 2 {
-						src_error_panic!(
-							&self.pos,
-							format!("Arity mismatch. Expected 1, found {}", list.len()));
+						self.pos.error(format!("Arity mismatch. Expected 1, found {}", list.len()));
 					}
 					list[1].clone()
 				} else {
@@ -162,10 +161,10 @@ impl<'src> MacroPattern<'src> {
 				if unambiguous_sequences(&patts, literals) {
 					MacroPattern::List(patts)
 				} else {
-					src_error_panic!(&ttm.pos, "Ambiguous pattern")
+					ttm.pos.error("Ambiguous pattern")
 				}
 			},
-			_ => src_error_panic!(&ttm.pos, "Expected list or ident")
+			_ => ttm.pos.error("Expected list or ident")
 		}
 	}
 
@@ -300,10 +299,10 @@ impl<'src> MacroRules<'src> {
 			TokenTree::List(ref lits) => lits.iter()
 				.map(|item| match item.tt {
 					TokenTree::Ident(lit) => lit,
-					_ => src_error_panic!(&item.pos, "Expected literal identifier"),
+					_ => item.pos.error("Expected literal identifier"),
 				})
 				.collect(),
-			_ => src_error_panic!(&maybe_literals.pos, "Expected list")
+			_ => maybe_literals.pos.error("Expected list")
 		};
 
 		let mut rules = Vec::new();
@@ -312,12 +311,12 @@ impl<'src> MacroRules<'src> {
 			if let TokenTree::List(ref rule) = maybe_rule.tt {
 				// TODO: Make this variadic. Capture everything after the pattern as templates
 				if rule.len() != 2 {
-					src_error_panic!(&maybe_rule.pos, format!("Expected pattern and template"))
+					maybe_rule.pos.error("Expected pattern and template")
 				}
 
 				rules.push((MacroPattern::new(&rule[0], &literals), rule[1].clone()))
 			} else {
-				src_error_panic!(&maybe_rule.pos, "Expected list")
+				maybe_rule.pos.error("Expected list")
 			}
 		}
 
@@ -337,7 +336,7 @@ impl<'src> MacroRules<'src> {
 				return template.expand_macros(macros)
 			}
 		}
-		src_error_panic!(pos, "No rule matched in macro invocation")
+		pos.error("No rule matched in macro invocation")
 	}
 }
 
@@ -349,17 +348,17 @@ fn define_macro<'src>(
 	let name = if let Some(name_tree) = parts.get(0) {
 		match name_tree.tt {
 			TokenTree::Ident(name) => name,
-			_ => src_error_panic!(&name_tree.pos, "Expected identifier")
+			_ => name_tree.pos.error("Expected identifier")
 		}
 	} else {
-		src_error_panic!(pos, "Name missing in macro definition")
+		pos.error("Name missing in macro definition")
 	};
 
 	let literals = parts.get(1)
-		.unwrap_or_else(|| src_error_panic!(pos, "Literals list missing in macro definition"));
+		.unwrap_or_else(|| pos.error("Literals list missing in macro definition"));
 
 	if macros.insert(name, MacroRules::new(literals, &parts[2..])).is_some() {
-		src_error_panic!(pos, format!("Duplicate definition of macro `{}`", name))
+		pos.error(format!("Duplicate definition of macro `{}`", name))
 	}
 }
 

@@ -20,13 +20,29 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-// TODO: Maybe some kind of MaybeOwned, CowString or whatever for error messages.
-// TODO: Let the custom error type be based on enum for reusable messages
-
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{ self, Display };
+use super::SrcPos;
+use super::lex::{ StrLit, TokenTree, TokenTreeMeta };
+use self::ParseErr::*;
 
-use super::lex::{ StrLit, TokenTree, TokenTreeMeta, SrcPos };
+pub enum ParseErr {
+	Invalid(&'static str),
+	Mismatch(&'static str, &'static str),
+	ArityMis(usize, usize),
+	Expected(&'static str),
+}
+impl Display for ParseErr {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match *self {
+			Invalid(s) => write!(f, "Invalid {}", s),
+			Mismatch(expected, found) => write!(f, "Expected {}, found {}", expected, found),
+			ArityMis(expected, found) =>
+				write!(f, "Arity mismatch. Expected {}, found {}", expected, found),
+			Expected(e) => write!(f, "Expected {}", e),
+		}
+	}
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<'src> {
@@ -50,13 +66,13 @@ impl<'src> Type<'src> {
 				TokenTree::Ident(constructor) => Type::Construct(
 					constructor,
 					construct[1..].iter().map(Type::parse).collect()),
-				_ => src_error_panic!(&construct[0].pos, "Invalid type constructor"),
+				_ => construct[0].pos.error(Invalid("type constructor")),
 			},
 			TokenTree::List(_) => Type::nil(),
+			TokenTree::Ident("_") => Type::Unknown,
 			TokenTree::Ident(basic) => Type::Basic(basic),
-			TokenTree::Num(_) =>
-				src_error_panic!(&ttm.pos, "Expected type, found numeric literal"),
-			TokenTree::Str(_) => src_error_panic!(&ttm.pos, "Expected type, found string literal"),
+			TokenTree::Num(_) => ttm.pos.error(Mismatch("type", "numeric literal")),
+			TokenTree::Str(_) => ttm.pos.error(Mismatch("type", "string literal")),
 		}
 	}
 }
@@ -89,14 +105,14 @@ impl<'src> TypedBinding<'src> {
 							typ: Type::parse(&tb[1]),
 							pos: ttm.pos.clone()
 						},
-						_ => src_error_panic!(&tb[2].pos, "Invalid binding"),
+						_ => tb[2].pos.error(Invalid("binding")),
 					}
 				} else {
-					src_error_panic!(&ttm.pos, "Invalid type ascription")
+					ttm.pos.error(Invalid("type ascription"))
 				},
 			TokenTree::Ident(ident) =>
 				TypedBinding{ ident: ident, typ: Type::Unknown, pos: ttm.pos.clone() },
-			_ => src_error_panic!(&ttm.pos, "Invalid binding")
+			_ => ttm.pos.error(Invalid("binding"))
 		}
 	}
 }
@@ -140,16 +156,16 @@ impl<'src> Path<'src> {
 	fn parse(ttm: &TokenTreeMeta<'src>) -> Self {
 		match ttm.tt {
 			TokenTree::Ident(s) => Path::from_str(s, ttm.pos.clone()),
-			_ => src_error_panic!(&ttm.pos, "Expected path"),
+			_ => ttm.pos.error(Expected("path")),
 		}
 	}
 
 	fn from_str(path_str: &'src str, pos: SrcPos<'src>) -> Self {
 		let (is_absolute, path_str) = if path_str.ends_with("\\") {
-			src_error_panic!(&pos, "Path ends with `\\`")
+			pos.error("Path ends with `\\`")
 		} else if path_str.starts_with('\\') {
 			if path_str.len() == 1 {
-				src_error_panic!(&pos, "Path is a lone `\\`")
+				pos.error("Path is a lone `\\`")
 			}
 			(true, &path_str[1..])
 		} else {
@@ -159,7 +175,7 @@ impl<'src> Path<'src> {
 		Path{
 			parts: path_str.split('\\')
 				.map(|part| if part == "" {
-					src_error_panic!(&pos, "Invalid path")
+					pos.error(Invalid("path"))
 				} else {
 					part
 				})
@@ -189,13 +205,13 @@ fn parse_compound_path<'src>(ttm: &TokenTreeMeta<'src>) -> Vec<Path<'src>> {
 				.flat_map(|v| v)
 				.map(|sub| path_head.clone()
 					.concat(&sub)
-					.unwrap_or_else(|_| src_error_panic!(&sub.pos, "Sub-path is absolute")))
+					.unwrap_or_else(|_| sub.pos.error("Sub-path is absolute")))
 				.collect()
 		} else {
-			src_error_panic!(&ttm.pos, "Empty path compound")
+			ttm.pos.error("Empty path compound")
 		},
 		TokenTree::Ident(ident) => vec![Path::from_str(ident, ttm.pos.clone())],
-		TokenTree::Num(_) | TokenTree::Str(_) => src_error_panic!(&ttm.pos, "Expected path"),
+		TokenTree::Num(_) | TokenTree::Str(_) => ttm.pos.error(Expected("path")),
 	}
 }
 
@@ -223,11 +239,11 @@ fn parse_definition<'src>(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>)
 	-> (&'src str, ExprMeta<'src>)
 {
 	if tts.len() != 2 {
-		src_error_panic!(&pos, format!("Arity mismatch. Expected 2, found {}", tts.len()))
+		pos.error(format!("Arity mismatch. Expected 2, found {}", tts.len()))
 	} else {
 		match tts[0].tt {
 			TokenTree::Ident(name) => (name, ExprMeta::parse(&tts[1])),
-			_ => src_error_panic!(&tts[0].pos, "Expected identifier"),
+			_ => tts[0].pos.error(Expected("identifier")),
 		}
 	}
 }
@@ -287,12 +303,12 @@ impl<'src> Cond<'src> {
 						if else_clause.is_none() {
 							else_clause = Some(ExprMeta::parse(&clause[1]))
 						} else {
-							src_error_panic!(&clause[0].pos, "Duplicate `else` clause")
+							clause[0].pos.error("Duplicate `else` clause")
 						}
 					} else {
 						clauses.push((ExprMeta::parse(&clause[0]), ExprMeta::parse(&clause[1])))
 					},
-				_ => src_error_panic!(&ttm.pos, "Expected list"),
+				_ => ttm.pos.error(Expected("list")),
 			}
 		}
 		Cond{ clauses: clauses, else_clause: else_clause, pos: pos }
@@ -303,10 +319,6 @@ impl<'src> Cond<'src> {
 	pub fn iter_predicates_mut<'it>(&'it mut self) -> Box<Iterator<Item=&mut ExprMeta<'src>> + 'it>
 	{
 		Box::new(self.clauses.iter_mut().map(|&mut (ref mut p, _)| p))
-	}
-	/// Iterate over all clauses of self, including the else clause
-	pub fn iter_consequences<'it>(&'it self) -> Box<Iterator<Item=&ExprMeta<'src>> + 'it> {
-		Box::new(self.clauses.iter().map(|&(_, ref c)| c).chain(self.else_clause.iter()))
 	}
 	/// Iterate over all clauses of self, including the else clause
 	pub fn iter_consequences_mut<'it>(&'it mut self)
@@ -329,7 +341,7 @@ pub struct Lambda<'src> {
 impl<'src> Lambda<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Self {
 		if tts.len() != 2 {
-			src_error_panic!(&pos, format!("Arity mismatch. Expected 2, found {}", tts.len()))
+			pos.error(ArityMis(2, tts.len()))
 		} else {
 			match tts[0].tt {
 				TokenTree::List(ref params) => Lambda{
@@ -337,7 +349,7 @@ impl<'src> Lambda<'src> {
 					body: ExprMeta::parse(&tts[1]),
 					pos: pos
 				},
-				_ => src_error_panic!(&tts[0].pos, "Expected list"),
+				_ => tts[0].pos.error(Expected("list")),
 			}
 		}
 	}
@@ -415,9 +427,7 @@ impl<'src> Expr<'src> {
 					TokenTree::Ident("quote") => if let Some(to_quote) = tail.first() {
 						Expr::parse_quoted(to_quote)
 					} else {
-						src_error_panic!(
-							&ttm.pos,
-							format!("Arity mismatch. Expected 1, found {}", sexpr.len()))
+						ttm.pos.error(ArityMis(1, sexpr.len()))
 					},
 					TokenTree::Ident("cond") => Expr::Cond(Cond::parse(tail, ttm.pos.clone())),
 					TokenTree::Ident("lambda") =>
@@ -467,9 +477,7 @@ impl<'src> ExprMeta<'src> {
 					Type::parse(&sexpr[1]),
 					ttm.pos.clone()),
 			TokenTree::List(ref sexpr) if sexpr.len() > 0 && sexpr[0].tt == TokenTree::Ident(":")
-				=> src_error_panic!(
-					&ttm.pos,
-					format!("Arity mismatch. Expected 2, found {}", sexpr.len() - 1)),
+				=> ttm.pos.error(ArityMis(2, sexpr.len() - 1)),
 			_ => ExprMeta::new(Expr::parse(ttm))
 		}
 	}
@@ -491,9 +499,7 @@ fn parse_items<'src>(tts: &[TokenTreeMeta<'src>])
 					if const_defs.insert(ident, ConstDef{ body: body, pos: ttm.pos.clone() })
 						.is_some()
 					{
-						src_error_panic!(
-							&ttm.pos,
-							format!("Duplicate constant definition `{}`", ident))
+						ttm.pos.error(format!("Duplicate constant definition `{}`", ident))
 					}
 				},
 				_ => exprs.push(ExprMeta::parse(ttm)),
@@ -515,7 +521,7 @@ impl<'src> AST<'src> {
 		let (uses, const_defs, exprs) = parse_items(tts);
 
 		for expr in exprs {
-			src_error_panic!(expr.pos(), "Expression at top level");
+			expr.pos().error("Expression at top level");
 		}
 
 		AST{ uses: uses, const_defs: const_defs }

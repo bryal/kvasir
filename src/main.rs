@@ -78,10 +78,6 @@
 // TODO: Specify allocator with cfg flag. This allows for linking with libs using different allocators
 // TODO: Slice representation? Pointer to len and data is probably easiest.
 //       Slice of `T`s with len N: `| len: usize | data: N * sizeof(T) |`
-// TODO: Implement src_error_panic! as a method on SrcPos using return type `!`
-// TODO: Replace verbose type error checks with:
-//       `foo.infer_types(...)
-//           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
 #![feature(
 	non_ascii_idents,

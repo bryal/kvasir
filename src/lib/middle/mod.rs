@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use lib::src_warning_print;
+use lib::front::SrcPos;
 use lib::ScopeStack;
 use lib::front::parse::*;
 
@@ -73,7 +73,7 @@ impl<'a> Block<'a> {
 			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
 				(def, Used::Yes) => Some((key, def)),
 				(def, Used::No) => {
-					src_warning_print(&def.pos, format!("Unused constant `{}`", key));
+					def.pos.warn(format!("Unused constant `{}`", key));
 					None
 				},
 			}));
@@ -145,7 +145,7 @@ impl<'a> AST<'a> {
 			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
 				(def, Used::Yes) => Some((key, def)),
 				(def, Used::No) => {
-					src_warning_print(&def.pos, format!("Unused constant `{}`", key));
+					def.pos.warn(format!("Unused constant `{}`", key));
 					None
 				},
 			}));
