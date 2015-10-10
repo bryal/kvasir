@@ -60,6 +60,28 @@ impl<'src> Type<'src> {
 	}
 	pub fn nil() -> Self { Type::Basic("Nil") }
 
+	pub fn is_int(&self) -> bool {
+		match *self {
+			Type::Basic("Int8")
+			| Type::Basic("Int16")
+			| Type::Basic("Int32")
+			| Type::Basic("Int64")
+			| Type::Basic("UInt8")
+			| Type::Basic("UInt16")
+			| Type::Basic("UInt32")
+			| Type::Basic("UInt64")
+				=> true,
+			_ => false
+		}
+	}
+
+	pub fn is_float(&self) -> bool {
+		match *self {
+			Type::Basic("Float32") | Type::Basic("Float64") => true,
+			_ => false
+		}
+	}
+
 	pub fn parse(ttm: &TokenTreeMeta<'src>) -> Type<'src> {
 		match ttm.tt {
 			TokenTree::List(ref construct) if ! construct.is_empty() => match construct[0].tt {
@@ -285,48 +307,25 @@ impl<'src> Block<'src> {
 	}
 }
 
+/// if-then-else expression
 #[derive(Clone, Debug)]
-pub struct Cond<'src> {
-	pub clauses: Vec<(ExprMeta<'src>, ExprMeta<'src>)>,
-	pub else_clause: Option<ExprMeta<'src>>,
+pub struct If<'src> {
+	pub predicate: ExprMeta<'src>,
+	pub consequent: ExprMeta<'src>,
+	pub alternative: ExprMeta<'src>,
 	pub pos: SrcPos<'src>,
 }
-impl<'src> Cond<'src> {
+impl<'src> If<'src> {
 	fn parse(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Self {
-		let mut clauses = Vec::new();
-		let mut else_clause = None;
-
-		for ttm in tts {
-			match ttm.tt {
-				TokenTree::List(ref clause) if clause.len() == 2 =>
-					if let TokenTree::Ident("else") = clause[0].tt {
-						if else_clause.is_none() {
-							else_clause = Some(ExprMeta::parse(&clause[1]))
-						} else {
-							clause[0].pos.error("Duplicate `else` clause")
-						}
-					} else {
-						clauses.push((ExprMeta::parse(&clause[0]), ExprMeta::parse(&clause[1])))
-					},
-				_ => ttm.pos.error(Expected("list")),
-			}
+		if tts.len() != 3 {
+			pos.error(ArityMis(3, tts.len()))
 		}
-		Cond{ clauses: clauses, else_clause: else_clause, pos: pos }
-	}
-
-	/// Iterate over predicates of clauses.
-	/// This excludes the else clause, since it contains no predicate
-	pub fn iter_predicates_mut<'it>(&'it mut self) -> Box<Iterator<Item=&mut ExprMeta<'src>> + 'it>
-	{
-		Box::new(self.clauses.iter_mut().map(|&mut (ref mut p, _)| p))
-	}
-	/// Iterate over all clauses of self, including the else clause
-	pub fn iter_consequences_mut<'it>(&'it mut self)
-		-> Box<Iterator<Item=&mut ExprMeta<'src>> + 'it>
-	{
-		Box::new(self.clauses.iter_mut()
-			.map(|&mut (_, ref mut c)| c)
-			.chain(self.else_clause.iter_mut()))
+		If {
+			predicate: ExprMeta::parse(&tts[0]),
+			consequent: ExprMeta::parse(&tts[1]),
+			alternative: ExprMeta::parse(&tts[2]),
+			pos: pos
+		}
 	}
 }
 
@@ -380,7 +379,7 @@ pub enum Expr<'src> {
 	Binding(Path<'src>),
 	SExpr(SExpr<'src>),
 	Block(Block<'src>),
-	Cond(Cond<'src>),
+	If(If<'src>),
 	Lambda(Lambda<'src>),
 	VarDef(VarDef<'src>),
 	Assign(Assign<'src>),
@@ -399,7 +398,7 @@ impl<'src> Expr<'src> {
 			Expr::Binding(ref path) => &path.pos,
 			Expr::SExpr(ref sexpr) => &sexpr.pos,
 			Expr::Block(ref block) => &block.pos,
-			Expr::Cond(ref cond) => &cond.pos,
+			Expr::If(ref cond) => &cond.pos,
 			Expr::Lambda(ref l) => &l.pos,
 			Expr::VarDef(ref def) => &def.pos,
 			Expr::Assign(ref a) => &a.pos,
@@ -436,7 +435,7 @@ impl<'src> Expr<'src> {
 					} else {
 						ttm.pos.error(ArityMis(1, sexpr.len()))
 					},
-					TokenTree::Ident("cond") => Expr::Cond(Cond::parse(tail, ttm.pos.clone())),
+					TokenTree::Ident("if") => Expr::If(If::parse(tail, ttm.pos.clone())),
 					TokenTree::Ident("lambda") =>
 						Expr::Lambda(Lambda::parse(tail, ttm.pos.clone())),
 					TokenTree::Ident("block") =>

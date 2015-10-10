@@ -84,13 +84,10 @@ impl<'a> Block<'a> {
 	}
 }
 
-impl<'a> Cond<'a> {
+impl<'a> If<'a> {
 	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		for pred in self.iter_predicates_mut() {
-			pred.remove_unused_consts(const_defs);
-		}
-		for conseq in self.iter_consequences_mut() {
-			conseq.remove_unused_consts(const_defs);
+		for e in [&mut self.predicate, &mut self.consequent, &mut self.alternative] {
+			e.remove_unused_consts(const_defs);
 		}
 	}
 }
@@ -119,7 +116,7 @@ impl<'a> ExprMeta<'a> {
 			Expr::Binding(ref path) => path.remove_unused_consts(const_defs),
 			Expr::SExpr(ref mut sexpr) => sexpr.remove_unused_consts(const_defs),
 			Expr::Block(ref mut block) => block.remove_unused_consts(const_defs),
-			Expr::Cond(ref mut cond) => cond.remove_unused_consts(const_defs),
+			Expr::If(ref mut cond) => cond.remove_unused_consts(const_defs),
 			Expr::Lambda(ref mut lambda) => lambda.remove_unused_consts(const_defs),
 			Expr::VarDef(ref mut def) => def.remove_unused_consts(const_defs),
 			Expr::Assign(ref mut assign) => assign.remove_unused_consts(const_defs),

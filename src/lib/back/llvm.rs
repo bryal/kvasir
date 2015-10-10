@@ -46,30 +46,7 @@ impl<'src, 'p> fmt::Display for CodegenErr<'src, 'p> {
 	}
 }
 
-impl<'src> Type<'src> {
-	fn llvm_type(&self) -> Option<LLVMTypeRef> {
-		if let &Type::Unknown == self {
-			return None;
-		}
-		Some(match *self {
-			Type::Basic("Int8") => LLVMInt8Type(),
-			Type::Basic("Int16") => LLVMInt16Type(),
-			Type::Basic("Int32") => LLVMInt32Type(),
-			Type::Basic("Int64") => LLVMInt64Type(),
-			Type::Basic("UInt8") => LLVMInt8Type(),
-			Type::Basic("UInt16") => LLVMInt16Type(),
-			Type::Basic("UInt32") => LLVMInt32Type(),
-			Type::Basic("UInt64") => LLVMInt64Type(),
-			Type::Basic("Bool") => LLVMInt1Type(),
-			Type::Basic("Float32") => LLVMFloatType(),
-			Type::Basic("Float64") => LLVMDoubleType(),
-			_ => unimplemented!(),
-		})
-	}
-}
-
 fn nil() -> LLVMValueRef { LLVMConstStruct(ptr::null_mut(), 0, 0) }
-
 
 impl<'src> Path<'src> {
 	fn llvm_codegen(&self, vars: HashMap<&str, LLVMValueRef>) {
@@ -84,7 +61,7 @@ impl<'src> SExpr<'src> {
 			.unwrap_or_else(|| unimplemented!());
 
 		let c_proc_name = CString::new(proc_name).unwrap();
-		
+
 		let proc = LLVMGetNamedFunction(module, c_proc_name.as_ptr());
 
 		let n_args = LLVMCountParams(proc);
@@ -99,7 +76,7 @@ impl<'src> SExpr<'src> {
 
 		LLVMBuildCall(builder, proc, args.as_mut_ptr(), n_args, c_proc_name.as_ptr())
 	}
-} 
+}
 
 impl<'src> ExprMeta<'src> {
 	fn llvm_codegen(&self) -> LLVMValueRef {
@@ -107,7 +84,7 @@ impl<'src> ExprMeta<'src> {
 			Expr::Nil(_) => nil(),
 			Expr::Assign(_) => unimplemented!();,
 			Expr::NumLit(lit, ref pos) => num_lit_llvm_codegen(pos, lit, &self.typ),
-			Expr::StrLit(_, _) => unimplemented!(), 
+			Expr::StrLit(_, _) => unimplemented!(),
 			Expr::Bool(b, ref pos) => LLVMConstInt(LLVMInt1Type(), b as c_ulonglong, 0),
 			Expr::Binding(ref path) => path.llvm_codegen(),
 			Expr::SExpr(ref sexpr) => sexpr.llvm_codegen(),
@@ -124,6 +101,12 @@ fn const_codegen(module: LLVMModuleRef, id: &str, val: ConstDef) {
 	}
 }
 
+/// LLVM type and contingent additional data
+enum LLVMTypeMeta {
+	Int(LLVMTypeRef, bool), // (Int type, signed)
+	Other(LLVMTypeRef)
+}
+
 struct CodeGenerator<'src> {
 	module: LLVMModuleRef,
 	builder: LLVMBuilderRef,
@@ -131,6 +114,72 @@ struct CodeGenerator<'src> {
 	vars: Vec<(&'src str, LLVMValueRef)>,
 }
 impl<'src> CodeGenerator<'src> {
+	fn gen_type(&self, typ: &Type<'src>, pos: &SrcPos<'src>) -> LLVMTypeMeta {
+		match *self {
+			Type::Unknown => pos.error(ICE("type was unknown at IR translation time")),
+			Type::Basic("Int8") => LLVMTypeMeta::Int(LLVMInt8Type(), true),
+			Type::Basic("Int16") => LLVMTypeMeta::Int(LLVMInt16Type(), true),
+			Type::Basic("Int32") => LLVMTypeMeta::Int(LLVMInt32Type(), true),
+			Type::Basic("Int64") => LLVMTypeMeta::Int(LLVMInt64Type(), true),
+			Type::Basic("UInt8") => LLVMTypeMeta::Int(LLVMInt8Type(), false),
+			Type::Basic("UInt16") => LLVMTypeMeta::Int(LLVMInt16Type(), false),
+			Type::Basic("UInt32") => LLVMTypeMeta::Int(LLVMInt32Type(), false),
+			Type::Basic("UInt64") => LLVMTypeMeta::Int(LLVMInt64Type(), false),
+			Type::Basic("Bool") => LLVMTypeMeta::Int(LLVMInt1Type(), false),
+			Type::Basic("Float32") => LLVMTypeMeta::Other(LLVMFloatType()),
+			Type::Basic("Float64") => LLVMTypeMeta::Other(LLVMDoubleType()),
+			_ => unimplemented!(),
+		}
+	}
+
+	fn gen_num(&self, lit: &str, typ: &Type<'src>, pos: &SrcPos<'src>)
+		-> (LLVMValueRef, LLVMTypeRef)
+	{
+		match self.gen_type(typ, pos) {
+			LLVMTypeMeta::Int(llvm_typ, signed) => lit.parse()
+				.map(|v| LLVMConstInt(llvm_typ, v, signed as _))
+				.unwrap_or_else(|_| pos.error(NumParseErr(typ))),
+			LLVMTypeMeta::Other(llvm_typ) if typ.is_float() => lit.parse()
+				.map(|v| LLVMConstReal(llvm_typ, v))
+				.unwrap_or_else(|_| pos.error(NumParseErr(typ))),
+			_ => pos.error(ICE("type of numeric literal is not numeric"))
+		}
+	}
+
+	fn gen_expr(&mut self, expr: &ExprMeta) -> LLVMValueRef {
+		use s
+		match *expr.val {
+			Nil(SrcPos<'src>),
+			NumLit(&'src str, SrcPos<'src>),
+			StrLit(StrLit<'src>, SrcPos<'src>),
+			Bool(bool, SrcPos<'src>),
+			Binding(Path<'src>),
+			SExpr(SExpr<'src>),
+			Block(Block<'src>),
+			If(If<'src>),
+			Lambda(Lambda<'src>),
+			VarDef(VarDef<'src>),
+			Assign(Assign<'src>),
+			Symbol(&'src str, SrcPos<'src>),
+		}
+	}
+
+	fn gen_glob_const(&self, id: &str, def: &ExprMeta) -> LLVMValueRef {
+		match *def.val {
+			Expr::NumLit(lit, ref pos) => {
+				let (llvm_val, llvm_typ) = self.gen_num(lit, &def.typ, pos);
+
+				let glob = LLVMAddGlobal(self.module, llvm_typ, CString::new(id).unwrap().as_ptr());
+
+				LLVMSetGlobalConstant(glob, true as _);
+				LLVMSetInitializer(glob, llvm_val);
+
+				glob
+			},
+			_ => unimplemented!(),
+		}
+	}
+
 	fn gen_func_decl(&self, id: &'src str, lam: &Lambda) -> LLVMValueRef {
 		let typ = LLVMFunctionType(
 			self.gen_typ(&lam.body.typ),
@@ -158,16 +207,10 @@ impl<'src> CodeGenerator<'src> {
 
 		let old_n_vars = self.vars.len();
 		self.vars.extend(params);
-		
+
 		LLVMBuildRet(self.builder, self.gen_expr(&def_lam.body));
 
 		self.vars.shrink(old_n_vars)
-	}
-
-	fn gen_const(&self, id: &str, def: &ConstDef) -> LLVMValueRef {
-		match *def.body.val {
-			Expr::NumLit(lit, ref pos) => 
-}
 	}
 }
 
@@ -175,7 +218,7 @@ pub fn codegen(ast: &AST) -> LLVMValueRef {
 	let mut codegenerator = CodeGenerator {
 		module: LLVMModuleCreateWithName(b"main\0".as_ptr()),
 		builder: LLVMCreateBuilder(),
-		const_defs: Vec::new(),
+		const_defs: ScopeStack::new(),
 	};
 
 	let (mut glob_funcs, mut glob_consts) = (Vec::new(), Vec::new());
@@ -183,14 +226,15 @@ pub fn codegen(ast: &AST) -> LLVMValueRef {
 	for &(id, ref const_def) in ast.const_defs.iter() {
 		match *const_def.body.val {
 			Expr::Lambda(ref lam) => glob_func.push(
-				(lam, codegenerator.gen_func_decl(id, lam))),
-			ref e => glob_consts.push(codegenerator.gen_const(e)),
+				(id, lam, codegenerator.gen_func_decl(id, lam))),
+			ref e => glob_consts.push((id, codegenerator.gen_glob_const(id, e))),
 		}
 	}
 
 	codegenerator.const_defs.push(
 		glob_funcs.iter()
-			.map(|&(_, decl)| decl)
+			.map(|&(id, _, decl)| (id, decl))
+			.chain(glob_consts)
 			.collect());
 
 	for (def_lam, func_decl) in glob_funcs {

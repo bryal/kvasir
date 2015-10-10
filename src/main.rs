@@ -79,6 +79,9 @@
 // TODO: Slice representation? Pointer to len and data is probably easiest.
 //       Slice of `T`s with len N: `| len: usize | data: N * sizeof(T) |`
 // TODO: `extern` declarations for linking in C functions
+// TODO: Interface for AST through which multiple lexer/parsers can be implemented for the language.
+//       Similar to how racker supports multiple source languages
+//       Also serves as a way to save keywords and such, e.g. core types, as associated constants
 
 #![feature(
 	non_ascii_idents,

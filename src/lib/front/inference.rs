@@ -39,12 +39,18 @@ use self::InferenceErr::*;
 enum InferenceErr<'p, 'src: 'p> {
 	/// Type mismatch. (expected, found)
 	TypeMis(&'p Type<'src>, &'p Type<'src>),
+	ArmsDiffer(&'p Type<'src>, &'p Type<'src>),
 }
 impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			TypeMis(expected, found) =>
-				write!(f, "Type mismatch. Expected `{}`, found `{}`", expected, found)
+				write!(f, "Type mismatch. Expected `{}`, found `{}`", expected, found),
+			ArmsDiffer(c, a) =>
+				write!(f, "Consequent and alternative have different types. \
+				           Expected `{}` from alternative, found `{}`",
+					c,
+					a),
 		}
 	}
 }
@@ -280,51 +286,32 @@ impl<'src> Block<'src> {
 	}
 }
 
-impl<'src> Cond<'src> {
+impl<'src> If<'src> {
 	fn infer_types(&mut self,
 		expected_type: &Type<'src>,
 		var_types: &mut Vec<TypedBinding<'src>>,
 		const_defs: &mut ConstDefs<'src>
 	) -> Result<Type<'src>, Type<'src>> {
 		// TODO: Verify everything is still correct
-		if expected_type.is_unknown() {
-			let mut found_type = None;
 
-			for predicate in self.iter_predicates_mut() {
-				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
-					.unwrap_or_else(|err_ty|
-						predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
-			}
-			for consequence in self.iter_consequences_mut() {
-				if consequence.typ.is_partially_known() || {
-					consequence.infer_types(&Type::Unknown, var_types, const_defs)
-						.unwrap_or_else(|err_ty|
-							consequence.pos().error(TypeMis(&Type::Unknown, &err_ty)));
-					consequence.typ.is_partially_known()
-				} {
-					found_type = Some(consequence.typ.clone());
-					break;
-				}
-			}
+		self.predicate.infer_types(&Type::Basic("Bool"), var_types, const_defs)
+			.unwrap_or_else(|err_ty|
+				self.predicate.pos.error(TypeMis(&Type::Basic("Bool"), &err_ty)));
 
-			match found_type {
-				Some(ref expected_type) => self.infer_types(expected_type, var_types, const_defs),
-				None => Ok(Type::Unknown)
+		for clause in [&mut self.consequent, &mut self.alternative] {
+			clause.infer_types(expected_type, var_types, const_defs)
+				.unwrap_or_else(|err_ty|
+					self.consequent.pos().error(TypeMis(expected_type, &err_ty)));
+		}
+
+		if let Some(inferred) = self.consequent.typ.infer_by(&self.alternative.typ) {
+			if self.consequent.typ == inferred && self.alternative.typ == inferred {
+				Ok(inferred)
+			} else {
+				self.infer_types(&inferred, var_types, const_defs)
 			}
 		} else {
-			for &mut (ref mut predicate, ref mut consequence) in self.clauses.iter_mut() {
-				predicate.infer_types(&Type::Basic("bool"), var_types, const_defs)
-					.unwrap_or_else(|err_ty|
-						predicate.pos().error(TypeMis(&Type::Basic("bool"), &err_ty)));
-				consequence.infer_types(expected_type, var_types, const_defs)
-					.unwrap_or_else(|err_ty|
-						consequence.pos().error(TypeMis(expected_type, &err_ty)));
-			}
-			match self.else_clause {
-				Some(ref mut else_clause) =>
-					else_clause.infer_types(expected_type, var_types, const_defs),
-				None => Ok(Type::Unknown)
-			}
+			self.pos.error(ArmsDiffer(&self.consequent.typ, &self.alternative.typ))
 		}
 	}
 }
@@ -446,7 +433,7 @@ impl<'src> Expr<'src> {
 				Ok(sexpr.infer_types(&expected_ty, var_types, const_defs).clone()),
 			Expr::Block(ref mut block) =>
 				Ok(block.infer_types(&expected_ty, var_types, const_defs)),
-			Expr::Cond(ref mut cond) => cond.infer_types(&expected_ty, var_types, const_defs),
+			Expr::If(ref mut cond) => cond.infer_types(&expected_ty, var_types, const_defs),
 			Expr::Lambda(ref mut lambda) => lambda.infer_types(&expected_ty, var_types, const_defs),
 			Expr::Symbol(_, _) => expected_ty.infer_by(&Type::Basic("Symbol"))
 				.ok_or(Type::Basic("Symbol")),
