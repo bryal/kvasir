@@ -1,8 +1,8 @@
 [package]
-name = "rusty-scheme"
+name = "kvaser-lang"
 version = "0.1"
 authors = ["bryal <96.bryal@gmail.com>"]
-repository = "https://github.com/bryal/rusty-scheme"
+repository = "https://github.com/bryal/kvaser-lang"
 license = "GPLv3"
 build = "build.rs"
 

@@ -11,7 +11,7 @@
 /target/
 
 Cargo.lock
-test.scm
+test.kvs
 out.rs
 scmrs_out.rs
 test.bin
