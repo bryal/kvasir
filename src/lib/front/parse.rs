@@ -26,7 +26,7 @@ use super::SrcPos;
 use super::lex::{ StrLit, TokenTree, TokenTreeMeta };
 use self::ParseErr::*;
 
-pub enum ParseErr {
+enum ParseErr {
 	Invalid(&'static str),
 	Mismatch(&'static str, &'static str),
 	ArityMis(usize, usize),
@@ -403,6 +403,13 @@ impl<'src> Expr<'src> {
 			Expr::Lambda(ref l) => &l.pos,
 			Expr::VarDef(ref def) => &def.pos,
 			Expr::Assign(ref a) => &a.pos,
+		}
+	}
+
+	fn as_binding(&self) -> Option<Path<'src>> {
+		match *self {
+			Expr::Binding(ref path) => Some(path),
+			_ => None,
 		}
 	}
 

@@ -1,3 +1,4 @@
+
 // The MIT License (MIT)
 //
 // Copyright (c) 2015 Johan Johansson
@@ -35,7 +36,7 @@ use super::core_lib::CORE_CONSTS_TYPES;
 use super::SrcPos;
 use self::InferenceErr::*;
 
-pub enum InferenceErr<'p, 'src: 'p> {
+enum InferenceErr<'p, 'src: 'p> {
 	/// Type mismatch. (expected, found)
 	TypeMis(&'p Type<'src>, &'p Type<'src>),
 }

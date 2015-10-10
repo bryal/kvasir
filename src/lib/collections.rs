@@ -154,7 +154,7 @@ impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
 		let mut item = match self.get_at_height_mut(key, height) {
 			Some(item) => replace(item, None)
 				.expect("ScopeStack::do_for_item_at_height: Item was `None`"),
-			None => panic!("ScopeStack::do_for_item_at_height: No entry for key function found")
+			None => panic!("ScopeStack::do_for_item_at_height: Already using item")
 		};
 
 		let above = self.split_from(height + 1);

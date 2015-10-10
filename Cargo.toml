@@ -1,12 +1,15 @@
 [package]
 name = "rusty-scheme"
-version = "0.0.4"
+version = "0.1"
 authors = ["bryal <96.bryal@gmail.com>"]
 repository = "https://github.com/bryal/rusty-scheme"
-license = "MIT"
+license = "GPLv3"
+build = "build.rs"
 
 [dependencies]
 getopts = "*"
 bitflags = "*"
 lazy_static = "*"
 term = "*"
+llvm-sys = "0.2.1"
+libc = "*"

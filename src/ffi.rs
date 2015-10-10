@@ -20,7 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//! Emit the AST in some format
-//!
-//! Which formats should be supported:
-//! 	* LLVM ☐
+use llvm_sys::prelude::*;
+
+#[link(name = "llvm_wrapper")]
+extern "C" {
+	pub fn LinkInInterpreter();
+}

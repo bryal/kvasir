@@ -78,6 +78,7 @@
 // TODO: Specify allocator with cfg flag. This allows for linking with libs using different allocators
 // TODO: Slice representation? Pointer to len and data is probably easiest.
 //       Slice of `T`s with len N: `| len: usize | data: N * sizeof(T) |`
+// TODO: `extern` declarations for linking in C functions
 
 #![feature(
 	non_ascii_idents,
@@ -93,28 +94,20 @@ extern crate getopts;
 #[macro_use]
 extern crate bitflags;
 extern crate term;
+extern crate llvm_sys;
+extern crate libc;
 
-use getopts::Options;
 use std::env;
 use std::io::{ Read };
 use std::fs::{ File, canonicalize };
 use std::path::PathBuf;
+use getopts::Options;
 
 use lib::{ token_trees_from_src, expand_macros };
 use lib::front::parse;
 
+mod ffi;
 mod lib;
-
-#[cfg(not(windows))]
-const BIN_EXTENSION: &'static str = "bin";
-#[cfg(windows)]
-const BIN_EXTENSION: &'static str = "exe";
-
-// bitflags! {
-// 	flags Emit: u16 {
-// 		const EMIT_RUST = 1,
-// 	}
-// }
 
 fn print_usage(program: &str, opts: Options) {
 	let brief = format!("Usage: {} [options] SOURCE-FILE", program);
@@ -183,4 +176,6 @@ fn main() {
 
 	ast.infer_types();
 	println!("AST INFERED:\n{:#?}\n", ast);
+
+	let llvm_ir = ast.llvm_codegen();
 }
