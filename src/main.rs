@@ -20,9 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//! Rust and Scheme inspired implementation of LISP
+//! # The Kvasir Programming Language
 //!
-//! # Envisioned syntax
+//! ## Envisioned syntax
 //! ```scheme
 //! ; Types are static and can be annotated with `(:TYPE EXPR)` or inferred, similar to Rust.
 //!
