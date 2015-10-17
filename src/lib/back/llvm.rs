@@ -78,6 +78,70 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
+	fn add_core_defs(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>) {
+		let mut core_funcs = HashMap::new();
+
+		let i64_t = Type::get::<i64>(self.context);
+		let bool_t = Type::get::<bool>(self.context);
+
+		for (unop, instr, in_typ, out_typ) in vec![
+			("not", Builder::build_not, bool_t, bool_t),
+		] {
+			let func_typ = Type::new_function(in_typ, &[out_typ]);
+			let func = &*self.module.add_function(unop, func_typ);
+			let entry = func.append("entry");
+
+			self.builder.position_at_end(entry);
+			let operation = instr(&self.builder, &func[0]);
+			self.builder.build_ret(operation);
+
+			core_funcs.insert(unop, func);
+		}
+
+		for (binop, instr, a_typ, b_typ, out_typ) in vec![
+			("+", Builder::build_add as fn (_, _, _) -> _, i64_t, i64_t, i64_t),
+			("-", Builder::build_sub, i64_t, i64_t, i64_t),
+			("*", Builder::build_mul, i64_t, i64_t, i64_t),
+			("/", Builder::build_div, i64_t, i64_t, i64_t),
+			("<<", Builder::build_shl, i64_t, i64_t, i64_t),
+			(">>", Builder::build_ashr, i64_t, i64_t, i64_t),
+			("and", Builder::build_and, bool_t, bool_t, bool_t),
+			("or", Builder::build_or, bool_t, bool_t, bool_t),
+			("xor", Builder::build_xor, bool_t, bool_t, bool_t),
+		] {
+			let func_typ = Type::new_function(out_typ, &[a_typ, b_typ]);
+			let func = self.module.add_function(binop, func_typ);
+			let entry = func.append("entry");
+
+			self.builder.position_at_end(entry);
+			let operation = instr(&self.builder, &func[0], &func[1]);
+			self.builder.build_ret(operation);
+
+			core_funcs.insert(binop, func);
+		}
+
+		for (id, predicate) in vec![
+			("=", Predicate::Equal),
+			("/=", Predicate::NotEqual),
+			(">", Predicate::GreaterThan),
+			(">=", Predicate::GreaterThanOrEqual),
+			("<", Predicate::LessThan),
+			("<=", Predicate::LessThanOrEqual),
+		] {
+			let func_typ = Type::new_function(bool_t, &[i64_t, i64_t]);
+			let func = self.module.add_function(id, func_typ);
+			let entry = func.append("entry");
+
+			self.builder.position_at_end(entry);
+			let r = self.builder.build_cmp(&func[0], &func[1], predicate);
+			self.builder.build_ret(r);
+
+			core_funcs.insert(id, func);
+		}
+
+		env.funcs.push(core_funcs);
+	}
+
 	fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
 		self.builder.get_insert_block().and_then(|bb| bb.get_parent()).and_then(CastFrom::cast)
 	}
@@ -165,19 +229,19 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	fn gen_r_binding(&self, env: &mut Env<'src, 'cdef, 'ctx>, path: &Path<'src>) -> &Value {
 		let binding = path.ident().expect("path was not ident");
 
+		// Function pointers are returned as-is,
+		// while static constants and variables are loaded into registers
 		env.consts.get(binding)
 			.map(|&(ptr, _)| ptr)
-			.or(env.funcs.get(binding)
-				.map(|&func| &**func))
 			.or(env.vars.iter()
 				.rev()
 				.find(|&&(id, _)| id == binding)
 				.map(|&(_, ptr)| ptr))
 			.map(|ptr| {
-				let tmp = self.builder.build_load(ptr);
-				tmp.set_name(&format!("{}_tmp", binding));
-				tmp
+				self.builder.build_load(ptr)
 			})
+			.or(env.funcs.get(binding)
+				.map(|&func| &**func))
 		.unwrap_or_else(|| path.pos.error(ICE("undefined binding".into())))
 	}
 
@@ -204,9 +268,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			self.builder.build_tail_call(proced, &args);
 			None
 		} else {
-			let call = self.builder.build_call(proced, &args);
-			call.set_name("call_tmp");
-			Some(call)
+			Some(self.builder.build_call(proced, &args))
 		}
 	}
 
@@ -399,7 +461,6 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			.collect::<Vec<_>>();
 
 		let old_vars = mem::replace(&mut env.vars, params);
-
 		if let Some(e) = self.gen_expr(env, &def_lam.body, true) {
 			self.builder.build_ret(e);
 		}
@@ -454,9 +515,13 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 pub fn compile(ast: &parse::AST) {
 	let context = Context::new();
 
-	let mut codegenerator = CodeGenerator::new(&context);
+	let codegenerator = CodeGenerator::new(&context);
 
-	codegenerator.gen_const_defs(&mut Env::new(), &ast.const_defs);
+	let mut env = Env::new();
+
+	codegenerator.add_core_defs(&mut env);
+
+	codegenerator.gen_const_defs(&mut env, &ast.const_defs);
 
 	println!(";;; DEBUG MODULE PRINTING ;;;\n\n{:?}\n\n;;; END ;;;", codegenerator.module);
 	codegenerator.module.verify().unwrap();
