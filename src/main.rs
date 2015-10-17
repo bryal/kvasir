@@ -87,7 +87,6 @@
 	non_ascii_idents,
 	box_patterns,
 	drain,
-	split_off,
 	fs_canonicalize,
 	slice_splits)]
 
@@ -99,16 +98,72 @@ extern crate bitflags;
 extern crate term;
 extern crate llvm;
 
-use std::env;
+use std::{ env, fmt };
 use std::io::{ Read };
 use std::fs::{ File, canonicalize };
-use std::path::PathBuf;
+use std::path::{ Path, PathBuf };
 use getopts::Options;
 use lib::{ token_trees_from_src, expand_macros };
 use lib::front::parse;
 use lib::back::compile;
 
 mod lib;
+
+pub enum Emission {
+	LlvmIr,
+	LlvmBc,
+	Obj,
+	Bin,
+}
+impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
+	fn from(s: S) -> Emission {
+		match s.as_ref() {
+			"llvm-ir" => Emission::LlvmIr,
+			"llvm-bc" => Emission::LlvmBc,
+			"obj" => Emission::Obj,
+			_ => panic!("Unknown emission type `{}`", s),
+		}
+	}
+}
+
+#[derive(Clone)]
+pub enum FileName {
+	Some(PathBuf),
+	Default(PathBuf),
+}
+impl FileName {
+	pub fn path(&self) -> &Path {
+		match *self {
+			FileName::Some(ref p) => p,
+			FileName::Default(ref p) => p,
+		}
+	}
+
+	pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
+		match self {
+			FileName::Some(p) => FileName::Some(f(p)),
+			FileName::Default(p) => FileName::Default(f(p)),
+		}
+	}
+
+	/// If `Some`, unwrap it. If `Default`, change the extension before unwrapping
+	pub fn unwrap_or_with_ext(self, ext: &str) -> PathBuf {
+		match self {
+			FileName::Some(p) => p,
+			FileName::Default(p) => p.with_extension(ext),
+		}
+	}
+}
+impl fmt::Display for FileName {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Display::fmt(&self.path().display(), fmt)
+	}
+}
+
+#[cfg(windows)]
+const BIN_EXT: &'static str = "exe";
+#[cfg(not(windows))]
+const BIN_EXT: &'static str = "bin";
 
 fn print_usage(program: &str, opts: Options) {
 	let brief = format!("Usage: {} [options] SOURCE-FILE", program);
@@ -120,8 +175,13 @@ fn main() {
 	let bin_name = args[0].clone();
 
 	let mut opts = Options::new();
-	opts.optopt("o", "out-file", "Set output file name", "NAME");
-	opts.optflag("h", "help", "Print this help menu");
+	opts.optopt("o", "out-file", "Write output to <FILENAME>", "FILENAME")
+		.optopt("", "emit",
+			"Specify the type of output for the compiler to emit",
+			"llvm-ir|llvm-bc|obj")
+		.optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
+		.optmulti("L", "", "Add <PATH> to the library search path", "PATH")
+		.optflag("h", "help", "Display this help menu");
 
 	let matches = match opts.parse(&args[1..]) {
 		Ok(m) => m,
@@ -140,26 +200,28 @@ fn main() {
 		return;
 	};
 
-	let out_file_name = match matches.opt_str("o") {
-		Some(o) => PathBuf::from(o),
-		None => {
-			let mut o = inp_file_name.clone();
-			o.set_extension(".out");
-			o
-		}
-	};
+	let out_file_name = matches.opt_str("o")
+		.map(|p| FileName::Some(PathBuf::from(p)))
+		.unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
+		.map(|filename| canonicalize(filename.parent().unwrap_or("./".as_ref()))
+			.expect("Failed to canonicalize output filename")
+			.join(filename.file_name().expect("No filename supplied")));
 
-	// let mut emissions = Emit::empty();
-	// for emission in [(EMIT_RUST, matches.opt_present("emit-rust"))].iter()
-	// 	.filter_map(|&(e, b)| if b { Some(e) } else { None })
-	// {
-	// 	emissions.insert(emission);
-	// }
+	let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
 
-	println!("    Compiling {}", canonicalize(inp_file_name.as_path()).unwrap().to_string_lossy());
+	let link_libs = matches.opt_strs("l");
+	let lib_paths = matches.opt_strs("L");
+
+	println!("    Compiling {}",
+		canonicalize(inp_file_name.as_path())
+			.expect("Failed to canonicalize input filename")
+			.to_string_lossy());
 
 	let mut src_code = String::with_capacity(4_000);
-	File::open(inp_file_name).unwrap().read_to_string(&mut src_code).unwrap();
+	let src_file = File::open(&inp_file_name)
+		.expect(&format!("Failed to open file `{}`", inp_file_name.display()))
+		.read_to_string(&mut src_code)
+		.expect(&format!("Reading contents of `{}` failed", inp_file_name.display()));
 
 	let token_tree = token_trees_from_src(&src_code);
 
@@ -176,7 +238,7 @@ fn main() {
 	// println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
 	ast.infer_types();
-	println!("AST INFERED:\n{:#?}\n", ast);
+	// println!("AST INFERED:\n{:#?}\n", ast);
 
-	compile(&ast);
+	compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

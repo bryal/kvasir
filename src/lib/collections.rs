@@ -89,16 +89,6 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		}
 	}
 
-	/// Get a reference the scope at the top of the stack, if any
-	pub fn top(&self) -> Option<&HashMap<K, V>> {
-		self.0.last()
-	}
-
-	/// Get a mutable reference the scope at the top of the stack, if any
-	pub fn top_mut(&mut self) -> Option<&mut HashMap<K, V>> {
-		self.0.last_mut()
-	}
-
 	/// Borrows a `HashMap<K, E>`, maps it to a `HashMap<K, V>`,
 	/// then pushes it onto the stack as a scope.
 	/// When the returned `BorrowGuard` goes out of scope, pop and replace back the borrowed map.

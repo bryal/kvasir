@@ -67,7 +67,7 @@ fn unescape_plain<'src>(lit: &'src str) -> Result<String, (&'static str, usize)>
 				if let Some(u) = unescape_char(e) {
 					unescaped.push(u)
 				} else {
-					return Err(("invalid escape", i + 1))
+					return Err(("invalid escape", j))
 				}
 			} else {
 				return Err(("string literal ended with lone `\\`", i))
@@ -114,28 +114,6 @@ impl<'src> Type<'src> {
 		Type::Construct("proc", arg_tys)
 	}
 	pub fn nil() -> Self { Type::Basic("Nil") }
-
-	pub fn is_int(&self) -> bool {
-		match *self {
-			Type::Basic("Int8")
-			| Type::Basic("Int16")
-			| Type::Basic("Int32")
-			| Type::Basic("Int64")
-			| Type::Basic("UInt8")
-			| Type::Basic("UInt16")
-			| Type::Basic("UInt32")
-			| Type::Basic("UInt64")
-				=> true,
-			_ => false
-		}
-	}
-
-	pub fn is_float(&self) -> bool {
-		match *self {
-			Type::Basic("Float32") | Type::Basic("Float64") => true,
-			_ => false
-		}
-	}
 
 	pub fn parse(ttm: &TokenTreeMeta<'src>) -> Type<'src> {
 		match ttm.tt {
@@ -443,10 +421,6 @@ pub enum Expr<'src> {
 impl<'src> Expr<'src> {
 	pub fn is_var_def(&self) -> bool {
 		if let &Expr::VarDef(_) = self { true } else { false }
-	}
-
-	pub fn is_block(&self) -> bool {
-		if let &Expr::Block(_) = self { true } else { false }
 	}
 
 	fn pos(&self) -> &SrcPos<'src> {

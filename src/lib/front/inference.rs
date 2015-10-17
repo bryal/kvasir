@@ -33,7 +33,6 @@ use std::fmt::{ self, Display };
 use lib::front::parse::*;
 use lib::collections::ScopeStack;
 use super::core_lib::CORE_CONSTS_TYPES;
-use super::SrcPos;
 use self::InferenceErr::*;
 
 enum InferenceErr<'p, 'src: 'p> {

@@ -48,13 +48,13 @@ impl fmt::Display for CodegenErr {
 	}
 }
 
-struct Env<'src: 'cdef, 'cdef, 'ctx> {
+pub struct Env<'src: 'cdef, 'cdef, 'ctx> {
 	funcs: ScopeStack<&'src str, &'ctx Function>,
 	consts: ScopeStack<&'src str, (&'ctx Value, &'cdef ExprMeta<'src>)>,
 	vars: Vec<(&'src str, &'ctx Value)>,
 }
 impl<'src: 'cdef, 'cdef, 'ctx> Env<'src, 'cdef, 'ctx> {
-	fn new() -> Self {
+	pub fn new() -> Self {
 		Env {
 			funcs: ScopeStack::new(),
 			consts: ScopeStack::new(),
@@ -64,13 +64,13 @@ impl<'src: 'cdef, 'cdef, 'ctx> Env<'src, 'cdef, 'ctx> {
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
-struct CodeGenerator<'ctx> {
+pub struct CodeGenerator<'ctx> {
 	context: &'ctx Context,
-	module: CSemiBox<'ctx, Module>,
+	pub module: CSemiBox<'ctx, Module>,
 	builder: CSemiBox<'ctx, Builder>,
 }
 impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
-	fn new(context: &'ctx Context) -> Self {
+	pub fn new(context: &'ctx Context) -> Self {
 		CodeGenerator {
 			context: context,
 			module: Module::new("main", context),
@@ -78,7 +78,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn add_core_defs(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>) {
+	pub fn add_core_defs(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>) {
 		let mut core_funcs = HashMap::new();
 
 		let i64_t = Type::get::<i64>(self.context);
@@ -208,7 +208,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
 	}
 
-	fn gen_str(&self, lit: StrLit<'src>, typ: &parse::Type, pos: &SrcPos<'src>) -> &Value {
+	fn gen_str(&self, lit: StrLit<'src>, pos: &SrcPos<'src>) -> &Value {
 		let unescaped_lit = lit.unescape()
 			.unwrap_or_else(|(e, i)| pos.with_positive_offset(i).error(e));
 
@@ -238,7 +238,9 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 				.find(|&&(id, _)| id == binding)
 				.map(|&(_, ptr)| ptr))
 			.map(|ptr| {
-				self.builder.build_load(ptr)
+				let v = self.builder.build_load(ptr);
+				v.set_name(&format!("{}_tmp", binding));
+				v
 			})
 			.or(env.funcs.get(binding)
 				.map(|&func| &**func))
@@ -268,7 +270,9 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			self.builder.build_tail_call(proced, &args);
 			None
 		} else {
-			Some(self.builder.build_call(proced, &args))
+			let call = self.builder.build_call(proced, &args);
+			call.set_name("result");
+			Some(call)
 		}
 	}
 
@@ -316,16 +320,18 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		let mut phi_nodes = vec![];
 
 		self.builder.position_at_end(then_br);
-
 		if let Some(then_val) = self.gen_expr(env, &cond.consequent, in_tail_pos) {
 			phi_nodes.push((then_val, then_br));
 			self.builder.build_br(next_br);
 		}
+
+		self.builder.position_at_end(else_br);
 		if let Some(else_val) = self.gen_expr(env, &cond.alternative, in_tail_pos) {
 			phi_nodes.push((else_val, else_br));
 			self.builder.build_br(next_br);
 		}
 
+		self.builder.position_at_end(next_br);
 		if phi_nodes.is_empty() {
 			None
 		} else {
@@ -353,7 +359,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		match *expr.val {
 			Expr::Nil(_) => Some(self.gen_nil()),
 			Expr::NumLit(lit, ref pos) => Some(self.gen_num(lit, &expr.typ, pos)),
-			Expr::StrLit(lit, ref pos) => Some(self.gen_str(lit, &expr.typ, pos)),
+			Expr::StrLit(lit, ref pos) => Some(self.gen_str(lit, pos)),
 			Expr::Bool(b, _) => Some(b.compile(self.context)),
 			Expr::Binding(ref path) => Some(self.gen_r_binding(env, path)),
 			Expr::SExpr(ref sexpr) => self.gen_sexpr(env, sexpr, in_tail_pos),
@@ -362,7 +368,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			Expr::Lambda(ref lam) => Some(self.gen_lambda(env, lam)),
 			Expr::VarDef(_) => unimplemented!(),
 			Expr::Assign(_) => unimplemented!(),
-			Expr::Symbol(sym, ref pos) => unimplemented!(),
+			Expr::Symbol(_, _) => unimplemented!(),
 		}
 	}
 
@@ -417,7 +423,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		match *expr.val {
 			Expr::Nil(_) => self.gen_nil(),
 			Expr::NumLit(lit, ref pos) => self.gen_num(lit, &expr.typ, pos),
-			Expr::StrLit(lit, ref pos) => self.gen_str(lit, &expr.typ, pos),
+			Expr::StrLit(lit, ref pos) => self.gen_str(lit, pos),
 			Expr::Bool(b, _) => b.compile(self.context),
 			Expr::Binding(ref path) => self.gen_eval_const_binding(env, path),
 			Expr::SExpr(ref sexpr) => self.gen_const_sexpr(env, sexpr),
@@ -468,7 +474,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		env.vars = old_vars;
 	}
 
-	fn gen_const_defs(&'ctx self,
+	pub fn gen_const_defs(&'ctx self,
 		env: &mut Env<'src, 'cdef, 'ctx>,
 		const_defs: &'cdef HashMap<&'src str, parse::ConstDef<'src>>
 	) {
@@ -510,28 +516,4 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			self.build_func_def(env, func, def_lam);
 		}
 	}
-}
-
-pub fn compile(ast: &parse::AST) {
-	let context = Context::new();
-
-	let codegenerator = CodeGenerator::new(&context);
-
-	let mut env = Env::new();
-
-	codegenerator.add_core_defs(&mut env);
-
-	codegenerator.gen_const_defs(&mut env, &ast.const_defs);
-
-	println!(";;; DEBUG MODULE PRINTING ;;;\n\n{:?}\n\n;;; END ;;;", codegenerator.module);
-	codegenerator.module.verify().unwrap();
-
-	/*let ee = JitEngine::new(&codegenerator.module, JitOptions {opt_level: 0}).unwrap();
-
-	ee.with_function(fib2, |fib: extern fn(u64) -> u64| {
-		for i in 0..30 {
-			println!("fib {} = {}", i, fib(i))
-		}
-	});*/
-
 }
