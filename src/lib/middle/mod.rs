@@ -86,7 +86,7 @@ impl<'a> Block<'a> {
 
 impl<'a> If<'a> {
 	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		for e in [&mut self.predicate, &mut self.consequent, &mut self.alternative] {
+		for e in &mut [&mut self.predicate, &mut self.consequent, &mut self.alternative] {
 			e.remove_unused_consts(const_defs);
 		}
 	}

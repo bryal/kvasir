@@ -1,6 +1,6 @@
 [package]
 name = "kvasir-lang"
-version = "0.1"
+version = "0.1.1"
 authors = ["bryal <96.bryal@gmail.com>"]
 repository = "https://github.com/bryal/kvasir-lang"
 license = "GPLv3"
@@ -11,5 +11,5 @@ getopts = "*"
 bitflags = "*"
 lazy_static = "*"
 term = "*"
-llvm-sys = "0.2.1"
-libc = "*"
+llvm-alt = { path = "../llvm-rs" }
+llvm-sys = "*"

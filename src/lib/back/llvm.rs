@@ -20,224 +20,453 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::fmt::*;
-use std::ffi::CString;
-use std::slice;
-use llvm_sys::prelude::*;
-use llvm_sys::core::*;
-use llvm_sys::analysis::*;
-use llvm_sys::execution_engine::*;
-use llvm_sys::target::*;
-use libc::c_ulonglong;
-use ffi::*;
+use std::{ fmt, mem };
+use std::str::FromStr;
+use std::collections::HashMap;
+use llvm::*;
+use lib::front::SrcPos;
+use lib::front::parse::{ self, ExprMeta, Expr, StrLit, Path, SExpr, Block, If, Lambda };
+use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
-enum CodegenErr<'p, 'src: 'p> {
-	NumParseErr(&'static str),
+enum CodegenErr {
+	NumParseErr(String),
 	ICE(String),
 }
-impl<'src, 'p> fmt::Display for CodegenErr<'src, 'p> {
+impl CodegenErr {
+	fn num_parse_err<T: fmt::Display>(s: T) -> CodegenErr {
+		NumParseErr(format!("{}", s))
+	}
+}
+impl fmt::Display for CodegenErr {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			NumParseErr(parse_as) =>
+			NumParseErr(ref parse_as) =>
 				write!(f, "Could not parse numeric literal as {}", parse_as),
-			ICE(s) => write!(f, "Internal compiler error: {}", s),
+			ICE(ref s) => write!(f, "Internal compiler error: {}", s),
 		}
 	}
 }
 
-fn nil() -> LLVMValueRef { LLVMConstStruct(ptr::null_mut(), 0, 0) }
-
-impl<'src> Path<'src> {
-	fn llvm_codegen(&self, vars: HashMap<&str, LLVMValueRef>) {
-		vars[self.ident().unwrap_or_else(|| unimplemented!())]
-	}
+struct Env<'src: 'cdef, 'cdef, 'ctx> {
+	funcs: ScopeStack<&'src str, &'ctx Function>,
+	consts: ScopeStack<&'src str, (&'ctx Value, &'cdef ExprMeta<'src>)>,
+	vars: Vec<(&'src str, &'ctx Value)>,
 }
-
-impl<'src> SExpr<'src> {
-	fn llvm_codegen(&self, module: LLVMModuleRef, builder: LLVMBuilderRef) -> LLVMValueRef {
-		let proc_name = self.proc.as_binding()
-			.and_then(|path| path.ident())
-			.unwrap_or_else(|| unimplemented!());
-
-		let c_proc_name = CString::new(proc_name).unwrap();
-
-		let proc = LLVMGetNamedFunction(module, c_proc_name.as_ptr());
-
-		let n_args = LLVMCountParams(proc);
-		if n_args != self.args.len() {
-			self.pos.error(ICE(format!("arity mismatch for {}. {} != {}",
-				proc_name,
-				n_args,
-				self.args.len())))
+impl<'src: 'cdef, 'cdef, 'ctx> Env<'src, 'cdef, 'ctx> {
+	fn new() -> Self {
+		Env {
+			funcs: ScopeStack::new(),
+			consts: ScopeStack::new(),
+			vars: Vec::new(),
 		}
-
-		let args = self.args.iter().map(|arg| arg.llvm_codegen());
-
-		LLVMBuildCall(builder, proc, args.as_mut_ptr(), n_args, c_proc_name.as_ptr())
 	}
 }
 
-impl<'src> ExprMeta<'src> {
-	fn llvm_codegen(&self) -> LLVMValueRef {
-		match *self.val {
-			Expr::Nil(_) => nil(),
-			Expr::Assign(_) => unimplemented!();,
-			Expr::NumLit(lit, ref pos) => num_lit_llvm_codegen(pos, lit, &self.typ),
-			Expr::StrLit(_, _) => unimplemented!(),
-			Expr::Bool(b, ref pos) => LLVMConstInt(LLVMInt1Type(), b as c_ulonglong, 0),
-			Expr::Binding(ref path) => path.llvm_codegen(),
-			Expr::SExpr(ref sexpr) => sexpr.llvm_codegen(),
-			Expr::Block(ref block) => unimplemented!(),
-			Expr::Cond(ref mut cond) => unimplemented!(),
-			Expr::Lambda(ref lambda) => unimplemented!(),
-			Expr::Symbol(_, _) => unimplemented!(),
+/// A codegenerator that visits all nodes in the AST, wherein it builds expressions
+struct CodeGenerator<'ctx> {
+	context: &'ctx Context,
+	module: CSemiBox<'ctx, Module>,
+	builder: CSemiBox<'ctx, Builder>,
 }
-
-fn const_codegen(module: LLVMModuleRef, id: &str, val: ConstDef) {
-	match *val.body.val {
-		Expr::Lambda(ref lam) => function_codegen(module, ),
-		Expr::NumLit(lit, ref pos) => val.body.codegen
+impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
+	fn new(context: &'ctx Context) -> Self {
+		CodeGenerator {
+			context: context,
+			module: Module::new("main", context),
+			builder: Builder::new(context),
+		}
 	}
-}
 
-/// LLVM type and contingent additional data
-enum LLVMTypeMeta {
-	Int(LLVMTypeRef, bool), // (Int type, signed)
-	Other(LLVMTypeRef)
-}
+	fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
+		self.builder.get_insert_block().and_then(|bb| bb.get_parent()).and_then(CastFrom::cast)
+	}
 
-struct CodeGenerator<'src> {
-	module: LLVMModuleRef,
-	builder: LLVMBuilderRef,
-	const_defs: ScopeStack<&'src str, LLVMValueRef>,
-	vars: Vec<(&'src str, LLVMValueRef)>,
-}
-impl<'src> CodeGenerator<'src> {
-	fn gen_type(&self, typ: &Type<'src>, pos: &SrcPos<'src>) -> LLVMTypeMeta {
-		match *self {
-			Type::Unknown => pos.error(ICE("type was unknown at IR translation time")),
-			Type::Basic("Int8") => LLVMTypeMeta::Int(LLVMInt8Type(), true),
-			Type::Basic("Int16") => LLVMTypeMeta::Int(LLVMInt16Type(), true),
-			Type::Basic("Int32") => LLVMTypeMeta::Int(LLVMInt32Type(), true),
-			Type::Basic("Int64") => LLVMTypeMeta::Int(LLVMInt64Type(), true),
-			Type::Basic("UInt8") => LLVMTypeMeta::Int(LLVMInt8Type(), false),
-			Type::Basic("UInt16") => LLVMTypeMeta::Int(LLVMInt16Type(), false),
-			Type::Basic("UInt32") => LLVMTypeMeta::Int(LLVMInt32Type(), false),
-			Type::Basic("UInt64") => LLVMTypeMeta::Int(LLVMInt64Type(), false),
-			Type::Basic("Bool") => LLVMTypeMeta::Int(LLVMInt1Type(), false),
-			Type::Basic("Float32") => LLVMTypeMeta::Other(LLVMFloatType()),
-			Type::Basic("Float64") => LLVMTypeMeta::Other(LLVMDoubleType()),
+	fn gen_nil(&self) -> &'ctx Value {
+		Value::new_struct(self.context, &[], false)
+	}
+
+	fn gen_type(&self, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Type {
+		use lib::front::parse::Type as PType;
+
+		match *typ {
+			PType::Unknown => pos.error(ICE("type was unknown at IR translation time".into())),
+			PType::Basic("Int8") => Type::get::<i8>(self.context),
+			PType::Basic("Int16") => Type::get::<i16>(self.context),
+			PType::Basic("Int32") => Type::get::<i32>(self.context),
+			PType::Basic("Int64") => Type::get::<i64>(self.context),
+			PType::Basic("UInt8") => Type::get::<u8>(self.context),
+			PType::Basic("UInt16") => Type::get::<u16>(self.context),
+			PType::Basic("UInt32") => Type::get::<u32>(self.context),
+			PType::Basic("UInt64") => Type::get::<u64>(self.context),
+			PType::Basic("Bool") => Type::get::<bool>(self.context),
+			PType::Basic("Float32") => Type::get::<f32>(self.context),
+			PType::Basic("Float64") => Type::get::<f64>(self.context),
+			PType::Basic("Nil") => Type::new_struct(&[], false),
 			_ => unimplemented!(),
 		}
 	}
 
-	fn gen_num(&self, lit: &str, typ: &Type<'src>, pos: &SrcPos<'src>)
-		-> (LLVMValueRef, LLVMTypeRef)
+	fn gen_lit<I>(&self, lit: &str, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value
+		where I: Compile<'ctx> + FromStr
 	{
-		match self.gen_type(typ, pos) {
-			LLVMTypeMeta::Int(llvm_typ, signed) => lit.parse()
-				.map(|v| LLVMConstInt(llvm_typ, v, signed as _))
-				.unwrap_or_else(|_| pos.error(NumParseErr(typ))),
-			LLVMTypeMeta::Other(llvm_typ) if typ.is_float() => lit.parse()
-				.map(|v| LLVMConstReal(llvm_typ, v))
-				.unwrap_or_else(|_| pos.error(NumParseErr(typ))),
-			_ => pos.error(ICE("type of numeric literal is not numeric"))
+		lit.parse::<I>()
+			.map(|n| n.compile(self.context))
+			.unwrap_or_else(|_| pos.error(CodegenErr::num_parse_err(typ)))
+	}
+
+	fn gen_num(&self, lit: &str, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value {
+		use lib::front::parse::Type as PType;
+
+		let parser = match *typ {
+			PType::Basic("Int8") => CodeGenerator::gen_lit::<i8>,
+			PType::Basic("Int16") => CodeGenerator::gen_lit::<i16>,
+			PType::Basic("Int32") => CodeGenerator::gen_lit::<i32>,
+			PType::Basic("Int64") => CodeGenerator::gen_lit::<i64>,
+			PType::Basic("IntPtr") => CodeGenerator::gen_lit::<isize>,
+			PType::Basic("UInt8") => CodeGenerator::gen_lit::<u8>,
+			PType::Basic("UInt16") => CodeGenerator::gen_lit::<u16>,
+			PType::Basic("UInt32") => CodeGenerator::gen_lit::<u32>,
+			PType::Basic("UInt64") => CodeGenerator::gen_lit::<u64>,
+			PType::Basic("UIntPtr") => CodeGenerator::gen_lit::<usize>,
+			PType::Basic("Bool") => CodeGenerator::gen_lit::<bool>,
+			PType::Basic("Float32") => CodeGenerator::gen_lit::<f32>,
+			PType::Basic("Float64") => CodeGenerator::gen_lit::<f64>,
+			_ => pos.error(ICE("type of numeric literal is not numeric".into())),
+		};
+		parser(self, lit, typ, pos)
+	}
+
+	/// Gets an array, `[N x TYPE]`, as a pointer to the first element, `TYPE*`
+	fn get_array_as_ptr(&self, array_ptr: &Value) -> &Value {
+		// First, deref ptr to array (index first element of ptr, like pointer indexing in C).
+		// Second, get address of first element in array == address of array start
+		self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
+	}
+
+	fn gen_str(&self, lit: StrLit<'src>, typ: &parse::Type, pos: &SrcPos<'src>) -> &Value {
+		let unescaped_lit = lit.unescape()
+			.unwrap_or_else(|(e, i)| pos.with_positive_offset(i).error(e));
+
+		let bytes = unescaped_lit.compile(self.context);
+
+		let static_array = self.module.add_global_constant("str_lit", bytes);
+
+		// A string literal is represented as a struct with a pointer to the byte array and the size
+		// { i8* @lit.bytes, i64 /* machines ptr size */ 13 }
+		//     where @lit.bytes = global [13 x i8] c"Hello, world!"
+		Value::new_struct(
+			self.context,
+			&[self.get_array_as_ptr(static_array), unescaped_lit.len().compile(self.context)],
+			false)
+	}
+
+	/// Generate IR for a binding used as an r-value
+	fn gen_r_binding(&self, env: &mut Env<'src, 'cdef, 'ctx>, path: &Path<'src>) -> &Value {
+		let binding = path.ident().expect("path was not ident");
+
+		env.consts.get(binding)
+			.map(|&(ptr, _)| ptr)
+			.or(env.funcs.get(binding)
+				.map(|&func| &**func))
+			.or(env.vars.iter()
+				.rev()
+				.find(|&&(id, _)| id == binding)
+				.map(|&(_, ptr)| ptr))
+			.map(|ptr| {
+				let tmp = self.builder.build_load(ptr);
+				tmp.set_name(&format!("{}_tmp", binding));
+				tmp
+			})
+		.unwrap_or_else(|| path.pos.error(ICE("undefined binding".into())))
+	}
+
+	/// Generates IR code for a procedure call. If the call is in a tail position and the call
+	/// is a recursive call to the caller itself, make a tail call and return `Nothing`.
+	/// Otherwise, make a normal call and return the result.
+	fn gen_sexpr(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		sexpr: &'cdef SExpr<'src>,
+		in_tail_pos: bool
+	) -> Option<&Value> {
+		let proced: &Function = self.gen_expr(env, &sexpr.proced, false)
+			.map(CastFrom::cast)
+			.unwrap()
+			.unwrap_or_else(|| sexpr.proced.pos()
+				.error(ICE("expression in procedure pos is not a function".into())));
+
+		let mut args = Vec::new();
+		for arg in &sexpr.args {
+			args.push(self.gen_expr(env, arg, false).unwrap())
+		}
+
+		if in_tail_pos && proced == self.current_func().unwrap() {
+			self.builder.build_tail_call(proced, &args);
+			None
+		} else {
+			let call = self.builder.build_call(proced, &args);
+			call.set_name("call_tmp");
+			Some(call)
 		}
 	}
 
-	fn gen_expr(&mut self, expr: &ExprMeta) -> LLVMValueRef {
-		use s
+	fn gen_block(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		block: &'cdef Block<'src>,
+		in_tail_pos: bool
+	) -> Option<&Value> {
+		self.gen_const_defs(env, &block.const_defs);
+
+		let old_n_vars = env.vars.len();
+
+		let (last, statements) = block.exprs.split_last().expect("no exprs in block");
+
+		for statement in statements {
+			self.gen_expr(env, statement, false);
+		}
+
+		let r = self.gen_expr(env, last, in_tail_pos);
+
+		env.vars.truncate(old_n_vars);
+		env.funcs.pop();
+		env.consts.pop();
+
+		r
+	}
+
+	fn gen_if(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		cond: &'cdef If<'src>,
+		typ: &parse::Type<'src>,
+		in_tail_pos: bool
+	) -> Option<&Value> {
+		let parent_func = self.current_func().unwrap();
+
+		let then_br = parent_func.append("cond_then");
+		let else_br = parent_func.append("cond_else");
+		let next_br = parent_func.append("cond_next");
+
+		self.builder.build_cond_br(
+			self.gen_expr(env, &cond.predicate, false).unwrap(),
+			then_br,
+			Some(else_br));
+
+		let mut phi_nodes = vec![];
+
+		self.builder.position_at_end(then_br);
+
+		if let Some(then_val) = self.gen_expr(env, &cond.consequent, in_tail_pos) {
+			phi_nodes.push((then_val, then_br));
+			self.builder.build_br(next_br);
+		}
+		if let Some(else_val) = self.gen_expr(env, &cond.alternative, in_tail_pos) {
+			phi_nodes.push((else_val, else_br));
+			self.builder.build_br(next_br);
+		}
+
+		if phi_nodes.is_empty() {
+			None
+		} else {
+			Some(self.builder.build_phi(self.gen_type(typ, &cond.pos), &phi_nodes))
+		}
+	}
+
+	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, lam: &'cdef Lambda<'src>)
+		-> &Value
+	{
+		let anon = self.gen_func_decl("lambda", lam);
+
+		self.build_func_def(env, anon, lam);
+
+		anon
+	}
+
+	/// Generate llvm code for an expression and return its llvm Value.
+	/// Returns `None` if the expression makes a tail call
+	fn gen_expr(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		expr: &'cdef ExprMeta<'src>,
+		in_tail_pos: bool
+	) -> Option<&Value> {
 		match *expr.val {
-			Nil(SrcPos<'src>),
-			NumLit(&'src str, SrcPos<'src>),
-			StrLit(StrLit<'src>, SrcPos<'src>),
-			Bool(bool, SrcPos<'src>),
-			Binding(Path<'src>),
-			SExpr(SExpr<'src>),
-			Block(Block<'src>),
-			If(If<'src>),
-			Lambda(Lambda<'src>),
-			VarDef(VarDef<'src>),
-			Assign(Assign<'src>),
-			Symbol(&'src str, SrcPos<'src>),
+			Expr::Nil(_) => Some(self.gen_nil()),
+			Expr::NumLit(lit, ref pos) => Some(self.gen_num(lit, &expr.typ, pos)),
+			Expr::StrLit(lit, ref pos) => Some(self.gen_str(lit, &expr.typ, pos)),
+			Expr::Bool(b, _) => Some(b.compile(self.context)),
+			Expr::Binding(ref path) => Some(self.gen_r_binding(env, path)),
+			Expr::SExpr(ref sexpr) => self.gen_sexpr(env, sexpr, in_tail_pos),
+			Expr::Block(ref block) => self.gen_block(env, block, in_tail_pos),
+			Expr::If(ref cond) => self.gen_if(env, cond, &expr.typ, in_tail_pos),
+			Expr::Lambda(ref lam) => Some(self.gen_lambda(env, lam)),
+			Expr::VarDef(_) => unimplemented!(),
+			Expr::Assign(_) => unimplemented!(),
+			Expr::Symbol(sym, ref pos) => unimplemented!(),
 		}
 	}
 
-	fn gen_glob_const(&self, id: &str, def: &ExprMeta) -> LLVMValueRef {
-		match *def.val {
-			Expr::NumLit(lit, ref pos) => {
-				let (llvm_val, llvm_typ) = self.gen_num(lit, &def.typ, pos);
+	fn gen_eval_const_binding(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, path: &Path<'src>)
+		-> &Value
+	{
+		let binding = path.ident().expect("path was not ident");
 
-				let glob = LLVMAddGlobal(self.module, llvm_typ, CString::new(id).unwrap().as_ptr());
+		env.consts.get(binding)
+			.cloned()
+			.map(|(_, e)| self.gen_const_expr(env, e))
+			.unwrap_or_else(|| path.pos.error("binding does not point to constant"))
+	}
 
-				LLVMSetGlobalConstant(glob, true as _);
-				LLVMSetInitializer(glob, llvm_val);
 
-				glob
-			},
-			_ => unimplemented!(),
+	fn gen_const_sexpr(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, sexpr: &'cdef SExpr<'src>)
+		-> &Value
+	{
+		let args = sexpr.args.iter()
+			.map(|arg| self.gen_const_expr(env, arg))
+			.collect::<Vec<_>>();
+
+		match *sexpr.proced.val {
+			Expr::Binding(ref path) if path == "+" =>
+				self.builder.build_add(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "-" =>
+				self.builder.build_sub(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "*" =>
+				self.builder.build_mul(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "/" =>
+				self.builder.build_div(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "and" =>
+				self.builder.build_and(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "or" =>
+				self.builder.build_or(&args[0], &args[1]),
+			Expr::Binding(ref path) if path == "=" =>
+				self.builder.build_cmp(&args[0], &args[1], Predicate::Equal),
+			Expr::Binding(ref path) if path == ">" =>
+				self.builder.build_cmp(&args[0], &args[1], Predicate::GreaterThan),
+			Expr::Binding(ref path) if path == "<" =>
+				self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan),
+			Expr::Binding(ref path) =>
+				path.pos.error("Binding does not point to a constant function"),
+			_ => sexpr.pos.error("Non-constant function in constant expression")
 		}
 	}
 
-	fn gen_func_decl(&self, id: &'src str, lam: &Lambda) -> LLVMValueRef {
-		let typ = LLVMFunctionType(
-			self.gen_typ(&lam.body.typ),
-			lam.params.iter().map(|tb| self.gen_typ(&tb.typ)).collect().as_mut_ptr(),
-			lam.params.len(),
-			0);
-		let f = LLVMAddFunction(self.module, CString::new(id).unwrap().as_ptr(), typ);
-
-		for (i, param_name) in lambda.params.iter()
-			.map(|param| CString::new(param.ident))
-			.enumerate()
-		{
-			LLVMSetValueName(LLVMGetParam(f, i), param_name.as_ptr());
+	fn gen_const_expr(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, expr: &'cdef ExprMeta<'src>)
+		-> &Value
+	{
+		// TODO: add internal eval over ExprMetas
+		match *expr.val {
+			Expr::Nil(_) => self.gen_nil(),
+			Expr::NumLit(lit, ref pos) => self.gen_num(lit, &expr.typ, pos),
+			Expr::StrLit(lit, ref pos) => self.gen_str(lit, &expr.typ, pos),
+			Expr::Bool(b, _) => b.compile(self.context),
+			Expr::Binding(ref path) => self.gen_eval_const_binding(env, path),
+			Expr::SExpr(ref sexpr) => self.gen_const_sexpr(env, sexpr),
+			_ => expr.pos().error("expression cannot be used in a constant expression"),
 		}
+	}
+
+	fn gen_const(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, id: &str, def: &'cdef ExprMeta<'src>)
+		-> &Value
+	{
+		self.module.add_global_constant(id, self.gen_const_expr(env, def))
+	}
+
+	fn gen_func_decl(&self, id: &str, lam: &Lambda<'src>) -> &mut Function {
+		let typ = Type::new_function(
+			self.gen_type(&lam.body.typ, lam.body.pos()),
+			&lam.params.iter().map(|tb| self.gen_type(&tb.typ, &tb.pos)).collect::<Vec<_>>());
+
+		let f = self.module.add_function(id, typ);
+
+		for (i, param_name) in lam.params.iter().map(|tb| tb.ident).enumerate() {
+			f[i].set_name(param_name)
+		}
+
 		f
 	}
 
-	fn build_func_def(&mut self, func: LLVMValueRef, def_lam: &Lambda) {
-		let entry = LLVMAppendBasicBlock(func, b"entry\0".as_ptr());
+	fn build_func_def(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		func: &'ctx Function,
+		def_lam: &'cdef Lambda<'src>
+	) {
+		let entry = func.append("entry");
 
-		LLVMBuilderAtEnd(self.builder, entry);
+		self.builder.position_at_end(entry);
 
-		let mut params = vec![ptr::null_mut(): LLVMCountParams()];
-		LLVMGetParams(func, params.as_mut_ptr());
+		let params = def_lam.params.iter()
+			.map(|tb| tb.ident)
+			.enumerate()
+			.map(|(i, id)| (id, &*func[i]))
+			.collect::<Vec<_>>();
 
-		let old_n_vars = self.vars.len();
-		self.vars.extend(params);
+		let old_vars = mem::replace(&mut env.vars, params);
 
-		LLVMBuildRet(self.builder, self.gen_expr(&def_lam.body));
+		if let Some(e) = self.gen_expr(env, &def_lam.body, true) {
+			self.builder.build_ret(e);
+		}
 
-		self.vars.shrink(old_n_vars)
+		env.vars = old_vars;
+	}
+
+	fn gen_const_defs(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		const_defs: &'cdef HashMap<&'src str, parse::ConstDef<'src>>
+	) {
+		let (mut func_decls, mut const_decls) = (HashMap::new(), HashMap::new());
+		// function declarations that are to be defined
+		let (mut undef_funcs, mut undef_consts) = (Vec::new(), Vec::new());
+
+		for (&id, const_def) in const_defs.iter() {
+			match *const_def.body.val {
+				Expr::Lambda(ref lam) => {
+					let func: &_ = self.gen_func_decl(id, lam);
+					func_decls.insert(id, func);
+					undef_funcs.push((func, lam));
+				},
+				_ => {
+					// temporarily set const definitions as undefined in order to have them all
+					// available while generating the definition for each one
+					const_decls.insert(
+						id,
+						(Value::new_undef(Type::get::<()>(self.context)), &const_def.body));
+					undef_consts.push(id);
+				},
+			}
+		}
+
+		env.consts.push(const_decls);
+
+		for id in undef_consts {
+			let def = env.consts.get(id).unwrap().1;
+			let const_val = self.gen_const(env, id, def);
+			let undef = &mut env.consts.get_mut(id).unwrap().0;
+
+			*undef = const_val;
+		}
+
+		env.funcs.push(func_decls);
+
+		for (func, def_lam) in undef_funcs {
+			self.build_func_def(env, func, def_lam);
+		}
 	}
 }
 
-pub fn codegen(ast: &AST) -> LLVMValueRef {
-	let mut codegenerator = CodeGenerator {
-		module: LLVMModuleCreateWithName(b"main\0".as_ptr()),
-		builder: LLVMCreateBuilder(),
-		const_defs: ScopeStack::new(),
-	};
+pub fn compile(ast: &parse::AST) {
+	let context = Context::new();
 
-	let (mut glob_funcs, mut glob_consts) = (Vec::new(), Vec::new());
+	let mut codegenerator = CodeGenerator::new(&context);
 
-	for &(id, ref const_def) in ast.const_defs.iter() {
-		match *const_def.body.val {
-			Expr::Lambda(ref lam) => glob_func.push(
-				(id, lam, codegenerator.gen_func_decl(id, lam))),
-			ref e => glob_consts.push((id, codegenerator.gen_glob_const(id, e))),
+	codegenerator.gen_const_defs(&mut Env::new(), &ast.const_defs);
+
+	println!(";;; DEBUG MODULE PRINTING ;;;\n\n{:?}\n\n;;; END ;;;", codegenerator.module);
+	codegenerator.module.verify().unwrap();
+
+	/*let ee = JitEngine::new(&codegenerator.module, JitOptions {opt_level: 0}).unwrap();
+
+	ee.with_function(fib2, |fib: extern fn(u64) -> u64| {
+		for i in 0..30 {
+			println!("fib {} = {}", i, fib(i))
 		}
-	}
+	});*/
 
-	codegenerator.const_defs.push(
-		glob_funcs.iter()
-			.map(|&(id, _, decl)| (id, decl))
-			.chain(glob_consts)
-			.collect());
-
-	for (def_lam, func_decl) in glob_funcs {
-		codegenerator.build_func_def(func_decl, def_lam);
-	}
 }

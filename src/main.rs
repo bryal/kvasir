@@ -97,19 +97,17 @@ extern crate getopts;
 #[macro_use]
 extern crate bitflags;
 extern crate term;
-extern crate llvm_sys;
-extern crate libc;
+extern crate llvm;
 
 use std::env;
 use std::io::{ Read };
 use std::fs::{ File, canonicalize };
 use std::path::PathBuf;
 use getopts::Options;
-
 use lib::{ token_trees_from_src, expand_macros };
 use lib::front::parse;
+use lib::back::compile;
 
-mod ffi;
 mod lib;
 
 fn print_usage(program: &str, opts: Options) {
@@ -146,7 +144,7 @@ fn main() {
 		Some(o) => PathBuf::from(o),
 		None => {
 			let mut o = inp_file_name.clone();
-			o.set_extension(BIN_EXTENSION);
+			o.set_extension(".out");
 			o
 		}
 	};
@@ -180,5 +178,5 @@ fn main() {
 	ast.infer_types();
 	println!("AST INFERED:\n{:#?}\n", ast);
 
-	let llvm_ir = ast.llvm_codegen();
+	compile(&ast);
 }

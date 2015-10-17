@@ -39,5 +39,7 @@ pub static ref CORE_CONSTS_TYPES: HashMap<&'static str, Type<'static>> = HashMap
 	("=", core_ty!("proc"; "Int64", "Int64", "Bool")),
 	("<", core_ty!("proc"; "Int64", "Int64", "Bool")),
 	(">", core_ty!("proc"; "Int64", "Int64", "Bool")),
+	("and", core_ty!("proc"; "Bool", "Bool", "Bool")),
+	("or", core_ty!("proc"; "Bool", "Bool", "Bool"))
 ]);
 }

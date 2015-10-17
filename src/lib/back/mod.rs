@@ -21,3 +21,5 @@
 // THE SOFTWARE.
 
 mod llvm;
+
+pub use self::llvm::compile;

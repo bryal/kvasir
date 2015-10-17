@@ -45,12 +45,31 @@ pub struct SrcPos<'src> {
 impl<'src> SrcPos<'src> {
 	/// Construct a new `SrcPos` representing a position in `src`
 	fn new_pos(src: &'src str, pos: usize) -> Self {
-		SrcPos{ src: src, start: pos, end: None, in_expansion: None }
+		SrcPos { src: src, start: pos, end: None, in_expansion: None }
 	}
 	/// Construct a new `SrcPos` representing an interval in `src`
 	fn new_interval(src: &'src str, start: usize, end: usize) -> Self {
-		SrcPos{ src: src, start: start, end: Some(end), in_expansion: None }
+		SrcPos { src: src, start: start, end: Some(end), in_expansion: None }
 	}
+
+	/// Construct a new `SrcPos` with a positive offset in relation to `self`
+	pub fn with_positive_offset(&self, offset: usize) -> Self {
+		SrcPos {
+			start: self.start + offset,
+			end: None,
+			.. self.clone()
+		}
+	}
+
+	/// Construct a new `SrcPos` with a negative offset in relation to `self`
+	pub fn with_negative_offset(&self, offset: usize) -> Self {
+		SrcPos {
+			start: self.start - offset,
+			end: None,
+			.. self.clone()
+		}
+	}
+
 
 	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
 		if self.in_expansion.is_some() {

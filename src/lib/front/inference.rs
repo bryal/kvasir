@@ -296,12 +296,12 @@ impl<'src> If<'src> {
 
 		self.predicate.infer_types(&Type::Basic("Bool"), var_types, const_defs)
 			.unwrap_or_else(|err_ty|
-				self.predicate.pos.error(TypeMis(&Type::Basic("Bool"), &err_ty)));
+				self.predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
 
-		for clause in [&mut self.consequent, &mut self.alternative] {
+		for clause in &mut [&mut self.consequent, &mut self.alternative] {
 			clause.infer_types(expected_type, var_types, const_defs)
 				.unwrap_or_else(|err_ty|
-					self.consequent.pos().error(TypeMis(expected_type, &err_ty)));
+					clause.pos().error(TypeMis(expected_type, &err_ty)));
 		}
 
 		if let Some(inferred) = self.consequent.typ.infer_by(&self.alternative.typ) {
@@ -492,7 +492,10 @@ impl<'src> AST<'src> {
 				k,
 				v.expect(&format!("AST::infer_types: const def `{}` is None", k)))));
 
-		const_defs.do_for_item_at_height("main", 0, |const_defs, main| 
-			main.infer_types(&Type::new_proc(vec![], Type::nil()), &mut Vec::new(), const_defs));
+		const_defs.do_for_item_at_height("main", 0, |const_defs, main|
+			main.infer_types(
+				&Type::new_proc(vec![], Type::Basic("Int64")),
+				&mut Vec::new(),
+				const_defs));
 	}
 }

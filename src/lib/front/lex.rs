@@ -22,7 +22,7 @@
 
 use std::fmt::{ self, Display };
 use super::SrcPos;
-
+use super::parse::StrLit;
 use self::LexErr::*;
 
 enum LexErr {
@@ -45,18 +45,6 @@ impl Display for LexErr {
 			Unexpected(s) => write!(f, "Unexpected {}", s),
 		}
 	}
-}
-
-
-/// A string literal.
-///
-/// Can be either a `Plain` string literal, where *escapes* such as newline, '\n',
-/// can be produced using backslash, `\`, or a `Raw` string literal,
-/// where escape sequences are not processed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrLit<'src> {
-	Plain(&'src str),
-	Raw(&'src str),
 }
 
 /// A token

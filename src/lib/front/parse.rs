@@ -22,8 +22,9 @@
 
 use std::collections::HashMap;
 use std::fmt::{ self, Display };
+use std::borrow::Cow;
 use super::SrcPos;
-use super::lex::{ StrLit, TokenTree, TokenTreeMeta };
+use super::lex::{ TokenTree, TokenTreeMeta };
 use self::ParseErr::*;
 
 enum ParseErr {
@@ -40,6 +41,60 @@ impl Display for ParseErr {
 			ArityMis(expected, found) =>
 				write!(f, "Arity mismatch. Expected {}, found {}", expected, found),
 			Expected(e) => write!(f, "Expected {}", e),
+		}
+	}
+}
+
+fn unescape_char(c: char) -> Option<char> {
+	// TODO: add more escapes
+	match c {
+		'n' => Some('\n'),
+		't' => Some('\t'),
+		'0' => Some('\0'),
+		_   => None
+	}
+}
+
+fn unescape_plain<'src>(lit: &'src str) -> Result<String, (&'static str, usize)> {
+	let mut unescaped = String::with_capacity(lit.len());
+
+	let mut chars = lit.char_indices();
+
+	while let Some((i, c)) = chars.next() {
+		match c {
+			'\n' | '\t' => (),
+			'\\' => if let Some((j, e)) = chars.next() {
+				if let Some(u) = unescape_char(e) {
+					unescaped.push(u)
+				} else {
+					return Err(("invalid escape", i + 1))
+				}
+			} else {
+				return Err(("string literal ended with lone `\\`", i))
+			},
+			_ => unescaped.push(c)
+		}
+	}
+	Ok(unescaped)
+}
+
+/// A string literal.
+///
+/// Can be either a `Plain` string literal, where *escapes* such as newline, '\n',
+/// can be produced using backslash, `\`, or a `Raw` string literal,
+/// where escape sequences are not processed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrLit<'src> {
+	Plain(&'src str),
+	Raw(&'src str),
+}
+impl<'src> StrLit<'src> {
+	/// Unescape escape sequences if variant is `Plain`.
+	/// On failure, returns error message and position in string
+	pub fn unescape(self) -> Result<Cow<'src, str>, (&'static str, usize)> {
+		match self {
+			StrLit::Plain(s) => unescape_plain(s).map(Cow::Owned),
+			StrLit::Raw(s) => Ok(Cow::Borrowed(s)),
 		}
 	}
 }
@@ -390,6 +445,10 @@ impl<'src> Expr<'src> {
 		if let &Expr::VarDef(_) = self { true } else { false }
 	}
 
+	pub fn is_block(&self) -> bool {
+		if let &Expr::Block(_) = self { true } else { false }
+	}
+
 	fn pos(&self) -> &SrcPos<'src> {
 		match *self {
 			Expr::Nil(ref p) | Expr::Symbol(_, ref p) | Expr::NumLit(_, ref p)
@@ -405,7 +464,7 @@ impl<'src> Expr<'src> {
 		}
 	}
 
-	fn as_binding(&self) -> Option<Path<'src>> {
+	fn as_binding(&self) -> Option<&Path<'src>> {
 		match *self {
 			Expr::Binding(ref path) => Some(path),
 			_ => None,
