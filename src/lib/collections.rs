@@ -66,6 +66,7 @@ impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>
 /// duplications at any point.
 ///
 /// Used for ConstDef:s. Only one constant can be defined for a single name at any given moment.
+#[derive(Clone)]
 pub struct ScopeStack<K, V>(
 	Vec<HashMap<K, V>>
 );
@@ -123,14 +124,11 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		None
 	}
 
-	pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
+	pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: Hash + Eq, K: Borrow<Q> {
 		self.get_with_height(key).map(|(v, _)| v)
 	}
 
-	pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-		where Q: Hash + Eq, K: Borrow<Q>
+	pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: Hash + Eq, K: Borrow<Q>
 	{
 		self.get_mut_with_height(key).map(|(v, _)| v)
 	}
@@ -167,6 +165,18 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 		where Q: Hash + Eq, K: Borrow<Q>
 	{
 		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
+	}
+
+	pub fn update<Q: ?Sized>(&mut self, key: &Q, v: V) -> Option<V>
+		where Q: Hash + Eq, K: Borrow<Q>
+	{
+		match self.get_mut(key) {
+			Some(entry) => {
+				*entry = v;
+				None
+			},
+			None => Some(v)
+		}
 	}
 }
 impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {

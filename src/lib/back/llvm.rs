@@ -25,7 +25,7 @@ use std::str::FromStr;
 use std::collections::HashMap;
 use llvm::*;
 use lib::front::SrcPos;
-use lib::front::parse::{ self, ExprMeta, Expr, StrLit, Path, SExpr, Block, If, Lambda };
+use lib::front::ast::{ self, ExprMeta, Expr, Path, Call, Block, If, Lambda };
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
@@ -78,70 +78,6 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	pub fn add_core_defs(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>) {
-		let mut core_funcs = HashMap::new();
-
-		let i64_t = Type::get::<i64>(self.context);
-		let bool_t = Type::get::<bool>(self.context);
-
-		for (unop, instr, in_typ, out_typ) in vec![
-			("not", Builder::build_not, bool_t, bool_t),
-		] {
-			let func_typ = Type::new_function(in_typ, &[out_typ]);
-			let func = &*self.module.add_function(unop, func_typ);
-			let entry = func.append("entry");
-
-			self.builder.position_at_end(entry);
-			let operation = instr(&self.builder, &func[0]);
-			self.builder.build_ret(operation);
-
-			core_funcs.insert(unop, func);
-		}
-
-		for (binop, instr, a_typ, b_typ, out_typ) in vec![
-			("+", Builder::build_add as fn (_, _, _) -> _, i64_t, i64_t, i64_t),
-			("-", Builder::build_sub, i64_t, i64_t, i64_t),
-			("*", Builder::build_mul, i64_t, i64_t, i64_t),
-			("/", Builder::build_div, i64_t, i64_t, i64_t),
-			("<<", Builder::build_shl, i64_t, i64_t, i64_t),
-			(">>", Builder::build_ashr, i64_t, i64_t, i64_t),
-			("and", Builder::build_and, bool_t, bool_t, bool_t),
-			("or", Builder::build_or, bool_t, bool_t, bool_t),
-			("xor", Builder::build_xor, bool_t, bool_t, bool_t),
-		] {
-			let func_typ = Type::new_function(out_typ, &[a_typ, b_typ]);
-			let func = self.module.add_function(binop, func_typ);
-			let entry = func.append("entry");
-
-			self.builder.position_at_end(entry);
-			let operation = instr(&self.builder, &func[0], &func[1]);
-			self.builder.build_ret(operation);
-
-			core_funcs.insert(binop, func);
-		}
-
-		for (id, predicate) in vec![
-			("=", Predicate::Equal),
-			("/=", Predicate::NotEqual),
-			(">", Predicate::GreaterThan),
-			(">=", Predicate::GreaterThanOrEqual),
-			("<", Predicate::LessThan),
-			("<=", Predicate::LessThanOrEqual),
-		] {
-			let func_typ = Type::new_function(bool_t, &[i64_t, i64_t]);
-			let func = self.module.add_function(id, func_typ);
-			let entry = func.append("entry");
-
-			self.builder.position_at_end(entry);
-			let r = self.builder.build_cmp(&func[0], &func[1], predicate);
-			self.builder.build_ret(r);
-
-			core_funcs.insert(id, func);
-		}
-
-		env.funcs.push(core_funcs);
-	}
-
 	fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
 		self.builder.get_insert_block().and_then(|bb| bb.get_parent()).and_then(CastFrom::cast)
 	}
@@ -150,11 +86,11 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		Value::new_struct(self.context, &[], false)
 	}
 
-	fn gen_type(&self, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Type {
-		use lib::front::parse::Type as PType;
+	fn gen_type(&self, typ: &ast::Type<'src>) -> &'ctx Type {
+		use lib::front::ast::Type as PType;
 
 		match *typ {
-			PType::Unknown => pos.error(ICE("type was unknown at IR translation time".into())),
+			PType::Unknown => unreachable!(),
 			PType::Basic("Int8") => Type::get::<i8>(self.context),
 			PType::Basic("Int16") => Type::get::<i16>(self.context),
 			PType::Basic("Int32") => Type::get::<i32>(self.context),
@@ -167,11 +103,17 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			PType::Basic("Float32") => Type::get::<f32>(self.context),
 			PType::Basic("Float64") => Type::get::<f64>(self.context),
 			PType::Basic("Nil") => Type::new_struct(&[], false),
+			PType::Construct("proc", _) => {
+				let (params, ret) = typ.get_proc_sig().unwrap();
+				Type::new_function(
+					self.gen_type(ret),
+					&params.iter().map(|param| self.gen_type(param)).collect::<Vec<_>>())
+			},
 			_ => unimplemented!(),
 		}
 	}
 
-	fn gen_lit<I>(&self, lit: &str, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value
+	fn gen_lit<I>(&self, lit: &str, typ: &ast::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value
 		where I: Compile<'ctx> + FromStr
 	{
 		lit.parse::<I>()
@@ -179,8 +121,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			.unwrap_or_else(|_| pos.error(CodegenErr::num_parse_err(typ)))
 	}
 
-	fn gen_num(&self, lit: &str, typ: &parse::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value {
-		use lib::front::parse::Type as PType;
+	fn gen_num(&self, lit: &str, typ: &ast::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value {
+		use lib::front::ast::Type as PType;
 
 		let parser = match *typ {
 			PType::Basic("Int8") => CodeGenerator::gen_lit::<i8>,
@@ -208,11 +150,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
 	}
 
-	fn gen_str(&self, lit: StrLit<'src>, pos: &SrcPos<'src>) -> &Value {
-		let unescaped_lit = lit.unescape()
-			.unwrap_or_else(|(e, i)| pos.with_positive_offset(i).error(e));
-
-		let bytes = unescaped_lit.compile(self.context);
+	fn gen_str(&self, lit: &str, pos: &SrcPos<'src>) -> &Value {
+		let bytes = lit.compile(self.context);
 
 		let static_array = self.module.add_global_constant("str_lit", bytes);
 
@@ -221,7 +160,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		//     where @lit.bytes = global [13 x i8] c"Hello, world!"
 		Value::new_struct(
 			self.context,
-			&[self.get_array_as_ptr(static_array), unescaped_lit.len().compile(self.context)],
+			&[self.get_array_as_ptr(static_array), lit.len().compile(self.context)],
 			false)
 	}
 
@@ -244,25 +183,25 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			})
 			.or(env.funcs.get(binding)
 				.map(|&func| &**func))
-		.unwrap_or_else(|| path.pos.error(ICE("undefined binding".into())))
+			.unwrap_or_else(|| path.pos.error(ICE("undefined binding at compile time".into())))
 	}
 
 	/// Generates IR code for a procedure call. If the call is in a tail position and the call
 	/// is a recursive call to the caller itself, make a tail call and return `Nothing`.
 	/// Otherwise, make a normal call and return the result.
-	fn gen_sexpr(&'ctx self,
+	fn gen_call(&'ctx self,
 		env: &mut Env<'src, 'cdef, 'ctx>,
-		sexpr: &'cdef SExpr<'src>,
+		call: &'cdef Call<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
-		let proced: &Function = self.gen_expr(env, &sexpr.proced, false)
+		let proced: &Function = self.gen_expr(env, &call.proced, false)
 			.map(CastFrom::cast)
 			.unwrap()
-			.unwrap_or_else(|| sexpr.proced.pos()
+			.unwrap_or_else(|| call.proced.pos()
 				.error(ICE("expression in procedure pos is not a function".into())));
 
 		let mut args = Vec::new();
-		for arg in &sexpr.args {
+		for arg in &call.args {
 			args.push(self.gen_expr(env, arg, false).unwrap())
 		}
 
@@ -303,7 +242,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	fn gen_if(&'ctx self,
 		env: &mut Env<'src, 'cdef, 'ctx>,
 		cond: &'cdef If<'src>,
-		typ: &parse::Type<'src>,
+		typ: &ast::Type<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
 		let parent_func = self.current_func().unwrap();
@@ -335,14 +274,14 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		if phi_nodes.is_empty() {
 			None
 		} else {
-			Some(self.builder.build_phi(self.gen_type(typ, &cond.pos), &phi_nodes))
+			Some(self.builder.build_phi(self.gen_type(typ), &phi_nodes))
 		}
 	}
 
 	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, lam: &'cdef Lambda<'src>)
 		-> &Value
 	{
-		let anon = self.gen_func_decl("lambda", lam);
+		let anon = self.gen_func_decl("lambda", &lam.get_type());
 
 		self.build_func_def(env, anon, lam);
 
@@ -359,10 +298,10 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		match *expr.val {
 			Expr::Nil(_) => Some(self.gen_nil()),
 			Expr::NumLit(lit, ref pos) => Some(self.gen_num(lit, &expr.typ, pos)),
-			Expr::StrLit(lit, ref pos) => Some(self.gen_str(lit, pos)),
+			Expr::StrLit(ref lit, ref pos) => Some(self.gen_str(lit, pos)),
 			Expr::Bool(b, _) => Some(b.compile(self.context)),
 			Expr::Binding(ref path) => Some(self.gen_r_binding(env, path)),
-			Expr::SExpr(ref sexpr) => self.gen_sexpr(env, sexpr, in_tail_pos),
+			Expr::Call(ref call) => self.gen_call(env, call, in_tail_pos),
 			Expr::Block(ref block) => self.gen_block(env, block, in_tail_pos),
 			Expr::If(ref cond) => self.gen_if(env, cond, &expr.typ, in_tail_pos),
 			Expr::Lambda(ref lam) => Some(self.gen_lambda(env, lam)),
@@ -384,14 +323,14 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 
-	fn gen_const_sexpr(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, sexpr: &'cdef SExpr<'src>)
+	fn gen_const_call(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, call: &'cdef Call<'src>)
 		-> &Value
 	{
-		let args = sexpr.args.iter()
+		let args = call.args.iter()
 			.map(|arg| self.gen_const_expr(env, arg))
 			.collect::<Vec<_>>();
 
-		match *sexpr.proced.val {
+		match *call.proced.val {
 			Expr::Binding(ref path) if path == "+" =>
 				self.builder.build_add(&args[0], &args[1]),
 			Expr::Binding(ref path) if path == "-" =>
@@ -412,7 +351,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 				self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan),
 			Expr::Binding(ref path) =>
 				path.pos.error("Binding does not point to a constant function"),
-			_ => sexpr.pos.error("Non-constant function in constant expression")
+			_ => call.pos.error("Non-constant function in constant expression")
 		}
 	}
 
@@ -423,10 +362,10 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		match *expr.val {
 			Expr::Nil(_) => self.gen_nil(),
 			Expr::NumLit(lit, ref pos) => self.gen_num(lit, &expr.typ, pos),
-			Expr::StrLit(lit, ref pos) => self.gen_str(lit, pos),
+			Expr::StrLit(ref lit, ref pos) => self.gen_str(lit, pos),
 			Expr::Bool(b, _) => b.compile(self.context),
 			Expr::Binding(ref path) => self.gen_eval_const_binding(env, path),
-			Expr::SExpr(ref sexpr) => self.gen_const_sexpr(env, sexpr),
+			Expr::Call(ref call) => self.gen_const_call(env, call),
 			_ => expr.pos().error("expression cannot be used in a constant expression"),
 		}
 	}
@@ -437,18 +376,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		self.module.add_global_constant(id, self.gen_const_expr(env, def))
 	}
 
-	fn gen_func_decl(&self, id: &str, lam: &Lambda<'src>) -> &mut Function {
-		let typ = Type::new_function(
-			self.gen_type(&lam.body.typ, lam.body.pos()),
-			&lam.params.iter().map(|tb| self.gen_type(&tb.typ, &tb.pos)).collect::<Vec<_>>());
-
-		let f = self.module.add_function(id, typ);
-
-		for (i, param_name) in lam.params.iter().map(|tb| tb.ident).enumerate() {
-			f[i].set_name(param_name)
-		}
-
-		f
+	fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &mut Function {
+		self.module.add_function(id, self.gen_type(typ))
 	}
 
 	fn build_func_def(&'ctx self,
@@ -474,9 +403,22 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		env.vars = old_vars;
 	}
 
+	pub fn gen_extern_decls(&'ctx self,
+		env: &mut Env<'src, 'cdef, 'ctx>,
+		extern_funcs: &HashMap<&'src str, ast::Type<'src>>
+	) {
+		let mut func_decls = HashMap::new();
+
+		for (&id, typ) in extern_funcs.iter() {
+			func_decls.insert(id, self.gen_func_decl(id, typ) as &_);
+		}
+
+		env.funcs.push(func_decls);
+	}
+
 	pub fn gen_const_defs(&'ctx self,
 		env: &mut Env<'src, 'cdef, 'ctx>,
-		const_defs: &'cdef HashMap<&'src str, parse::ConstDef<'src>>
+		const_defs: &'cdef HashMap<&'src str, ast::ConstDef<'src>>
 	) {
 		let (mut func_decls, mut const_decls) = (HashMap::new(), HashMap::new());
 		// function declarations that are to be defined
@@ -485,7 +427,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		for (&id, const_def) in const_defs.iter() {
 			match *const_def.body.val {
 				Expr::Lambda(ref lam) => {
-					let func: &_ = self.gen_func_decl(id, lam);
+					let func: &_ = self.gen_func_decl(id, &lam.get_type());
 					func_decls.insert(id, func);
 					undef_funcs.push((func, lam));
 				},

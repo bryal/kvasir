@@ -28,9 +28,9 @@ use term;
 
 pub mod lex;
 pub mod macro_;
+pub mod ast;
 pub mod parse;
-mod inference;
-pub mod core_lib;
+pub mod inference;
 
 // All results from terminal related actions are ignored
 
@@ -199,4 +199,17 @@ impl<'src> Debug for SrcPos<'src> {
 			None => write!(fmt, "SrcPos {{ start: {} }}", self.start),
 		}
 	}
+}
+
+pub fn error<E: Display>(e: E) -> ! {
+	let mut t = term::stdout().expect("Could not acquire access to stdout");
+
+	t.fg(term::color::BRIGHT_RED).ok();
+	print!("Error: ");
+	t.reset().ok();
+
+	println!("{}", e);
+
+	println!("\nError occured during compilation. Exiting\n");
+	exit(0)
 }

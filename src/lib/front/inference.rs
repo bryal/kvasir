@@ -30,9 +30,10 @@
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
 use std::fmt::{ self, Display };
-use lib::front::parse::*;
+use std::mem::replace;
+use std::collections::HashMap;
+use lib::front::ast::*;
 use lib::collections::ScopeStack;
-use super::core_lib::CORE_CONSTS_TYPES;
 use self::InferenceErr::*;
 
 enum InferenceErr<'p, 'src: 'p> {
@@ -54,189 +55,170 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 	}
 }
 
-type ConstDefs<'src> = ScopeStack<&'src str, Option<ConstDef<'src>>>;
-
-fn get_var_type<'src, 't>(var_types: &'t [TypedBinding<'src>], ident: &str)
-	-> Option<&'t Type<'src>>
-{
-	var_types.iter().rev().find(|tb| tb.ident == ident).map(|tb| &tb.typ)
+struct Inferer<'src> {
+	vars: Vec<TypedBinding<'src>>,
+	const_defs: ScopeStack<&'src str, Option<ConstDef<'src>>>,
+	extern_funcs: ScopeStack<&'src str, Type<'src>>,
 }
-fn get_var_type_mut<'src, 't>(var_types: &'t mut Vec<TypedBinding<'src>>, bnd: &str)
-	-> Option<&'t mut Type<'src>>
-{
-	var_types.iter_mut().rev().find(|tb| tb.ident == bnd).map(|tb| &mut tb.typ)
-}
+impl<'src> Inferer<'src> {
+	fn new(ast: &mut AST<'src>) -> Self {
+		let mut const_defs = ScopeStack::new();
+		const_defs.push(
+			replace(&mut ast.const_defs, HashMap::new())
+				.into_iter()
+				.map(|(k, v)| (k, Some(v)))
+				.collect());
 
-impl<'src> Type<'src> {
-	pub fn is_unknown(&self) -> bool {
-		match *self {
-			Type::Unknown => true,
-			_ => false
-		}
-	}
-	pub fn is_partially_known(&self) -> bool {
-		! self.is_unknown()
-	}
-	pub fn is_fully_known(&self) -> bool {
-		match *self {
-			Type::Unknown => false,
-			Type::Basic(_) => true,
-			Type::Construct(_, ref args) => args.iter().all(Type::is_fully_known),
+		let mut extern_funcs = ScopeStack::new();
+		extern_funcs.push(replace(&mut ast.extern_funcs, HashMap::new()));
+
+		Inferer {
+			vars: Vec::new(),
+			const_defs: const_defs,
+			extern_funcs: extern_funcs,
 		}
 	}
 
-	/// Recursively infer all `Unknown` by the `by` type.
-	/// If types are incompatible, e.g. `(Vec Inferred)` v. `(Option Int32)`, return `None`
-	fn infer_by(&self, by: &Self) -> Option<Self> {
-		match (self, by) {
-			(_, _) if self == by => Some(self.clone()),
-			(_, &Type::Unknown) => Some(self.clone()),
-			(&Type::Unknown, _) => Some(by.clone()),
-			(&Type::Construct(ref s1, ref as1), &Type::Construct(ref s2, ref as2)) if s1 == s2 =>
-				as1.iter()
-					.zip(as2.iter())
-					.map(|(a1, a2)| a1.infer_by(a2))
-					.collect::<Option<_>>()
-					.map(|args| Type::Construct(s1.clone(), args)),
-			(_, _) => None,
-		}
+	fn into_inner(mut self)
+		-> (HashMap<&'src str, ConstDef<'src>>, HashMap<&'src str, Type<'src>>)
+	{
+		let const_defs = self.const_defs.pop()
+			.expect("ICE: Inferer::into_inner: const_defs.pop() failed")
+			.into_iter()
+			.map(|(k, v)| (k, v.expect("ICE: Inferer::into_inner: None when unmapping const def")))
+			.collect();
+		let extern_funcs = self.extern_funcs.pop()
+			.expect("ICE: Inferer::into_inner: extern_funcs.pop() failed");
+
+		(const_defs, extern_funcs)
 	}
-}
 
-impl<'src> ConstDef<'src> {
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Type<'src> {
-		self.body.infer_types(expected_ty, var_types, const_defs)
-			.unwrap_or_else(|found_ty| self.body.pos().error(TypeMis(expected_ty, &found_ty)))
+	fn get_var_type(&self, id: &str) -> Option<&Type<'src>> {
+		self.vars.iter().rev().find(|tb| tb.ident == id).map(|tb| &tb.typ)
 	}
-}
 
-impl<'src> Path<'src> {
-	fn infer_types(&self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Result<Type<'src>, Type<'src>> {
-		if let Some(ident) = self.ident() {
-			if let Some(core_ty) = CORE_CONSTS_TYPES.get(ident) {
-				// Don't infer types for core items. Just check compatibility with expected_ty
+	fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
+		self.vars.iter_mut().rev().find(|tb| tb.ident == id).map(|tb| &mut tb.typ)
+	}
 
-				core_ty.infer_by(expected_ty).ok_or(core_ty.clone())
-			} else if let Some(height) = const_defs.get_height(ident) {
-				// Path is a constant
+	fn infer_const_def(&mut self, def: &mut ConstDef<'src>, expected_ty: &Type<'src>)
+		-> Type<'src>
+	{
+		self.infer_expr_meta(&mut def.body, expected_ty)
+			.unwrap_or_else(|found_ty| def.body.pos().error(TypeMis(expected_ty, &found_ty)))
+	}
 
-				if const_defs.get_at_height(ident, height).unwrap().is_some() {
-					const_defs.do_for_item_at_height(ident, height, |const_defs, def|
-						Ok(def.infer_types(expected_ty, &mut Vec::new(), const_defs).clone()))
-				} else {
-					// We are currently doing inference inside this definition
+	fn infer_path(&mut self, path: &Path<'src>, expected_ty: &Type<'src>)
+		-> Result<Type<'src>, Type<'src>>
+	{
+		let ident = if let Some(ident) = path.ident() {
+			ident
+		} else {
+			panic!("Inferer::infer_path: Not implemented for anything but basic identifiers")
+		};
 
-					Ok(Type::Unknown)
-				}
+		// In order to not violate any borrowing rules, use get_height to check if entry exists
+		// and to speed up upcoming lookup
+		if let Some(height) = self.extern_funcs.get_height(ident) {
+			// Don't infer types for external items,
+			// just check compatibility with expected_ty
+
+			let typ = self.extern_funcs.get_at_height(ident, height).unwrap();
+			typ.infer_by(expected_ty).ok_or(typ.clone())
+		} else if let Some(height) = self.const_defs.get_height(ident) {
+			// Path is a constant
+
+			let maybe_def = replace(
+				self.const_defs.get_at_height_mut(ident, height).unwrap(),
+				None);
+
+			if let Some(mut def) = maybe_def {
+				let old_vars = replace(&mut self.vars, Vec::new());
+
+				let infered = self.infer_const_def(&mut def, expected_ty);
+
+				self.vars = old_vars;
+				self.const_defs.update(ident, Some(def));
+
+				Ok(infered)
 			} else {
-				if let Some(stack_bnd_ty) = get_var_type_mut(var_types, ident) {
-					// Path is a var
+				// We are currently doing inference inside this definition
 
-					stack_bnd_ty.infer_by(expected_ty)
-						.map(|infered_ty| {
-							*stack_bnd_ty = infered_ty.clone();
-							infered_ty
-						})
-						.ok_or(stack_bnd_ty.clone())
-				} else {
-					self.pos.error(format!("Unresolved path `{}`", ident))
-				}
+				Ok(Type::Unknown)
 			}
 		} else {
-			panic!("Path::infer_types: Not implemented for anything but simple idents")
+			let exts = self.extern_funcs.clone();
+			if let Some(stack_bnd_ty) = self.get_var_type_mut(ident) {
+				// Path is a var
+
+				stack_bnd_ty.infer_by(expected_ty)
+					.map(|inferred| {
+						*stack_bnd_ty = inferred.clone();
+						inferred
+					})
+					.ok_or(stack_bnd_ty.clone())
+			} else {
+				println!("exts: {:?}", exts);
+				path.pos.error(format!("Unresolved path `{}`", ident))
+			}
 		}
 	}
-}
 
-/// Extract a function type signature in the form of (prod param1  ... paramn body)
-/// to (&[param1, ..., paramn], body)
-fn unpack_proc_typ<'src, 't>(sig: &'t Type<'src>) -> Option<(&'t [Type<'src>], &'t Type<'src>)> {
-	match sig {
-		&Type::Construct("proc", ref ts) => ts.split_last().map(|(b, ps)| (ps, b)),
-		_ => None,
-	}
-}
-
-impl<'src> SExpr<'src> {
-	fn body_type(&self) -> &Type<'src> {
-		unpack_proc_typ(&self.proced.typ).expect("SExpr::body_type: Could not extract fn sig").1
-	}
-
-	fn infer_arg_types(&mut self,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>)
-	{
-		let expected_types = if self.proced.typ.is_partially_known() {
+	fn infer_call_arg_types(&mut self, call: &mut Call<'src>)  {
+		let expected_types: Vec<&Type> = if call.proced.typ.is_partially_known() {
 			// The type of the procedure is not unknown.
 			// If it's a valid procedure type, use it for inference
 
-			match unpack_proc_typ(&self.proced.typ) {
-				Some((param_tys, _)) if param_tys.len() == self.args.len() =>
+			match call.proced.typ.get_proc_sig() {
+				Some((param_tys, _)) if param_tys.len() == call.args.len() =>
 					param_tys.iter().collect(),
-				Some((param_tys, _)) => self.pos.error(
+				Some((param_tys, _)) => call.pos.error(
 					format!("Arity mismatch. Expected {}, found {}",
 						param_tys.len(),
-						self.args.len())),
-				None => self.proced.pos().error(
+						call.args.len())),
+				None => call.proced.pos().error(
 					TypeMis(
 						&Type::new_proc(vec![Type::Unknown], Type::Unknown),
-						&self.proced.typ)),
+						&call.proced.typ)),
 			}
 		} else {
-			vec![&self.proced.typ; self.args.len()]
+			vec![&call.proced.typ; call.args.len()]
 		};
 
-		for (arg, expect_ty) in self.args.iter_mut().zip(expected_types) {
-			if let Err(ref err_ty) = arg.infer_types(expect_ty, var_types, const_defs) {
+		for (arg, expect_ty) in call.args.iter_mut().zip(expected_types) {
+			if let Err(ref err_ty) = self.infer_expr_meta(arg, expect_ty) {
 				arg.pos().error(TypeMis(expect_ty, err_ty));
 			}
 		}
 	}
 
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> &Type<'src> {
-		self.infer_arg_types(var_types, const_defs);
+	fn infer_call<'call>(&mut self, call: &'call mut Call<'src>, expected_ty: &Type<'src>)
+		-> &'call Type<'src>
+	{
+		self.infer_call_arg_types(call);
 
 		let expected_proc_type = Type::new_proc(
-			self.args.iter().map(|tb| tb.typ.clone()).collect(),
+			call.args.iter().map(|tb| tb.typ.clone()).collect(),
 			expected_ty.clone());
 
-		if let Err(err_ty) = self.proced.infer_types(&expected_proc_type, var_types, const_defs) {
-			self.proced.pos().error(TypeMis(&expected_proc_type, &err_ty));
+		if let Err(err_ty) = self.infer_expr_meta(&mut call.proced, &expected_proc_type) {
+			call.proced.pos().error(TypeMis(&expected_proc_type, &err_ty));
 		}
-		
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 
-		if self.proced.typ.is_partially_known() {
-			// If type of `self.proced` hasn't been infered,
+		if call.proced.typ.is_partially_known() {
+			// If type of the calls procedure hasn't been infered,
 			// there's no new data to help with infence
-			self.infer_arg_types(var_types, const_defs);
+			self.infer_call_arg_types(call);
 		}
 
-		self.body_type()
+		call.body_type()
 	}
-}
 
-impl<'src> Block<'src> {
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Type<'src> {
-		let (init, last) = if let Some((last, init)) = self.exprs.split_last_mut() {
+	fn infer_block(&mut self, block: &mut Block<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		let (init, last) = if let Some((last, init)) = block.exprs.split_last_mut() {
 			if last.val.is_var_def() {
 				last.pos().error("Block ended with variable definition");
 			}
@@ -245,168 +227,148 @@ impl<'src> Block<'src> {
 			return Type::nil()
 		};
 
-		let mut const_defs = const_defs.map_push_local(
-			&mut self.const_defs,
-			|it| it.map(|(k, v)| (k, Some(v))),
-			|it| it.map(|(k, v)| (k, v.unwrap())));
+		self.const_defs.push(
+			replace(&mut block.const_defs, HashMap::new())
+				.into_iter()
+				.map(|(k, v)| (k, Some(v)))
+				.collect());
 
-		let old_vars_len = var_types.len();
+		let old_vars_len = self.vars.len();
 
 		// First pass. If possible, all vars defined in block should have types infered.
 		for expr in init.iter_mut() {
 			if let Expr::VarDef(ref mut var_def) = *expr.val {
-				var_def.infer_types(var_types, &mut const_defs);
-				var_types.push(var_def.binding.clone());
+				self.infer_var_def(var_def);
+				self.vars.push(var_def.binding.clone());
 			} else {
-				expr.infer_types(&Type::Unknown, var_types, &mut const_defs).unwrap();
+				self.infer_expr_meta(expr, &Type::Unknown)
+					.expect("ICE: error infering expr in block");
 			}
 		}
 
-		last.infer_types(expected_ty, var_types, &mut const_defs)
+		self.infer_expr_meta(last, expected_ty)
 			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
 
-		let mut block_defined_vars = var_types.split_off(old_vars_len).into_iter();
+		let mut block_defined_vars = self.vars.split_off(old_vars_len).into_iter();
 
 		// Second pass. Infer types for all expressions in block now that types for all bindings
 		// are, if possible, known.
 		for expr in init {
 			if let Expr::VarDef(ref mut var_def) = *expr.val {
-				var_def.infer_types(var_types, &mut const_defs);
-				var_types.push(block_defined_vars.next().unwrap());
+				self.infer_var_def(var_def);
+				self.vars.push(block_defined_vars.next().expect("ICE: block_defined_vars empty"));
 			} else {
-				expr.infer_types(&Type::Unknown, var_types, &mut const_defs)
+				self.infer_expr_meta(expr, &Type::Unknown)
 					.unwrap_or_else(|err_ty| expr.pos().error(TypeMis(&Type::Unknown, &err_ty)));
 			}
 		}
-		last.infer_types(expected_ty, var_types, &mut const_defs)
+		self.infer_expr_meta(last, expected_ty)
 			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
+
+		block.const_defs = self.const_defs.pop()
+			.expect("ICE: ScopeStack was empty when replacing Block const defs")
+			.into_iter()
+			.map(|(k, v)| (k, v.expect("ICE: None when unmapping block const def")))
+			.collect();
 
 		last.typ.clone()
 	}
-}
 
-impl<'src> If<'src> {
-	fn infer_types(&mut self,
-		expected_type: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Result<Type<'src>, Type<'src>> {
-		// TODO: Verify everything is still correct
-
-		self.predicate.infer_types(&Type::Basic("Bool"), var_types, const_defs)
+	fn infer_if(&mut self, cond: &mut If<'src>, expected_type: &Type<'src>)
+		-> Result<Type<'src>, Type<'src>>
+	{
+		self.infer_expr_meta(&mut cond.predicate, &Type::Basic("Bool"))
 			.unwrap_or_else(|err_ty|
-				self.predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
+				cond.predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
 
-		for clause in &mut [&mut self.consequent, &mut self.alternative] {
-			clause.infer_types(expected_type, var_types, const_defs)
+		for clause in &mut [&mut cond.consequent, &mut cond.alternative] {
+			self.infer_expr_meta(clause, expected_type)
 				.unwrap_or_else(|err_ty|
 					clause.pos().error(TypeMis(expected_type, &err_ty)));
 		}
 
-		if let Some(inferred) = self.consequent.typ.infer_by(&self.alternative.typ) {
-			if self.consequent.typ == inferred && self.alternative.typ == inferred {
+		if let Some(inferred) = cond.consequent.typ.infer_by(&cond.alternative.typ) {
+			if cond.consequent.typ == inferred && cond.alternative.typ == inferred {
 				Ok(inferred)
 			} else {
-				self.infer_types(&inferred, var_types, const_defs)
+				self.infer_if(cond, &inferred)
 			}
 		} else {
-			self.pos.error(ArmsDiffer(&self.consequent.typ, &self.alternative.typ))
+			cond.pos.error(ArmsDiffer(&cond.consequent.typ, &cond.alternative.typ))
 		}
 	}
-}
 
-impl<'src> Lambda<'src> {
-	fn infer_arg_types<'a, It: IntoIterator<Item=&'a Type<'src>>>(&mut self, expected_params: It)
-		where 'src: 'a
-	{
-		for (param, expected_param) in self.params.iter_mut().zip(expected_params) {
-			match param.typ.infer_by(&expected_param) {
+	fn infer_lambda_args(&mut self, lam: &mut Lambda<'src>, expected_params: &[&Type<'src>]) {
+		for (param, expected_param) in lam.params.iter_mut().zip(expected_params) {
+			match param.typ.infer_by(expected_param) {
 				Some(infered) => param.typ = infered,
 				None => param.pos.error(TypeMis(expected_param, &param.typ))
 			}
 		}
 	}
 
-	fn get_type(&self) -> Type<'src> {
-		Type::new_proc(
-			self.params.iter().map(|tb| tb.typ.clone()).collect(),
-			self.body.typ.clone())
-	}
-
-	// TODO: Add support for enviroment capturing closures
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Result<Type<'src>, Type<'src>> {
-		let (expected_params, expected_body) = match unpack_proc_typ(expected_ty) {
-			Some((params, _)) if params.len() != self.params.len() => return Err(self.get_type()),
+	fn infer_lambda(&mut self, lam: &mut Lambda<'src>, expected_ty: &Type<'src>)
+		-> Result<Type<'src>, Type<'src>>
+	{
+		let (expected_params, expected_body) = match expected_ty.get_proc_sig() {
+			Some((params, _)) if params.len() != lam.params.len() => return Err(lam.get_type()),
 			Some((params, body)) => (params.iter().collect(), body),
 			None if *expected_ty == Type::Unknown => (
-				vec![expected_ty; self.params.len()],
+				vec![expected_ty; lam.params.len()],
 				expected_ty,
 			),
-			None => return Err(self.get_type()),
+			None => return Err(lam.get_type()),
 		};
 
 		// Own type is `Unknown` if no type has been infered yet, or none was inferable
 
-		if self.get_type().is_partially_known() {
-			if let Some(infered) = expected_ty.infer_by(&self.get_type()) {
-				if self.get_type() == infered {
+		if lam.get_type().is_partially_known() {
+			if let Some(infered) = expected_ty.infer_by(&lam.get_type()) {
+				if lam.get_type() == infered {
 					// Own type can't be infered further by `expected_ty`
-					return Ok(self.get_type());
+					return Ok(lam.get_type());
 				}
 			} else {
 				// Own type and expected type are not compatible. Type mismatch
-				return Err(self.get_type());
+				return Err(lam.get_type());
 			}
 		}
 
-		self.infer_arg_types(expected_params);
+		self.infer_lambda_args(lam, &expected_params);
 
-		let (vars_len, n_params) = (var_types.len(), self.params.len());
+		let (vars_len, n_params) = (self.vars.len(), lam.params.len());
 
-		var_types.extend(self.params.clone());
+		self.vars.extend(lam.params.clone());
 
-		self.body.infer_types(&expected_body, var_types, const_defs)
-			.unwrap_or_else(|err_ty| self.body.pos().error(TypeMis(expected_body, &err_ty)));
+		self.infer_expr_meta(&mut lam.body, &expected_body)
+			.unwrap_or_else(|err_ty| lam.body.pos().error(TypeMis(expected_body, &err_ty)));
 
-		assert_eq!(var_types.len(), vars_len + n_params);
+		assert_eq!(self.vars.len(), vars_len + n_params);
 
-		for (param, found) in self.params.iter_mut()
-			.zip(var_types.drain(vars_len..))
+		for (param, found) in lam.params.iter_mut()
+			.zip(self.vars.drain(vars_len..))
 			.map(|(param, found)| (&mut param.typ, found.typ))
 		{
 			*param = found;
 		}
-		Ok(self.get_type())
+		Ok(lam.get_type())
 	}
-}
 
-impl<'src> VarDef<'src> {
-	fn infer_types(&mut self,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>)
-	{
-		match self.body.infer_types(&self.binding.typ, var_types, const_defs) {
-			Ok(body_ty) =>  self.binding.typ = body_ty.clone(),
-			Err(found) => self.pos.error(TypeMis(&self.binding.typ, &found))
+	fn infer_var_def(&mut self, def: &mut VarDef<'src>) {
+		match self.infer_expr_meta(&mut def.body, &def.binding.typ) {
+			Ok(body_ty) => def.binding.typ = body_ty.clone(),
+			Err(found) => def.pos.error(TypeMis(&def.binding.typ, &found))
 		}
 	}
-}
 
-impl<'src> Expr<'src> {
 	/// On success, return expected, infered type. On failure, return unexpected, found type
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Result<Type<'src>, Type<'src>> {
-		match *self {
+	fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>)
+		-> Result<Type<'src>, Type<'src>>
+	{
+		match *expr {
 			Expr::Nil(_) => expected_ty.infer_by(&Type::nil()).ok_or(Type::nil()),
 			Expr::VarDef(ref mut def) => if expected_ty.infer_by(&Type::nil()).is_some() {
-				def.infer_types(var_types, const_defs);
+				self.infer_var_def(def);
 				Ok(Type::nil())
 			} else {
 				Err(Type::nil())
@@ -427,43 +389,39 @@ impl<'src> Expr<'src> {
 			},
 			Expr::Bool(_, _) => expected_ty.infer_by(&Type::Basic("Bool"))
 				.ok_or(Type::Basic("Bool")),
-			Expr::Binding(ref path) => path.infer_types(&expected_ty, var_types, const_defs),
-			Expr::SExpr(ref mut sexpr) =>
-				Ok(sexpr.infer_types(&expected_ty, var_types, const_defs).clone()),
+			Expr::Binding(ref path) => self.infer_path(path, &expected_ty),
+			Expr::Call(ref mut call) =>
+				Ok(self.infer_call(call, &expected_ty).clone()),
 			Expr::Block(ref mut block) =>
-				Ok(block.infer_types(&expected_ty, var_types, const_defs)),
-			Expr::If(ref mut cond) => cond.infer_types(&expected_ty, var_types, const_defs),
-			Expr::Lambda(ref mut lambda) => lambda.infer_types(&expected_ty, var_types, const_defs),
+				Ok(self.infer_block(block, &expected_ty)),
+			Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
+			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
 			Expr::Symbol(_, _) => expected_ty.infer_by(&Type::Basic("Symbol"))
 				.ok_or(Type::Basic("Symbol")),
 		}
 	}
-}
 
-/// On type mismatch, return mismatched, found type as `Err`.
-/// Otherwise, return type of `self` as `Ok`
-impl<'src> ExprMeta<'src> {
-	fn infer_types(&mut self,
-		expected_ty: &Type<'src>,
-		var_types: &mut Vec<TypedBinding<'src>>,
-		const_defs: &mut ConstDefs<'src>
-	) -> Result<Type<'src>, Type<'src>> {
+	/// On type mismatch, return mismatched, found type as `Err`.
+	/// Otherwise, return type of `self` as `Ok`
+	fn infer_expr_meta(&mut self, expr: &mut ExprMeta<'src>, expected_ty: &Type<'src>)
+		-> Result<Type<'src>, Type<'src>>
+	{
 		// Own type is `Unknown` if no type has been infered yet, or none was inferable
-		if self.typ.is_partially_known() {
-			if let Some(infered) = expected_ty.infer_by(&self.typ) {
-				if self.typ == infered {
+		if expr.typ.is_partially_known() {
+			if let Some(infered) = expected_ty.infer_by(&expr.typ) {
+				if expr.typ == infered {
 					// Own type can't be infered further by `expected_ty`
-					return Ok(self.typ.clone());
+					return Ok(expr.typ.clone());
 				}
 			} else {
 				// Own type and expected type are not compatible. Type mismatch
-				return Err(self.typ.clone());
+				return Err(expr.typ.clone());
 			}
 		}
 		// Own type is unknown, or `expected_ty` is more known than own type
 
 		// Fill in the gaps of `expected_ty` using own type ascription, if any
-		let expected_ty = if let Some(ref ty_ascription) = self.ty_ascription {
+		let expected_ty = if let Some(ref ty_ascription) = expr.ty_ascription {
 			match expected_ty.infer_by(&ty_ascription.0) {
 				Some(infered) => infered,
 				None => return Err(ty_ascription.0.clone()),
@@ -471,30 +429,30 @@ impl<'src> ExprMeta<'src> {
 		} else {
 			expected_ty.clone()
 		};
-	
-		let found_type = try!(self.val.infer_types(&expected_ty, var_types, const_defs));
 
-		self.typ = found_type.clone();
+		let found_type = try!(self.infer_expr(&mut expr.val, &expected_ty));
+
+		expr.typ = found_type.clone();
 		Ok(found_type)
 	}
 }
 
-impl<'src> AST<'src> {
-	pub fn infer_types(&mut self) {
-		let mut const_defs = ConstDefs::new();
+pub fn infer_types(ast: &mut AST) {
+	let mut inferer = Inferer::new(ast);
 
-		// Push the module scope on top of the stack
-		let mut const_defs = const_defs.map_push_local(
-			&mut self.const_defs,
-			|it| it.map(|(k, v)| (k, Some(v))),
-			|it| it.map(|(k, v)| (
-				k,
-				v.expect(&format!("AST::infer_types: const def `{}` is None", k)))));
+	let mut main = replace(
+			inferer.const_defs.get_mut("main").expect("ICE: In infer_ast: No main def"),
+			None)
+		.unwrap();
 
-		const_defs.do_for_item_at_height("main", 0, |const_defs, main|
-			main.infer_types(
-				&Type::new_proc(vec![], Type::Basic("Int64")),
-				&mut Vec::new(),
-				const_defs));
-	}
+	inferer.infer_const_def(
+		&mut main,
+		&Type::new_proc(vec![], Type::Basic("Int64")));
+
+	inferer.const_defs.update("main", Some(main));
+
+	let (const_defs, extern_funcs) = inferer.into_inner();
+
+	ast.const_defs = const_defs;
+	ast.extern_funcs = extern_funcs;
 }

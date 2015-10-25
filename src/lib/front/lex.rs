@@ -20,13 +20,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::fmt::{ self, Display };
+use std::fmt;
+use std::borrow::Cow;
 use super::SrcPos;
-use super::parse::StrLit;
 use self::LexErr::*;
 
 enum LexErr {
-	/// Type mismatch. (expected, found)
+	UnknownEscape,
+	InvalidEscapeSeq,
 	UntermStr,
 	InvalidStrDelim,
 	InvalidNum,
@@ -34,9 +35,11 @@ enum LexErr {
 	UndelimItem,
 	Unexpected(&'static str)
 }
-impl Display for LexErr {
+impl fmt::Display for LexErr {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
+			UnknownEscape => write!(f, "Unknown character escape"),
+			InvalidEscapeSeq => write!(f, "Invalid escape sequence"),
 			UntermStr => write!(f, "Unterminated string literal"),
 			InvalidStrDelim => write!(f, "Invalid string literal delimiter"),
 			InvalidNum => write!(f, "Invalid numeric literal"),
@@ -47,32 +50,49 @@ impl Display for LexErr {
 	}
 }
 
+fn unescape_char(c: char) -> Option<char> {
+	// TODO: add more escapes
+	match c {
+		'n' => Some('\n'),
+		't' => Some('\t'),
+		'0' => Some('\0'),
+		_   => None
+	}
+}
+
 /// A token
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Token<'src> {
 	LParen,
 	RParen,
 	Ident(&'src str),
 	Num(&'src str),
-	Str(StrLit<'src>),
+	Str(Cow<'src, str>),
 	Quote,
 }
 
 /// Tokenize the string literal in `src` at `start`.
-/// Return the `Token` and it's length, including delimiting characters, in the source.
-///
-/// # Panics
-/// Panics if the string literal is unterminated
+/// Return the unescaped literal as a `Token` and it's length,
+/// including delimiting characters, in the source.
 fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
-	let str_body_src = &src[start + 1 ..];
-	let mut char_it = str_body_src.char_indices();
+	let mut s = String::new();
 
-	while let Some((i, c)) = char_it.next() {
+	let mut chars = src[start + 1 ..].char_indices();
+
+	while let Some((i, c)) = chars.next() {
 		match c {
-			// TODO: Unescape escape sequences
-			// '\\' => { char_it.next(); },
-			'"' => return (Token::Str(StrLit::Plain(&str_body_src[..i])), i + 2),
-			_ => (),
+			'\n' | '\t' => continue,
+			'\\' => if let Some((j, e)) = chars.next() {
+				if let Some(u) = unescape_char(e) {
+					s.push(u)
+				} else {
+					SrcPos::new_pos(src, start + 1 + j).error(UnknownEscape)
+				}
+			} else {
+				SrcPos::new_pos(src, start + 1 + i).error(InvalidEscapeSeq)
+			},
+			'"' => return (Token::Str(Cow::Owned(s)), i + 2),
+			_ => s.push(c),
 		}
 	}
 	SrcPos::new_pos(src, start).error(UntermStr)
@@ -80,9 +100,6 @@ fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
 
 /// Tokenize the raw string literal in `src` at `start`.
 /// Return the `Token` and it's length, including delimiting characters, in the source.
-///
-/// # Panics
-/// Panics if the raw string literal is unterminated
 fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 	let str_src = &src[start + 1 ..];
 	let n_delim_octothorpes = str_src.chars().take_while(|&c| c == '#').count();
@@ -98,7 +115,7 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 		if c == '"' && str_body_src[i + 1 ..].starts_with(delim_octothorpes) {
 			// octothorpes before and after + 'r' + open and end quotes + str len
 			let literal_len = n_delim_octothorpes * 2 + 3 + i;
-			return (Token::Str(StrLit::Raw(&str_body_src[..i])), literal_len)
+			return (Token::Str(Cow::Borrowed(&str_body_src[..i])), literal_len)
 		}
 	}
 	SrcPos::new_pos(src, start).error(UntermStr)
@@ -184,15 +201,15 @@ impl<'src> Iterator for Tokens<'src> {
 
 	fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
 		let pos = self.pos;
-		let mut char_it = self.src[pos..]
+		let mut chars = self.src[pos..]
 			.char_indices()
 			.map(|(n, c)| (pos + n, c));
 
-		while let Some((i, c)) = char_it.next() {
+		while let Some((i, c)) = chars.next() {
 			let (token, len) = match c {
 				_ if c.is_whitespace() => continue,
 				';' => {
-					while let Some((_, c)) = char_it.next() {
+					while let Some((_, c)) = chars.next() {
 						if c == '\n' { break; }
 					}
 					continue
@@ -222,7 +239,7 @@ pub enum TokenTree<'src> {
 	List(Vec<TokenTreeMeta<'src>>),
 	Ident(&'src str),
 	Num(&'src str),
-	Str(StrLit<'src>),
+	Str(Cow<'src, str>),
 }
 impl<'src> TokenTree<'src> {
 	pub fn get_ident(&self) -> Option<&str> {

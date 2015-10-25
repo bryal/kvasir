@@ -24,7 +24,7 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 use llvm::Context;
-use lib::front::parse::AST;
+use lib::front::ast::AST;
 use { Emission, FileName };
 use self::llvm::*;
 
@@ -43,7 +43,7 @@ pub fn compile(
 
 	let mut env = Env::new();
 
-	codegenerator.add_core_defs(&mut env);
+	codegenerator.gen_extern_decls(&mut env, &ast.extern_funcs);
 
 	codegenerator.gen_const_defs(&mut env, &ast.const_defs);
 
@@ -60,15 +60,18 @@ pub fn compile(
 		Emission::LlvmBc => codegenerator.module
 			.write_bitcode(&out_file_name.clone().unwrap_or_with_ext("bc").to_string_lossy())
 			.unwrap_or_else(|e| panic!("Failed to write bitcode to `{}`, {}", out_file_name, e)),
-		Emission::Obj => codegenerator.module
+		Emission::Obj => {codegenerator.module
 			.compile(&out_file_name.clone().unwrap_or_with_ext("o"), 0)
-			.unwrap_or_else(|e|
-				panic!("Failed to write object code to `{}`, {}", out_file_name, e)),
+			.expect("Failed to spawn compilation process")
+			.wait()
+			.expect("Compilation with llc failed");},
 		Emission::Bin => {
 			let obj_path = out_file_name.path().with_extension("o");
 
-			codegenerator.module.compile(&obj_path, 0).unwrap_or_else(|e|
-				panic!("Failed to compile object `{}`, {}", obj_path.display(), e));
+			codegenerator.module.compile(&obj_path, 0)
+				.expect("Failed to spawn compilation process")
+				.wait()
+				.expect("Compilation with llc failed");
 
 			let mut clang = Command::new("clang");
 			clang.arg(obj_path).args(&["-o", &out_file_name.path().to_string_lossy()]);

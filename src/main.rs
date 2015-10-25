@@ -82,6 +82,10 @@
 // TODO: Interface for AST through which multiple lexer/parsers can be implemented for the language.
 //       Similar to how racker supports multiple source languages
 //       Also serves as a way to save keywords and such, e.g. core types, as associated constants
+// TODO: Make use of different brackets to discriminate between expressions and items/syntax sugar
+//       e.g: `(let [[a 3] [b 9]] (+ a b))`
+// TODO: Warn if a macro producing an expression is called using brackers, [], and vice versa
+// TODO: Tests. Maybe QuickCheck?
 
 #![feature(
 	non_ascii_idents,
@@ -104,7 +108,8 @@ use std::fs::{ File, canonicalize };
 use std::path::{ Path, PathBuf };
 use getopts::Options;
 use lib::{ token_trees_from_src, expand_macros };
-use lib::front::parse;
+use lib::front::parse::parse;
+use lib::front::inference::infer_types;
 use lib::back::compile;
 
 mod lib;
@@ -203,9 +208,16 @@ fn main() {
 	let out_file_name = matches.opt_str("o")
 		.map(|p| FileName::Some(PathBuf::from(p)))
 		.unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
-		.map(|filename| canonicalize(filename.parent().unwrap_or("./".as_ref()))
-			.expect("Failed to canonicalize output filename")
-			.join(filename.file_name().expect("No filename supplied")));
+		.map(|filename| {
+			let parent = match filename.parent() {
+				None => "./".as_ref(),
+				Some(p) if p == "".as_ref() => "./".as_ref(),
+				Some(p) => p
+			};
+			canonicalize(parent)
+				.expect("Failed to canonicalize output filename")
+				.join(filename.file_name().expect("No filename supplied"))
+		});
 
 	let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
 
@@ -231,13 +243,13 @@ fn main() {
 
 	// println!("MACRO EXPANDED: {:#?}", expanded_macros);
 
-	let mut ast = parse::AST::parse(&expanded_macros);
+	let mut ast = parse(&expanded_macros);
 	// println!("AST PARSED:\n{:#?}\n", ast);
 
 	ast.remove_unused_consts();
 	// println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
-	ast.infer_types();
+	infer_types(&mut ast);
 	// println!("AST INFERED:\n{:#?}\n", ast);
 
 	compile(&ast, out_file_name, emission, &link_libs, &lib_paths);

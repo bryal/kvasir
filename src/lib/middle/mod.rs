@@ -21,7 +21,7 @@
 // THE SOFTWARE.
 
 use lib::ScopeStack;
-use lib::front::parse::*;
+use lib::front::ast::*;
 
 type ConstDefs<'a> = ScopeStack<&'a str, Option<(ConstDef<'a>, Used)>>;
 
@@ -54,7 +54,7 @@ impl<'a> Path<'a> {
 	}
 }
 
-impl<'a> SExpr<'a> {
+impl<'a> Call<'a> {
 	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		self.proced.remove_unused_consts(const_defs);
 
@@ -113,7 +113,7 @@ impl<'a> ExprMeta<'a> {
 	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
 		match *self.val {
 			Expr::Binding(ref path) => path.remove_unused_consts(const_defs),
-			Expr::SExpr(ref mut sexpr) => sexpr.remove_unused_consts(const_defs),
+			Expr::Call(ref mut call) => call.remove_unused_consts(const_defs),
 			Expr::Block(ref mut block) => block.remove_unused_consts(const_defs),
 			Expr::If(ref mut cond) => cond.remove_unused_consts(const_defs),
 			Expr::Lambda(ref mut lambda) => lambda.remove_unused_consts(const_defs),
