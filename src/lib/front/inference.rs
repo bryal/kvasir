@@ -56,9 +56,9 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 }
 
 struct Inferer<'src> {
-	vars: Vec<TypedBinding<'src>>,
-	const_defs: ScopeStack<&'src str, Option<ConstDef<'src>>>,
-	extern_funcs: ScopeStack<&'src str, Type<'src>>,
+	vars: Vec<(Ident<'src>, Type<'src>)>,
+	const_defs: ScopeStack<Ident<'src>, Option<ConstDef<'src>>>,
+	extern_funcs: ScopeStack<Ident<'src>, Type<'src>>,
 }
 impl<'src> Inferer<'src> {
 	fn new(ast: &mut AST<'src>) -> Self {
@@ -80,7 +80,7 @@ impl<'src> Inferer<'src> {
 	}
 
 	fn into_inner(mut self)
-		-> (HashMap<&'src str, ConstDef<'src>>, HashMap<&'src str, Type<'src>>)
+		-> (HashMap<Ident<'src>, ConstDef<'src>>, HashMap<Ident<'src>, Type<'src>>)
 	{
 		let const_defs = self.const_defs.pop()
 			.expect("ICE: Inferer::into_inner: const_defs.pop() failed")
@@ -94,11 +94,11 @@ impl<'src> Inferer<'src> {
 	}
 
 	fn get_var_type(&self, id: &str) -> Option<&Type<'src>> {
-		self.vars.iter().rev().find(|tb| tb.ident == id).map(|tb| &tb.typ)
+		self.vars.iter().rev().find(|&&(ref b, _)| b == id).map(|&(_, ref t)| t)
 	}
 
 	fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
-		self.vars.iter_mut().rev().find(|tb| tb.ident == id).map(|tb| &mut tb.typ)
+		self.vars.iter_mut().rev().find(|&&mut (ref b, _)| b == id).map(|&mut (_, ref mut t)| t)
 	}
 
 	fn infer_const_def(&mut self, def: &mut ConstDef<'src>, expected_ty: &Type<'src>)
@@ -146,21 +146,17 @@ impl<'src> Inferer<'src> {
 
 				Ok(Type::Unknown)
 			}
-		} else {
-			let exts = self.extern_funcs.clone();
-			if let Some(stack_bnd_ty) = self.get_var_type_mut(ident) {
-				// Path is a var
+		} else if let Some(stack_bnd_ty) = self.get_var_type_mut(ident) {
+			// Path is a var
 
-				stack_bnd_ty.infer_by(expected_ty)
-					.map(|inferred| {
-						*stack_bnd_ty = inferred.clone();
-						inferred
-					})
-					.ok_or(stack_bnd_ty.clone())
-			} else {
-				println!("exts: {:?}", exts);
-				path.pos.error(format!("Unresolved path `{}`", ident))
-			}
+			stack_bnd_ty.infer_by(expected_ty)
+				.map(|inferred| {
+					*stack_bnd_ty = inferred.clone();
+					inferred
+				})
+				.ok_or(stack_bnd_ty.clone())
+		} else {
+			path.pos.error(format!("Unresolved path `{}`", ident))
 		}
 	}
 
@@ -239,7 +235,7 @@ impl<'src> Inferer<'src> {
 		for expr in init.iter_mut() {
 			if let Expr::VarDef(ref mut var_def) = *expr.val {
 				self.infer_var_def(var_def);
-				self.vars.push(var_def.binding.clone());
+				self.vars.push((var_def.binding.clone(), var_def.get_type().clone()));
 			} else {
 				self.infer_expr_meta(expr, &Type::Unknown)
 					.expect("ICE: error infering expr in block");
@@ -255,8 +251,11 @@ impl<'src> Inferer<'src> {
 		// are, if possible, known.
 		for expr in init {
 			if let Expr::VarDef(ref mut var_def) = *expr.val {
-				self.infer_var_def(var_def);
-				self.vars.push(block_defined_vars.next().expect("ICE: block_defined_vars empty"));
+				let v = block_defined_vars.next().expect("ICE: block_defined_vars empty");
+
+				self.infer_expr_meta(&mut var_def.body, &v.1);
+
+				self.vars.push(v);
 			} else {
 				self.infer_expr_meta(expr, &Type::Unknown)
 					.unwrap_or_else(|err_ty| expr.pos().error(TypeMis(&Type::Unknown, &err_ty)));
@@ -264,6 +263,8 @@ impl<'src> Inferer<'src> {
 		}
 		self.infer_expr_meta(last, expected_ty)
 			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
+
+		self.vars.truncate(old_vars_len);
 
 		block.const_defs = self.const_defs.pop()
 			.expect("ICE: ScopeStack was empty when replacing Block const defs")
@@ -302,7 +303,7 @@ impl<'src> Inferer<'src> {
 		for (param, expected_param) in lam.params.iter_mut().zip(expected_params) {
 			match param.typ.infer_by(expected_param) {
 				Some(infered) => param.typ = infered,
-				None => param.pos.error(TypeMis(expected_param, &param.typ))
+				None => param.ident.pos.error(TypeMis(expected_param, &param.typ))
 			}
 		}
 	}
@@ -338,7 +339,7 @@ impl<'src> Inferer<'src> {
 
 		let (vars_len, n_params) = (self.vars.len(), lam.params.len());
 
-		self.vars.extend(lam.params.clone());
+		self.vars.extend(lam.params.iter().cloned().map(|param| (param.ident, param.typ)));
 
 		self.infer_expr_meta(&mut lam.body, &expected_body)
 			.unwrap_or_else(|err_ty| lam.body.pos().error(TypeMis(expected_body, &err_ty)));
@@ -347,7 +348,7 @@ impl<'src> Inferer<'src> {
 
 		for (param, found) in lam.params.iter_mut()
 			.zip(self.vars.drain(vars_len..))
-			.map(|(param, found)| (&mut param.typ, found.typ))
+			.map(|(param, (_, found))| (&mut param.typ, found))
 		{
 			*param = found;
 		}
@@ -355,10 +356,8 @@ impl<'src> Inferer<'src> {
 	}
 
 	fn infer_var_def(&mut self, def: &mut VarDef<'src>) {
-		match self.infer_expr_meta(&mut def.body, &def.binding.typ) {
-			Ok(body_ty) => def.binding.typ = body_ty.clone(),
-			Err(found) => def.pos.error(TypeMis(&def.binding.typ, &found))
-		}
+		self.infer_expr_meta(&mut def.body, &Type::Unknown)
+			.expect("ICE: infer_var_def: infer_expr_meta returned Err");
 	}
 
 	/// On success, return expected, infered type. On failure, return unexpected, found type
@@ -376,10 +375,10 @@ impl<'src> Inferer<'src> {
 			Expr::Assign(_) => expected_ty.infer_by(&Type::nil()).ok_or(Type::nil()),
 			Expr::NumLit(_, _) => match *expected_ty {
 				Type::Unknown
-					| Type::Basic("Int8") | Type::Basic("UInt8")
-					| Type::Basic("Int16") | Type::Basic("UInt16")
-					| Type::Basic("Int32") | Type::Basic("UInt32") | Type::Basic("Float32")
-					| Type::Basic("Int64") | Type::Basic("UInt64") | Type::Basic("Float64")
+				| Type::Basic("Int8") | Type::Basic("UInt8")
+				| Type::Basic("Int16") | Type::Basic("UInt16")
+				| Type::Basic("Int32") | Type::Basic("UInt32") | Type::Basic("Float32")
+				| Type::Basic("Int64") | Type::Basic("UInt64") | Type::Basic("Float64")
 					=> Ok(expected_ty.clone()),
 				_ => Err(Type::Basic("numeric literal"))
 			},
@@ -396,7 +395,7 @@ impl<'src> Inferer<'src> {
 				Ok(self.infer_block(block, &expected_ty)),
 			Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
 			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
-			Expr::Symbol(_, _) => expected_ty.infer_by(&Type::Basic("Symbol"))
+			Expr::Symbol(_) => expected_ty.infer_by(&Type::Basic("Symbol"))
 				.ok_or(Type::Basic("Symbol")),
 		}
 	}
@@ -418,6 +417,7 @@ impl<'src> Inferer<'src> {
 				return Err(expr.typ.clone());
 			}
 		}
+
 		// Own type is unknown, or `expected_ty` is more known than own type
 
 		// Fill in the gaps of `expected_ty` using own type ascription, if any

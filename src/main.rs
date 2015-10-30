@@ -110,6 +110,7 @@ use getopts::Options;
 use lib::{ token_trees_from_src, expand_macros };
 use lib::front::parse::parse;
 use lib::front::inference::infer_types;
+use lib::middle::clean_ast;
 use lib::back::compile;
 
 mod lib;
@@ -246,11 +247,11 @@ fn main() {
 	let mut ast = parse(&expanded_macros);
 	// println!("AST PARSED:\n{:#?}\n", ast);
 
-	ast.remove_unused_consts();
+	clean_ast(&mut ast);
 	// println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
 	infer_types(&mut ast);
-	// println!("AST INFERED:\n{:#?}\n", ast);
+	println!("AST INFERED:\n{:#?}\n", ast);
 
 	compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

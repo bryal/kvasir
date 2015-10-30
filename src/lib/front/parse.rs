@@ -65,23 +65,9 @@ impl<'src> Parser {
 		}
 	}
 
-	fn parse_typed_binding(ttm: &TokenTreeMeta<'src>) -> TypedBinding<'src> {
+	fn parse_binding(ttm: &TokenTreeMeta<'src>) -> Ident<'src> {
 		match ttm.tt {
-			TokenTree::List(ref tb) if ! tb.is_empty() && tb[0].tt == TokenTree::Ident(":") =>
-				if tb.len() == 3 {
-					match tb[2].tt {
-						TokenTree::Ident(ident) => TypedBinding {
-							ident: ident,
-							typ: Self::parse_type(&tb[1]),
-							pos: ttm.pos.clone()
-						},
-						_ => tb[2].pos.error(Invalid("binding")),
-					}
-				} else {
-					ttm.pos.error(Invalid("type ascription"))
-				},
-			TokenTree::Ident(ident) =>
-				TypedBinding{ ident: ident, typ: Type::Unknown, pos: ttm.pos.clone() },
+			TokenTree::Ident(ident) => Ident::new(ident, ttm.pos.clone()),
 			_ => ttm.pos.error(Invalid("binding"))
 		}
 	}
@@ -126,13 +112,15 @@ impl<'src> Parser {
 	}
 
 	fn parse_const_def(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>)
-		-> (&'src str, ExprMeta<'src>)
+		-> (Ident<'src>, ExprMeta<'src>)
 	{
 		if tts.len() != 2 {
 			pos.error(format!("Arity mismatch. Expected 2, found {}", tts.len()))
 		} else {
 			match tts[0].tt {
-				TokenTree::Ident(name) => (name, Self::parse_expr_meta(&tts[1])),
+				TokenTree::Ident(name) => (
+					Ident::new(name, tts[0].pos.clone()),
+					Self::parse_expr_meta(&tts[1])),
 				_ => tts[0].pos.error(Expected("identifier")),
 			}
 		}
@@ -176,15 +164,31 @@ impl<'src> Parser {
 	fn parse_lambda(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
 		if tts.len() != 2 {
 			pos.error(ArityMis(2, tts.len()))
-		} else {
-			match tts[0].tt {
-				TokenTree::List(ref params) => Lambda{
-					params: params.iter().map(Self::parse_typed_binding).collect(),
-					body: Self::parse_expr_meta(&tts[1]),
-					pos: pos
-				},
-				_ => tts[0].pos.error(Expected("list")),
-			}
+		}
+		match tts[0].tt {
+			TokenTree::List(ref param_tts) => Lambda {
+				params: param_tts.iter()
+					.map(|param_tt| Param::new(Self::parse_binding(param_tt), Type::Unknown))
+					.collect(),
+				body: Self::parse_expr_meta(&tts[1]),
+				pos: pos
+			},
+			_ => tts[0].pos.error(Expected("list")),
+		}
+	}
+
+	fn parse_var_def(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> VarDef<'src> {
+		if tts.len() != 2 {
+			pos.error(ArityMis(2, tts.len()))
+		}
+		match tts[0].tt {
+			TokenTree::Ident(binding) => VarDef {
+				binding: Ident::new(binding, tts[0].pos.clone()),
+				mutable: false,
+				body: Self::parse_expr_meta(&tts[1]),
+				pos: pos
+			},
+			_ => tts[0].pos.error(Expected("list")),
 		}
 	}
 
@@ -197,7 +201,7 @@ impl<'src> Parser {
 					.collect(),
 				pos: ttm.pos.clone(),
 			}),
-			TokenTree::Ident(ident) => Expr::Symbol(ident, ttm.pos.clone()),
+			TokenTree::Ident(ident) => Expr::Symbol(Ident::new(ident, ttm.pos.clone())),
 			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos.clone()),
 			TokenTree::Str(ref s) => Expr::StrLit(s.clone(), ttm.pos.clone()),
 		}
@@ -217,6 +221,13 @@ impl<'src> Parser {
 						Expr::Lambda(Self::parse_lambda(tail, ttm.pos.clone())),
 					TokenTree::Ident("block") =>
 						Expr::Block(Self::parse_block(tail, ttm.pos.clone())),
+					TokenTree::Ident("def-var") =>
+						Expr::VarDef(Self::parse_var_def(tail, ttm.pos.clone())),
+					TokenTree::Ident("def-var-mut") => Expr::VarDef(
+						VarDef {
+							mutable: true,
+							.. Self::parse_var_def(tail, ttm.pos.clone())
+						}),
 					_ => Expr::Call(Self::parse_sexpr(&sexpr[0], tail, ttm.pos.clone())),
 				}
 			} else {
@@ -245,7 +256,7 @@ impl<'src> Parser {
 	}
 
 	fn parse_extern_const(tts: &[TokenTreeMeta<'src>], pos: &SrcPos<'src>)
-		-> (&'src str, Type<'src>)
+		-> (Ident<'src>, Type<'src>)
 	{
 		if tts.len() != 2 {
 			pos.error("Invalid external constant declaration. Expected identifier and type")
@@ -256,7 +267,7 @@ impl<'src> Parser {
 					if ! typ.is_fully_known() {
 						tts[1].pos.error("Type of external constant must be fully specified")
 					}
-					(name, typ)
+					(Ident::new(name, tts[0].pos.clone()), typ)
 				},
 				_ => tts[0].pos.error(Expected("identifier")),
 			}
@@ -266,8 +277,8 @@ impl<'src> Parser {
 	/// Parse TokenTree:s as a list of items
 	fn parse_items(tts: &[TokenTreeMeta<'src>]) -> (
 		Vec<Use<'src>>,
-		HashMap<&'src str, ConstDef<'src>>,
-		HashMap<&'src str, Type<'src>>,
+		HashMap<Ident<'src>, ConstDef<'src>>,
+		HashMap<Ident<'src>, Type<'src>>,
 		Vec<ExprMeta<'src>>
 	) {
 		let mut uses = Vec::new();
@@ -281,19 +292,21 @@ impl<'src> Parser {
 						Self::parse_use(&sexpr[1..], ttm.pos.clone())),
 					TokenTree::Ident("def-const") => {
 						let (id, body) = Self::parse_const_def(&sexpr[1..], ttm.pos.clone());
+						let id_s = id.s;
 
 						if const_defs.insert(id, ConstDef{ body: body, pos: ttm.pos.clone() })
 							.is_some()
 						{
-							ttm.pos.error(format!("Duplicate constant definition `{}`", id))
+							ttm.pos.error(format!("Duplicate constant definition `{}`", id_s))
 						}
 					},
 					TokenTree::Ident("extern-proc") => {
 						let (id, typ) = Self::parse_extern_const(&sexpr[1..], &ttm.pos);
+						let id_s = id.s;
 
 						if extern_funcs.insert(id, typ).is_some() {
 							ttm.pos.error(
-								format!("Duplicate external constant declaration `{}`", id))
+								format!("Duplicate external constant declaration `{}`", id_s))
 						}
 					},
 					_ => exprs.push(Self::parse_expr_meta(ttm)),

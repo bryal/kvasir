@@ -25,7 +25,7 @@ use std::str::FromStr;
 use std::collections::HashMap;
 use llvm::*;
 use lib::front::SrcPos;
-use lib::front::ast::{ self, ExprMeta, Expr, Path, Call, Block, If, Lambda };
+use lib::front::ast::{ self, Ident, ExprMeta, Expr, Path, Call, Block, If, Lambda, VarDef };
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
@@ -48,12 +48,12 @@ impl fmt::Display for CodegenErr {
 	}
 }
 
-pub struct Env<'src: 'cdef, 'cdef, 'ctx> {
+pub struct Env<'src: 'ast, 'ast, 'ctx> {
 	funcs: ScopeStack<&'src str, &'ctx Function>,
-	consts: ScopeStack<&'src str, (&'ctx Value, &'cdef ExprMeta<'src>)>,
+	consts: ScopeStack<&'src str, (&'ctx Value, &'ast ExprMeta<'src>)>,
 	vars: Vec<(&'src str, &'ctx Value)>,
 }
-impl<'src: 'cdef, 'cdef, 'ctx> Env<'src, 'cdef, 'ctx> {
+impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
 	pub fn new() -> Self {
 		Env {
 			funcs: ScopeStack::new(),
@@ -69,7 +69,7 @@ pub struct CodeGenerator<'ctx> {
 	pub module: CSemiBox<'ctx, Module>,
 	builder: CSemiBox<'ctx, Builder>,
 }
-impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
+impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	pub fn new(context: &'ctx Context) -> Self {
 		CodeGenerator {
 			context: context,
@@ -90,7 +90,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		use lib::front::ast::Type as PType;
 
 		match *typ {
-			PType::Unknown => unreachable!(),
+			PType::Unknown => panic!("Type was Unknown at compile time"),
 			PType::Basic("Int8") => Type::get::<i8>(self.context),
 			PType::Basic("Int16") => Type::get::<i16>(self.context),
 			PType::Basic("Int32") => Type::get::<i32>(self.context),
@@ -103,7 +103,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			PType::Basic("Float32") => Type::get::<f32>(self.context),
 			PType::Basic("Float64") => Type::get::<f64>(self.context),
 			PType::Basic("Nil") => Type::new_struct(&[], false),
-			PType::Construct("proc", _) => {
+			PType::Construct("Proc", _) => {
 				let (params, ret) = typ.get_proc_sig().unwrap();
 				Type::new_function(
 					self.gen_type(ret),
@@ -165,7 +165,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	/// Generate IR for a binding used as an r-value
-	fn gen_r_binding(&self, env: &mut Env<'src, 'cdef, 'ctx>, path: &Path<'src>) -> &Value {
+	fn gen_r_binding(&self, env: &mut Env<'src, 'ast, 'ctx>, path: &Path<'src>) -> &Value {
 		let binding = path.ident().expect("path was not ident");
 
 		// Function pointers are returned as-is,
@@ -190,8 +190,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	/// is a recursive call to the caller itself, make a tail call and return `Nothing`.
 	/// Otherwise, make a normal call and return the result.
 	fn gen_call(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		call: &'cdef Call<'src>,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		call: &'ast Call<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
 		let proced: &Function = self.gen_expr(env, &call.proced, false)
@@ -216,8 +216,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	fn gen_block(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		block: &'cdef Block<'src>,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		block: &'ast Block<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
 		self.gen_const_defs(env, &block.const_defs);
@@ -240,8 +240,8 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	fn gen_if(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		cond: &'cdef If<'src>,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		cond: &'ast If<'src>,
 		typ: &ast::Type<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
@@ -278,7 +278,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, lam: &'cdef Lambda<'src>)
+	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, lam: &'ast Lambda<'src>)
 		-> &Value
 	{
 		let anon = self.gen_func_decl("lambda", &lam.get_type());
@@ -288,11 +288,20 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		anon
 	}
 
+	fn gen_var_def(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast VarDef<'src>) {
+		let var = self.builder.build_alloca(self.gen_type(def.get_type()));
+		var.set_name(def.binding.s);
+
+		self.builder.build_store(self.gen_expr(env, &def.body, false).unwrap(), var);
+
+		env.vars.push((def.binding.s, var));
+	}
+
 	/// Generate llvm code for an expression and return its llvm Value.
 	/// Returns `None` if the expression makes a tail call
 	fn gen_expr(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		expr: &'cdef ExprMeta<'src>,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		expr: &'ast ExprMeta<'src>,
 		in_tail_pos: bool
 	) -> Option<&Value> {
 		match *expr.val {
@@ -305,13 +314,16 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 			Expr::Block(ref block) => self.gen_block(env, block, in_tail_pos),
 			Expr::If(ref cond) => self.gen_if(env, cond, &expr.typ, in_tail_pos),
 			Expr::Lambda(ref lam) => Some(self.gen_lambda(env, lam)),
-			Expr::VarDef(_) => unimplemented!(),
+			Expr::VarDef(ref def) => {
+				self.gen_var_def(env, def);
+				Some(self.gen_nil())
+			},
 			Expr::Assign(_) => unimplemented!(),
-			Expr::Symbol(_, _) => unimplemented!(),
+			Expr::Symbol(_) => unimplemented!(),
 		}
 	}
 
-	fn gen_eval_const_binding(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, path: &Path<'src>)
+	fn gen_eval_const_binding(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, path: &Path<'src>)
 		-> &Value
 	{
 		let binding = path.ident().expect("path was not ident");
@@ -323,7 +335,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 
-	fn gen_const_call(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, call: &'cdef Call<'src>)
+	fn gen_const_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast Call<'src>)
 		-> &Value
 	{
 		let args = call.args.iter()
@@ -355,7 +367,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_const_expr(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, expr: &'cdef ExprMeta<'src>)
+	fn gen_const_expr(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast ExprMeta<'src>)
 		-> &Value
 	{
 		// TODO: add internal eval over ExprMetas
@@ -370,7 +382,7 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_const(&'ctx self, env: &mut Env<'src, 'cdef, 'ctx>, id: &str, def: &'cdef ExprMeta<'src>)
+	fn gen_const(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, id: &str, def: &'ast ExprMeta<'src>)
 		-> &Value
 	{
 		self.module.add_global_constant(id, self.gen_const_expr(env, def))
@@ -381,16 +393,16 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	fn build_func_def(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
+		env: &mut Env<'src, 'ast, 'ctx>,
 		func: &'ctx Function,
-		def_lam: &'cdef Lambda<'src>
+		def_lam: &'ast Lambda<'src>
 	) {
 		let entry = func.append("entry");
 
 		self.builder.position_at_end(entry);
 
 		let params = def_lam.params.iter()
-			.map(|tb| tb.ident)
+			.map(|param| param.ident.s)
 			.enumerate()
 			.map(|(i, id)| (id, &*func[i]))
 			.collect::<Vec<_>>();
@@ -404,12 +416,12 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	pub fn gen_extern_decls(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		extern_funcs: &HashMap<&'src str, ast::Type<'src>>
+		env: &mut Env<'src, 'ast, 'ctx>,
+		extern_funcs: &HashMap<Ident<'src>, ast::Type<'src>>
 	) {
 		let mut func_decls = HashMap::new();
 
-		for (&id, typ) in extern_funcs.iter() {
+		for (id, typ) in extern_funcs.iter().map(|(id, typ)| (id.s, typ)) {
 			func_decls.insert(id, self.gen_func_decl(id, typ) as &_);
 		}
 
@@ -417,14 +429,14 @@ impl<'src: 'cdef, 'cdef, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	pub fn gen_const_defs(&'ctx self,
-		env: &mut Env<'src, 'cdef, 'ctx>,
-		const_defs: &'cdef HashMap<&'src str, ast::ConstDef<'src>>
+		env: &mut Env<'src, 'ast, 'ctx>,
+		const_defs: &'ast HashMap<Ident<'src>, ast::ConstDef<'src>>
 	) {
 		let (mut func_decls, mut const_decls) = (HashMap::new(), HashMap::new());
 		// function declarations that are to be defined
 		let (mut undef_funcs, mut undef_consts) = (Vec::new(), Vec::new());
 
-		for (&id, const_def) in const_defs.iter() {
+		for (id, const_def) in const_defs.iter().map(|(id, const_def)| (id.s, const_def)) {
 			match *const_def.body.val {
 				Expr::Lambda(ref lam) => {
 					let func: &_ = self.gen_func_decl(id, &lam.get_type());

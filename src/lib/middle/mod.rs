@@ -20,135 +20,164 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// TODO: Verify that all types are known
+
+use std::collections::HashMap;
+use std::mem::replace;
+use lib::error;
 use lib::ScopeStack;
 use lib::front::ast::*;
 
-type ConstDefs<'a> = ScopeStack<&'a str, Option<(ConstDef<'a>, Used)>>;
-
 #[derive(Debug)]
-enum Used {
-	Yes,
-	No,
+enum Usage {
+	Used,
+	Unused,
 }
-impl Used {
-	fn is_yes(&self) -> bool { match *self { Used::Yes => true, _ => false } }
-	fn is_no(&self) -> bool { !self.is_yes() }
+impl Usage {
+	fn is_used(&self) -> bool {
+		match *self {
+			Usage::Used => true,
+			_ => false
+		}
+	}
+	fn is_unused(&self) -> bool {
+		! self.is_used()
+	}
 }
 
-impl<'a> Path<'a> {
-	fn remove_unused_consts(&self, const_defs: &mut ConstDefs) {
-		if let Some(ident) = self.ident() {
-			if let Some(height) = const_defs.get_height(ident) {
-				if const_defs.get_at_height(ident, height).unwrap().is_some() {
-					const_defs.do_for_item_at_height(ident, height, |const_defs, def|
-						if def.1.is_no() {
-							def.1 = Used::Yes;
-							def.0.remove_unused_consts(const_defs)
-						}
-					)
+struct Cleaner<'src> {
+	const_defs: ScopeStack<Ident<'src>, Option<(ConstDef<'src>, Usage)>>,
+}
+impl<'src> Cleaner<'src> {
+	fn new() -> Cleaner<'src> {
+		Cleaner {
+			const_defs: ScopeStack::new()
+		}
+	}
+
+	fn clean_path(&mut self, path: &Path<'src>) {
+		if let Some((id, height))
+			= path.ident().and_then(|id| self.const_defs.get_height(id).map(|height| (id, height)))
+		{
+			let maybe_def = replace(
+				self.const_defs.get_at_height_mut(id, height).unwrap(),
+				None);
+
+			if let Some((mut def, mut usage)) = maybe_def {
+				if usage.is_unused() {
+					usage = Usage::Used;
+
+					self.clean_const_def(&mut def);
 				}
+
+				self.const_defs.update(id, Some((def, usage)));
 			}
-		} else {
-			panic!("Path::remove_unused_consts: Not implemented for anything but simple idents")
 		}
 	}
-}
 
-impl<'a> Call<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		self.proced.remove_unused_consts(const_defs);
+	fn clean_call(&mut self, call: &mut Call<'src>) {
+		self.clean_expr_meta(&mut call.proced);
 
-		for arg in &mut self.args {
-			arg.remove_unused_consts(const_defs);
+		for arg in &mut call.args {
+			self.clean_expr_meta(arg);
 		}
 	}
-}
 
-impl<'a> Block<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		let mut const_defs = const_defs.map_push_local(
-			&mut self.const_defs,
-			|it| it.map(|(key, def)| (key, Some((def, Used::No)))),
-			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
-				(def, Used::Yes) => Some((key, def)),
-				(def, Used::No) => {
-					def.pos.warn(format!("Unused constant `{}`", key));
-					None
-				},
-			}));
+	fn clean_block(&mut self, block: &mut Block<'src>) {
+		self.const_defs.push(
+			replace(&mut block.const_defs, HashMap::new())
+				.into_iter()
+				.map(|(k, def)| (k, Some((def, Usage::Unused))))
+				.collect());
 
-		for expr in &mut self.exprs {
-			expr.remove_unused_consts(&mut const_defs);
+		for expr in &mut block.exprs {
+			self.clean_expr_meta(expr);
+		}
+
+		block.const_defs = self.const_defs.pop()
+			.expect("ICE: clean_block: ScopeStack was empty when replacing Block const defs")
+			.into_iter()
+			.filter_map(|(key, maybe_def)|
+				match maybe_def.expect("ICE: clean_block: None when unmapping block const def") {
+					(def, Usage::Used) => Some((key, def)),
+					(def, Usage::Unused) => {
+						def.pos.warn(format!("Unused constant `{}`", key));
+						None
+					},
+				})
+			.collect();
+	}
+
+	fn clean_if(&mut self, cond: &mut If<'src>) {
+		for expr in &mut [&mut cond.predicate, &mut cond.consequent, &mut cond.alternative] {
+			self.clean_expr_meta(expr);
 		}
 	}
-}
 
-impl<'a> If<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		for e in &mut [&mut self.predicate, &mut self.consequent, &mut self.alternative] {
-			e.remove_unused_consts(const_defs);
-		}
+	fn clean_lambda(&mut self, lambda: &mut Lambda<'src>) {
+		self.clean_expr_meta(&mut lambda.body);
 	}
-}
 
-impl<'a> Lambda<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		self.body.remove_unused_consts(const_defs);
+	fn clean_var_def(&mut self, def: &mut VarDef<'src>) {
+		self.clean_expr_meta(&mut def.body);
 	}
-}
 
-impl<'a> VarDef<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		self.body.remove_unused_consts(const_defs);
+	fn clean_assign(&mut self, assign: &mut Assign<'src>) {
+		self.clean_expr_meta(&mut assign.rhs);
 	}
-}
 
-impl<'a> Assign<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		self.rvalue.remove_unused_consts(const_defs);
-	}
-}
-
-impl<'a> ExprMeta<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		match *self.val {
-			Expr::Binding(ref path) => path.remove_unused_consts(const_defs),
-			Expr::Call(ref mut call) => call.remove_unused_consts(const_defs),
-			Expr::Block(ref mut block) => block.remove_unused_consts(const_defs),
-			Expr::If(ref mut cond) => cond.remove_unused_consts(const_defs),
-			Expr::Lambda(ref mut lambda) => lambda.remove_unused_consts(const_defs),
-			Expr::VarDef(ref mut def) => def.remove_unused_consts(const_defs),
-			Expr::Assign(ref mut assign) => assign.remove_unused_consts(const_defs),
+	fn clean_expr_meta(&mut self, expr: &mut ExprMeta<'src>) {
+		match *expr.val {
+			Expr::Binding(ref path) => self.clean_path(path),
+			Expr::Call(ref mut call) => self.clean_call(call),
+			Expr::Block(ref mut block) => self.clean_block(block),
+			Expr::If(ref mut cond) => self.clean_if(cond),
+			Expr::Lambda(ref mut lambda) => self.clean_lambda(lambda),
+			Expr::VarDef(ref mut def) => self.clean_var_def(def),
+			Expr::Assign(ref mut assign) => self.clean_assign(assign),
 			_ => (),
 		}
 	}
-}
 
-impl<'a> ConstDef<'a> {
-	fn remove_unused_consts(&mut self, const_defs: &mut ConstDefs<'a>) {
-		self.body.remove_unused_consts(const_defs)
+	fn clean_const_def(&mut self, def: &mut ConstDef<'src>) {
+		self.clean_expr_meta(&mut def.body)
 	}
 }
 
-impl<'a> AST<'a> {
-	pub fn remove_unused_consts(&mut self) {
-		let mut const_defs = ConstDefs::new();
+pub fn clean_ast(ast: &mut AST) {
+	let mut cleaner = Cleaner::new();
 
-		// Push the module scope on top of the stack
-		let mut const_defs = const_defs.map_push_local(
-			&mut self.const_defs,
-			|it| it.map(|(key, def)| (key, Some((def, Used::No)))),
-			|it| it.filter_map(|(key, maybe_def)| match maybe_def.unwrap() {
-				(def, Used::Yes) => Some((key, def)),
-				(def, Used::No) => {
+	cleaner.const_defs.push(
+		replace(&mut ast.const_defs, HashMap::new())
+			.into_iter()
+			.map(|(k, def)| (k, Some((def, Usage::Unused))))
+			.collect());
+
+	let main = replace(
+		cleaner.const_defs.get_mut("main")
+			.unwrap_or_else(|| error("No `main` procedure found")),
+		None);
+
+	let (mut main_def, mut main_usage) = main.unwrap();
+
+	main_usage = Usage::Used;
+
+	cleaner.clean_const_def(&mut main_def);
+
+	cleaner.const_defs.update("main", Some((main_def, main_usage)));
+
+	ast.const_defs = cleaner.const_defs.pop()
+		.expect("ICE: clean_ast: ScopeStack was empty when replacing AST const defs")
+		.into_iter()
+		.filter_map(|(key, maybe_def)|
+			match maybe_def.expect(
+				&format!("ICE: clean_ast: `{}` was None when unmapping AST const def", key))
+			{
+				(def, Usage::Used) => Some((key, def)),
+				(def, Usage::Unused) => {
 					def.pos.warn(format!("Unused constant `{}`", key));
 					None
 				},
-			}));
-
-		const_defs.do_for_item_at_height("main", 0, |const_defs, main| {
-			main.1 = Used::Yes;
-			main.0.remove_unused_consts(const_defs)
-		});
-	}
+			})
+		.collect();
 }

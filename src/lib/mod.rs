@@ -23,6 +23,7 @@
 pub use self::front::lex::token_trees_from_src;
 pub use self::front::macro_::expand_macros;
 pub use self::collections::ScopeStack;
+pub use self::front::error;
 
 #[macro_use]
 pub mod front;
