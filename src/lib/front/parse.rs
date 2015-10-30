@@ -192,6 +192,27 @@ impl<'src> Parser {
 		}
 	}
 
+	fn parse_assign(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Assign<'src> {
+		if tts.len() != 2 {
+			pos.error(ArityMis(2, tts.len()))
+		}
+		Assign {
+			lhs: Self::parse_expr_meta(&tts[0]),
+			rhs: Self::parse_expr_meta(&tts[1]),
+			pos: pos,
+		}
+	}
+
+	fn parse_deref(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Deref<'src> {
+		if tts.len() != 1 {
+			pos.error(ArityMis(1, tts.len()))
+		}
+		Deref {
+			r: Self::parse_expr_meta(&tts[1]),
+			pos: pos,
+		}
+	}
+
 	fn parse_quoted_expr(ttm: &TokenTreeMeta<'src>) -> Expr<'src> {
 		match ttm.tt {
 			TokenTree::List(ref list) => Expr::Call(Call{
@@ -228,6 +249,10 @@ impl<'src> Parser {
 							mutable: true,
 							.. Self::parse_var_def(tail, ttm.pos.clone())
 						}),
+					TokenTree::Ident("set") =>
+						Expr::Assign(Self::parse_assign(tail, ttm.pos.clone())),
+					TokenTree::Ident("deref") if tail.len() == 1 =>
+						Expr::Deref(Self::parse_deref(tail, ttm.pos.clone())),
 					_ => Expr::Call(Self::parse_sexpr(&sexpr[0], tail, ttm.pos.clone())),
 				}
 			} else {

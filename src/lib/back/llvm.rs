@@ -25,7 +25,11 @@ use std::str::FromStr;
 use std::collections::HashMap;
 use llvm::*;
 use lib::front::SrcPos;
-use lib::front::ast::{ self, Ident, ExprMeta, Expr, Path, Call, Block, If, Lambda, VarDef };
+use lib::front::ast::{
+	self, Ident, ExprMeta,
+	Expr, Path, Call,
+	Block, If, Lambda,
+	VarDef, Assign, Deref };
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
@@ -60,6 +64,10 @@ impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
 			consts: ScopeStack::new(),
 			vars: Vec::new(),
 		}
+	}
+
+	fn get_var(&self, id: &str) -> Option<&'ctx Value> {
+		self.vars.iter().cloned().rev().find(|&(b, _)| b == id).map(|(_, t)| t)
 	}
 }
 
@@ -172,10 +180,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		// while static constants and variables are loaded into registers
 		env.consts.get(binding)
 			.map(|&(ptr, _)| ptr)
-			.or(env.vars.iter()
-				.rev()
-				.find(|&&(id, _)| id == binding)
-				.map(|&(_, ptr)| ptr))
+			.or(env.get_var(binding))
 			.map(|ptr| {
 				let v = self.builder.build_load(ptr);
 				v.set_name(&format!("{}_tmp", binding));
@@ -297,6 +302,28 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		env.vars.push((def.binding.s, var));
 	}
 
+	fn gen_lvalue(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast ExprMeta<'src>)
+		-> &'ctx Value
+	{
+		match *expr.val {
+			Expr::Binding(ref path) => path.ident()
+				.and_then(|id| env.get_var(id))
+				.unwrap_or_else(|| expr.pos().error("Invalid assignee expression")),
+			Expr::Deref(ref deref) => self.gen_expr(env, &deref.r, false).unwrap(),
+			_ => expr.pos().error("Invalid assignee expression"),
+		}
+	}
+
+	fn gen_assign(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast Assign<'src>) {
+		let var = self.gen_lvalue(env, &assign.lhs);
+
+		self.builder.build_store(self.gen_expr(env, &assign.rhs, false).unwrap(), var);
+	}
+
+	fn gen_deref(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, deref: &'ast Deref<'src>) -> &Value {
+		self.builder.build_load(self.gen_expr(env, &deref.r, false).unwrap())
+	}
+
 	/// Generate llvm code for an expression and return its llvm Value.
 	/// Returns `None` if the expression makes a tail call
 	fn gen_expr(&'ctx self,
@@ -318,8 +345,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 				self.gen_var_def(env, def);
 				Some(self.gen_nil())
 			},
-			Expr::Assign(_) => unimplemented!(),
+			Expr::Assign(ref assign) => {
+				self.gen_assign(env, assign);
+				Some(self.gen_nil())
+			},
 			Expr::Symbol(_) => unimplemented!(),
+			Expr::Deref(ref deref) => Some(self.gen_deref(env, deref)),
 		}
 	}
 

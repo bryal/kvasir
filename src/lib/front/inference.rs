@@ -360,6 +360,25 @@ impl<'src> Inferer<'src> {
 			.expect("ICE: infer_var_def: infer_expr_meta returned Err");
 	}
 
+	fn infer_assign(&mut self, assign: &mut Assign<'src>) {
+		let rhs_typ = self.infer_expr_meta(&mut assign.rhs, &assign.lhs.typ)
+			.unwrap_or_else(|found| assign.rhs.pos().error(TypeMis(&assign.lhs.typ, &found)));
+
+		self.infer_expr_meta(&mut assign.lhs, &rhs_typ)
+			.expect("ICE: infer_assign: type mismatch on lhs inference");
+	}
+
+	fn infer_deref(&mut self, deref: &mut Deref<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		let expected_ref_typ = Type::Construct("RawPtr", vec![expected_ty.clone()]);
+		let ref_typ = self.infer_expr_meta(&mut deref.r, &expected_ref_typ)
+			.unwrap_or_else(|found| deref.r.pos().error(TypeMis(&expected_ref_typ, &found)));
+
+		match ref_typ {
+			Type::Construct("RawPtr", mut args) => args.pop().unwrap_or_else(|| unreachable!()),
+			_ => unreachable!(),
+		}
+	}
+
 	/// On success, return expected, infered type. On failure, return unexpected, found type
 	fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>)
 		-> Result<Type<'src>, Type<'src>>
@@ -372,7 +391,12 @@ impl<'src> Inferer<'src> {
 			} else {
 				Err(Type::nil())
 			},
-			Expr::Assign(_) => expected_ty.infer_by(&Type::nil()).ok_or(Type::nil()),
+			Expr::Assign(ref mut assign) => if expected_ty.infer_by(&Type::nil()).is_some() {
+				self.infer_assign(assign);
+				Ok(Type::nil())
+			} else {
+				Err(Type::nil())
+			},
 			Expr::NumLit(_, _) => match *expected_ty {
 				Type::Unknown
 				| Type::Basic("Int8") | Type::Basic("UInt8")
@@ -397,6 +421,7 @@ impl<'src> Inferer<'src> {
 			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
 			Expr::Symbol(_) => expected_ty.infer_by(&Type::Basic("Symbol"))
 				.ok_or(Type::Basic("Symbol")),
+			Expr::Deref(ref mut deref) => Ok(self.infer_deref(deref, expected_ty)),
 		}
 	}
 
