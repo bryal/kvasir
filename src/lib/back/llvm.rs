@@ -24,12 +24,13 @@ use std::{ fmt, mem };
 use std::str::FromStr;
 use std::collections::HashMap;
 use llvm::*;
+use llvm_sys::core;
 use lib::front::SrcPos;
 use lib::front::ast::{
-	self, Ident, ExprMeta,
+	self, Ident, Deref,
 	Expr, Path, Call,
 	Block, If, Lambda,
-	VarDef, Assign, Deref };
+	VarDef, Assign };
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
@@ -54,7 +55,7 @@ impl fmt::Display for CodegenErr {
 
 pub struct Env<'src: 'ast, 'ast, 'ctx> {
 	funcs: ScopeStack<&'src str, &'ctx Function>,
-	consts: ScopeStack<&'src str, (&'ctx Value, &'ast ExprMeta<'src>)>,
+	consts: ScopeStack<&'src str, (&'ctx Value, &'ast Expr<'src>)>,
 	vars: Vec<(&'src str, &'ctx Value)>,
 }
 impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
@@ -121,7 +122,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_lit<I>(&self, lit: &str, typ: &ast::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value
+	fn parse_gen_lit<I>(&self, lit: &str, typ: &ast::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value
 		where I: Compile<'ctx> + FromStr
 	{
 		lit.parse::<I>()
@@ -129,26 +130,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 			.unwrap_or_else(|_| pos.error(CodegenErr::num_parse_err(typ)))
 	}
 
-	fn gen_num(&self, lit: &str, typ: &ast::Type<'src>, pos: &SrcPos<'src>) -> &'ctx Value {
-		use lib::front::ast::Type as PType;
-
-		let parser = match *typ {
-			PType::Basic("Int8") => CodeGenerator::gen_lit::<i8>,
-			PType::Basic("Int16") => CodeGenerator::gen_lit::<i16>,
-			PType::Basic("Int32") => CodeGenerator::gen_lit::<i32>,
-			PType::Basic("Int64") => CodeGenerator::gen_lit::<i64>,
-			PType::Basic("IntPtr") => CodeGenerator::gen_lit::<isize>,
-			PType::Basic("UInt8") => CodeGenerator::gen_lit::<u8>,
-			PType::Basic("UInt16") => CodeGenerator::gen_lit::<u16>,
-			PType::Basic("UInt32") => CodeGenerator::gen_lit::<u32>,
-			PType::Basic("UInt64") => CodeGenerator::gen_lit::<u64>,
-			PType::Basic("UIntPtr") => CodeGenerator::gen_lit::<usize>,
-			PType::Basic("Bool") => CodeGenerator::gen_lit::<bool>,
-			PType::Basic("Float32") => CodeGenerator::gen_lit::<f32>,
-			PType::Basic("Float64") => CodeGenerator::gen_lit::<f64>,
-			_ => pos.error(ICE("type of numeric literal is not numeric".into())),
+	fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
+		let parser = match num.typ {
+			ast::Type::Basic("Int8") => CodeGenerator::parse_gen_lit::<i8>,
+			ast::Type::Basic("Int16") => CodeGenerator::parse_gen_lit::<i16>,
+			ast::Type::Basic("Int32") => CodeGenerator::parse_gen_lit::<i32>,
+			ast::Type::Basic("Int64") => CodeGenerator::parse_gen_lit::<i64>,
+			ast::Type::Basic("IntPtr") => CodeGenerator::parse_gen_lit::<isize>,
+			ast::Type::Basic("UInt8") => CodeGenerator::parse_gen_lit::<u8>,
+			ast::Type::Basic("UInt16") => CodeGenerator::parse_gen_lit::<u16>,
+			ast::Type::Basic("UInt32") => CodeGenerator::parse_gen_lit::<u32>,
+			ast::Type::Basic("UInt64") => CodeGenerator::parse_gen_lit::<u64>,
+			ast::Type::Basic("UIntPtr") => CodeGenerator::parse_gen_lit::<usize>,
+			ast::Type::Basic("Bool") => CodeGenerator::parse_gen_lit::<bool>,
+			ast::Type::Basic("Float32") => CodeGenerator::parse_gen_lit::<f32>,
+			ast::Type::Basic("Float64") => CodeGenerator::parse_gen_lit::<f64>,
+			_ => num.pos.error(ICE("type of numeric literal is not numeric".into())),
 		};
-		parser(self, lit, typ, pos)
+		parser(self, &num.lit, &num.typ, &num.pos)
 	}
 
 	/// Gets an array, `[N x TYPE]`, as a pointer to the first element, `TYPE*`
@@ -158,8 +157,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
 	}
 
-	fn gen_str(&self, lit: &str, pos: &SrcPos<'src>) -> &Value {
-		let bytes = lit.compile(self.context);
+	fn gen_str(&self, s: &ast::StrLit<'src>) -> &Value {
+		let bytes = s.lit.compile(self.context);
 
 		let static_array = self.module.add_global_constant("str_lit", bytes);
 
@@ -168,63 +167,71 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		//     where @lit.bytes = global [13 x i8] c"Hello, world!"
 		Value::new_struct(
 			self.context,
-			&[self.get_array_as_ptr(static_array), lit.len().compile(self.context)],
+			&[self.get_array_as_ptr(static_array), s.lit.len().compile(self.context)],
 			false)
 	}
 
+	fn gen_bool(&self, b: &ast::Bool<'src>) -> &Value {
+		if b.typ == ast::Type::Basic("Bool") {
+			b.val.compile(self.context)
+		} else {
+			unimplemented!()
+		}
+	}
+
 	/// Generate IR for a binding used as an r-value
-	fn gen_r_binding(&self, env: &mut Env<'src, 'ast, 'ctx>, path: &Path<'src>) -> &Value {
-		let binding = path.ident().expect("path was not ident");
+	fn gen_r_binding(&self, env: &mut Env<'src, 'ast, 'ctx>, bnd: &ast::Binding<'src>) -> &Value {
+		let ident = bnd.path.as_ident().expect("path was not ident");
 
 		// Function pointers are returned as-is,
 		// while static constants and variables are loaded into registers
-		env.consts.get(binding)
+		env.consts.get(ident)
 			.map(|&(ptr, _)| ptr)
-			.or(env.get_var(binding))
+			.or(env.get_var(ident))
 			.map(|ptr| {
 				let v = self.builder.build_load(ptr);
-				v.set_name(&format!("{}_tmp", binding));
+				v.set_name(&format!("{}_tmp", ident));
 				v
 			})
-			.or(env.funcs.get(binding)
+			.or(env.funcs.get(ident)
 				.map(|&func| &**func))
-			.unwrap_or_else(|| path.pos.error(ICE("undefined binding at compile time".into())))
+			.unwrap_or_else(|| bnd.path.pos.error(ICE("undefined binding at compile time".into())))
 	}
 
 	/// Generates IR code for a procedure call. If the call is in a tail position and the call
 	/// is a recursive call to the caller itself, make a tail call and return `Nothing`.
 	/// Otherwise, make a normal call and return the result.
-	fn gen_call(&'ctx self,
-		env: &mut Env<'src, 'ast, 'ctx>,
-		call: &'ast Call<'src>,
-		in_tail_pos: bool
-	) -> Option<&Value> {
-		let proced: &Function = self.gen_expr(env, &call.proced, false)
-			.map(CastFrom::cast)
-			.unwrap()
+	fn gen_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast Call<'src>) -> &Value {
+		let proced: &Function = CastFrom::cast(self.gen_expr(env, &call.proced))
 			.unwrap_or_else(|| call.proced.pos()
 				.error(ICE("expression in procedure pos is not a function".into())));
 
 		let mut args = Vec::new();
 		for arg in &call.args {
-			args.push(self.gen_expr(env, arg, false).unwrap())
+			args.push(self.gen_expr(env, arg))
 		}
 
-		if in_tail_pos && proced == self.current_func().unwrap() {
-			self.builder.build_tail_call(proced, &args);
-			None
-		} else {
-			let call = self.builder.build_call(proced, &args);
-			call.set_name("result");
-			Some(call)
-		}
+		self.builder.build_call(proced, &args)
 	}
 
-	fn gen_block(&'ctx self,
+	fn gen_tail_call(&'ctx self,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		call: &'ast Call<'src>
+	) {
+		let call = self.gen_call(env, call);
+		unsafe { core::LLVMSetTailCall(call.into(), 1) };
+
+		self.builder.build_ret(call);
+	}
+
+	fn gen_handle_block<T, F>(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
 		block: &'ast Block<'src>,
-		in_tail_pos: bool
-	) -> Option<&Value> {
+		handler: F
+	)
+		-> T
+		where F: Fn(&'ctx Self, &mut Env<'src, 'ast, 'ctx>, &'ast Expr<'src>) -> T
+	{
 		self.gen_const_defs(env, &block.const_defs);
 
 		let old_n_vars = env.vars.len();
@@ -232,10 +239,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		let (last, statements) = block.exprs.split_last().expect("no exprs in block");
 
 		for statement in statements {
-			self.gen_expr(env, statement, false);
+			self.gen_expr(env, statement);
 		}
 
-		let r = self.gen_expr(env, last, in_tail_pos);
+		let r = handler(self, env, last);
 
 		env.vars.truncate(old_n_vars);
 		env.funcs.pop();
@@ -244,11 +251,57 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		r
 	}
 
+	fn gen_block(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, block: &'ast Block<'src>) -> &Value {
+		self.gen_handle_block(env, block, Self::gen_expr)
+	}
+
+	fn gen_tail_block(&'ctx self,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		block: &'ast Block<'src>
+	) -> Option<&Value> {
+		self.gen_handle_block(env, block, Self::gen_tail_expr)
+	}
+
 	fn gen_if(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
 		cond: &'ast If<'src>,
 		typ: &ast::Type<'src>,
-		in_tail_pos: bool
+	) -> &Value {
+		let parent_func = self.current_func().unwrap();
+
+		let then_br = parent_func.append("cond_then");
+		let else_br = parent_func.append("cond_else");
+		let next_br = parent_func.append("cond_next");
+
+		self.builder.build_cond_br(
+			self.gen_expr(env, &cond.predicate),
+			then_br,
+			Some(else_br));
+
+		let mut phi_nodes = vec![];
+
+		self.builder.position_at_end(then_br);
+
+		let then_val = self.gen_expr(env, &cond.consequent);
+		phi_nodes.push((then_val, then_br));
+		self.builder.build_br(next_br);
+
+
+		self.builder.position_at_end(else_br);
+
+		let else_val = self.gen_expr(env, &cond.alternative);
+		phi_nodes.push((else_val, else_br));
+		self.builder.build_br(next_br);
+
+		self.builder.position_at_end(next_br);
+
+		self.builder.build_phi(self.gen_type(typ), &phi_nodes)
+	}
+
+	fn gen_tail_if(&'ctx self,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		cond: &'ast If<'src>,
+		typ: &ast::Type<'src>,
 	) -> Option<&Value> {
 		let parent_func = self.current_func().unwrap();
 
@@ -257,20 +310,21 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		let next_br = parent_func.append("cond_next");
 
 		self.builder.build_cond_br(
-			self.gen_expr(env, &cond.predicate, false).unwrap(),
+			self.gen_expr(env, &cond.predicate),
 			then_br,
 			Some(else_br));
 
 		let mut phi_nodes = vec![];
 
 		self.builder.position_at_end(then_br);
-		if let Some(then_val) = self.gen_expr(env, &cond.consequent, in_tail_pos) {
+
+		if let Some(then_val) = self.gen_tail_expr(env, &cond.consequent) {
 			phi_nodes.push((then_val, then_br));
 			self.builder.build_br(next_br);
 		}
 
 		self.builder.position_at_end(else_br);
-		if let Some(else_val) = self.gen_expr(env, &cond.alternative, in_tail_pos) {
+		if let Some(else_val) = self.gen_tail_expr(env, &cond.alternative) {
 			phi_nodes.push((else_val, else_br));
 			self.builder.build_br(next_br);
 		}
@@ -294,22 +348,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	}
 
 	fn gen_var_def(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast VarDef<'src>) {
-		let var = self.builder.build_alloca(self.gen_type(def.get_type()));
+		let var = self.builder.build_alloca(self.gen_type(&def.body.get_type()));
 		var.set_name(def.binding.s);
 
-		self.builder.build_store(self.gen_expr(env, &def.body, false).unwrap(), var);
+		self.builder.build_store(self.gen_expr(env, &def.body), var);
 
 		env.vars.push((def.binding.s, var));
 	}
 
-	fn gen_lvalue(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast ExprMeta<'src>)
+	fn gen_lvalue(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>)
 		-> &'ctx Value
 	{
-		match *expr.val {
-			Expr::Binding(ref path) => path.ident()
+		match *expr {
+			Expr::Binding(ref bnd) => bnd.path.as_ident()
 				.and_then(|id| env.get_var(id))
 				.unwrap_or_else(|| expr.pos().error("Invalid assignee expression")),
-			Expr::Deref(ref deref) => self.gen_expr(env, &deref.r, false).unwrap(),
+			Expr::Deref(ref deref) => self.gen_expr(env, &deref.r),
 			_ => expr.pos().error("Invalid assignee expression"),
 		}
 	}
@@ -317,52 +371,65 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	fn gen_assign(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast Assign<'src>) {
 		let var = self.gen_lvalue(env, &assign.lhs);
 
-		self.builder.build_store(self.gen_expr(env, &assign.rhs, false).unwrap(), var);
+		self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
 	}
 
 	fn gen_deref(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, deref: &'ast Deref<'src>) -> &Value {
-		self.builder.build_load(self.gen_expr(env, &deref.r, false).unwrap())
+		self.builder.build_load(self.gen_expr(env, &deref.r))
 	}
 
 	/// Generate llvm code for an expression and return its llvm Value.
-	/// Returns `None` if the expression makes a tail call
-	fn gen_expr(&'ctx self,
-		env: &mut Env<'src, 'ast, 'ctx>,
-		expr: &'ast ExprMeta<'src>,
-		in_tail_pos: bool
-	) -> Option<&Value> {
-		match *expr.val {
-			Expr::Nil(_) => Some(self.gen_nil()),
-			Expr::NumLit(lit, ref pos) => Some(self.gen_num(lit, &expr.typ, pos)),
-			Expr::StrLit(ref lit, ref pos) => Some(self.gen_str(lit, pos)),
-			Expr::Bool(b, _) => Some(b.compile(self.context)),
-			Expr::Binding(ref path) => Some(self.gen_r_binding(env, path)),
-			Expr::Call(ref call) => self.gen_call(env, call, in_tail_pos),
-			Expr::Block(ref block) => self.gen_block(env, block, in_tail_pos),
-			Expr::If(ref cond) => self.gen_if(env, cond, &expr.typ, in_tail_pos),
-			Expr::Lambda(ref lam) => Some(self.gen_lambda(env, lam)),
+	fn gen_expr(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &Value {
+		match *expr {
+			Expr::Nil(_) => self.gen_nil(),
+			Expr::NumLit(ref n) => self.gen_num(n),
+			Expr::StrLit(ref s) => self.gen_str(s),
+			Expr::Bool(ref b) => self.gen_bool(b),
+			Expr::Binding(ref bnd) => self.gen_r_binding(env, bnd),
+			Expr::Call(ref call) => self.gen_call(env, call),
+			Expr::Block(ref block) => self.gen_block(env, block),
+			Expr::If(ref cond) => self.gen_if(env, cond, &expr.get_type()),
+			Expr::Lambda(ref lam) => self.gen_lambda(env, lam),
 			Expr::VarDef(ref def) => {
 				self.gen_var_def(env, def);
-				Some(self.gen_nil())
+				self.gen_nil()
 			},
 			Expr::Assign(ref assign) => {
 				self.gen_assign(env, assign);
-				Some(self.gen_nil())
+				self.gen_nil()
 			},
 			Expr::Symbol(_) => unimplemented!(),
-			Expr::Deref(ref deref) => Some(self.gen_deref(env, deref)),
+			Expr::Deref(ref deref) => self.gen_deref(env, deref),
+			// All type ascriptions should be replaced at this stage
+			Expr::TypeAscript(_) => unreachable!(),
 		}
 	}
 
-	fn gen_eval_const_binding(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, path: &Path<'src>)
+	/// Generate llvm code for an expression and return its llvm Value.
+	fn gen_tail_expr(&'ctx self,
+		env: &mut Env<'src, 'ast, 'ctx>,
+		expr: &'ast Expr<'src>
+	) -> Option<&Value> {
+		match *expr {
+			Expr::Call(ref call) => {
+				self.gen_tail_call(env, call);
+				None
+			},
+			Expr::Block(ref block) => self.gen_tail_block(env, block),
+			Expr::If(ref cond) => self.gen_tail_if(env, cond, &expr.get_type()),
+			_ => Some(self.gen_expr(env, expr)),
+		}
+	}
+
+	fn gen_eval_const_binding(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, bnd: &ast::Binding<'src>)
 		-> &Value
 	{
-		let binding = path.ident().expect("path was not ident");
+		let ident = bnd.path.as_ident().expect("path was not ident");
 
-		env.consts.get(binding)
+		env.consts.get(ident)
 			.cloned()
 			.map(|(_, e)| self.gen_const_expr(env, e))
-			.unwrap_or_else(|| path.pos.error("binding does not point to constant"))
+			.unwrap_or_else(|| bnd.path.pos.error("binding does not point to constant"))
 	}
 
 
@@ -373,47 +440,47 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 			.map(|arg| self.gen_const_expr(env, arg))
 			.collect::<Vec<_>>();
 
-		match *call.proced.val {
-			Expr::Binding(ref path) if path == "+" =>
+		match call.proced {
+			Expr::Binding(ref bnd) if &bnd.path == "+" =>
 				self.builder.build_add(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "-" =>
+			Expr::Binding(ref bnd) if &bnd.path == "-" =>
 				self.builder.build_sub(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "*" =>
+			Expr::Binding(ref bnd) if &bnd.path == "*" =>
 				self.builder.build_mul(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "/" =>
+			Expr::Binding(ref bnd) if &bnd.path == "/" =>
 				self.builder.build_div(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "and" =>
+			Expr::Binding(ref bnd) if &bnd.path == "and" =>
 				self.builder.build_and(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "or" =>
+			Expr::Binding(ref bnd) if &bnd.path == "or" =>
 				self.builder.build_or(&args[0], &args[1]),
-			Expr::Binding(ref path) if path == "=" =>
+			Expr::Binding(ref bnd) if &bnd.path == "=" =>
 				self.builder.build_cmp(&args[0], &args[1], Predicate::Equal),
-			Expr::Binding(ref path) if path == ">" =>
+			Expr::Binding(ref bnd) if &bnd.path == ">" =>
 				self.builder.build_cmp(&args[0], &args[1], Predicate::GreaterThan),
-			Expr::Binding(ref path) if path == "<" =>
+			Expr::Binding(ref bnd) if &bnd.path == "<" =>
 				self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan),
-			Expr::Binding(ref path) =>
-				path.pos.error("Binding does not point to a constant function"),
+			Expr::Binding(ref bnd) =>
+				bnd.path.pos.error("Binding does not point to a constant function"),
 			_ => call.pos.error("Non-constant function in constant expression")
 		}
 	}
 
-	fn gen_const_expr(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast ExprMeta<'src>)
+	fn gen_const_expr(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>)
 		-> &Value
 	{
 		// TODO: add internal eval over ExprMetas
-		match *expr.val {
+		match *expr {
 			Expr::Nil(_) => self.gen_nil(),
-			Expr::NumLit(lit, ref pos) => self.gen_num(lit, &expr.typ, pos),
-			Expr::StrLit(ref lit, ref pos) => self.gen_str(lit, pos),
-			Expr::Bool(b, _) => b.compile(self.context),
-			Expr::Binding(ref path) => self.gen_eval_const_binding(env, path),
+			Expr::NumLit(ref lit) => self.gen_num(lit),
+			Expr::StrLit(ref lit) => self.gen_str(lit),
+			Expr::Bool(ref b) => self.gen_bool(b),
+			Expr::Binding(ref bnd) => self.gen_eval_const_binding(env, bnd),
 			Expr::Call(ref call) => self.gen_const_call(env, call),
-			_ => expr.pos().error("expression cannot be used in a constant expression"),
+			_ => expr.pos().error("Expression cannot be used in a constant expression"),
 		}
 	}
 
-	fn gen_const(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, id: &str, def: &'ast ExprMeta<'src>)
+	fn gen_const(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, id: &str, def: &'ast Expr<'src>)
 		-> &Value
 	{
 		self.module.add_global_constant(id, self.gen_const_expr(env, def))
@@ -439,7 +506,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 			.collect::<Vec<_>>();
 
 		let old_vars = mem::replace(&mut env.vars, params);
-		if let Some(e) = self.gen_expr(env, &def_lam.body, true) {
+		if let Some(e) = self.gen_tail_expr(env, &def_lam.body) {
 			self.builder.build_ret(e);
 		}
 
@@ -468,7 +535,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		let (mut undef_funcs, mut undef_consts) = (Vec::new(), Vec::new());
 
 		for (id, const_def) in const_defs.iter().map(|(id, const_def)| (id.s, const_def)) {
-			match *const_def.body.val {
+			match const_def.body {
 				Expr::Lambda(ref lam) => {
 					let func: &_ = self.gen_func_decl(id, &lam.get_type());
 					func_decls.insert(id, func);

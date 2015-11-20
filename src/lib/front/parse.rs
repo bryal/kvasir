@@ -57,7 +57,7 @@ impl<'src> Parser {
 					construct[1..].iter().map(Self::parse_type).collect()),
 				_ => construct[0].pos.error(Invalid("type constructor")),
 			},
-			TokenTree::List(_) => Type::nil(),
+			TokenTree::List(_) => TYPE_NIL.clone(),
 			TokenTree::Ident("_") => Type::Unknown,
 			TokenTree::Ident(basic) => Type::Basic(basic),
 			TokenTree::Num(_) => ttm.pos.error(Mismatch("type", "numeric literal")),
@@ -112,15 +112,15 @@ impl<'src> Parser {
 	}
 
 	fn parse_const_def(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>)
-		-> (Ident<'src>, ExprMeta<'src>)
+		-> (Ident<'src>, ConstDef<'src>)
 	{
 		if tts.len() != 2 {
-			pos.error(format!("Arity mismatch. Expected 2, found {}", tts.len()))
+			pos.error(ArityMis(2, tts.len()))
 		} else {
 			match tts[0].tt {
 				TokenTree::Ident(name) => (
 					Ident::new(name, tts[0].pos.clone()),
-					Self::parse_expr_meta(&tts[1])),
+					ConstDef { body: Self::parse_expr(&tts[1]), pos: pos }),
 				_ => tts[0].pos.error(Expected("identifier")),
 			}
 		}
@@ -132,20 +132,25 @@ impl<'src> Parser {
 		pos: SrcPos<'src>
 	) -> Call<'src> {
 		Call{
-			proced: Self::parse_expr_meta(proc_ttm),
-			args: args_tts.iter().map(Self::parse_expr_meta).collect(),
+			proced: Self::parse_expr(proc_ttm),
+			args: args_tts.iter().map(Self::parse_expr).collect(),
 			pos: pos
 		}
 	}
 
-	fn parse_block(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Block<'src> {
+	/// Parse a `Block` from tokens. Returns `None` if there are no expressions in the block.
+	fn parse_block(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Option<Block<'src>> {
 		let (uses, const_defs, extern_funcs, exprs) = Parser::parse_items(tts);
-		Block{
-			uses: uses,
-			const_defs: const_defs,
-			extern_funcs: extern_funcs,
-			exprs: exprs,
-			pos: pos
+		if exprs.is_empty() {
+			None
+		} else {
+			Some(Block{
+				uses: uses,
+				const_defs: const_defs,
+				extern_funcs: extern_funcs,
+				exprs: exprs,
+				pos: pos
+			})
 		}
 	}
 
@@ -154,9 +159,9 @@ impl<'src> Parser {
 			pos.error(ArityMis(3, tts.len()))
 		}
 		If {
-			predicate: Self::parse_expr_meta(&tts[0]),
-			consequent: Self::parse_expr_meta(&tts[1]),
-			alternative: Self::parse_expr_meta(&tts[2]),
+			predicate: Self::parse_expr(&tts[0]),
+			consequent: Self::parse_expr(&tts[1]),
+			alternative: Self::parse_expr(&tts[2]),
 			pos: pos
 		}
 	}
@@ -170,7 +175,7 @@ impl<'src> Parser {
 				params: param_tts.iter()
 					.map(|param_tt| Param::new(Self::parse_binding(param_tt), Type::Unknown))
 					.collect(),
-				body: Self::parse_expr_meta(&tts[1]),
+				body: Self::parse_expr(&tts[1]),
 				pos: pos
 			},
 			_ => tts[0].pos.error(Expected("list")),
@@ -185,7 +190,8 @@ impl<'src> Parser {
 			TokenTree::Ident(binding) => VarDef {
 				binding: Ident::new(binding, tts[0].pos.clone()),
 				mutable: false,
-				body: Self::parse_expr_meta(&tts[1]),
+				body: Self::parse_expr(&tts[1]),
+				typ: Type::Unknown,
 				pos: pos
 			},
 			_ => tts[0].pos.error(Expected("list")),
@@ -197,8 +203,9 @@ impl<'src> Parser {
 			pos.error(ArityMis(2, tts.len()))
 		}
 		Assign {
-			lhs: Self::parse_expr_meta(&tts[0]),
-			rhs: Self::parse_expr_meta(&tts[1]),
+			lhs: Self::parse_expr(&tts[0]),
+			rhs: Self::parse_expr(&tts[1]),
+			typ: Type::Unknown,
 			pos: pos,
 		}
 	}
@@ -208,23 +215,48 @@ impl<'src> Parser {
 			pos.error(ArityMis(1, tts.len()))
 		}
 		Deref {
-			r: Self::parse_expr_meta(&tts[1]),
+			r: Self::parse_expr(&tts[0]),
+			pos: pos,
+		}
+	}
+
+	fn parse_type_ascript(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
+		if tts.len() != 2 {
+			pos.error(ArityMis(2, tts.len()))
+		}
+		TypeAscript {
+			typ: Self::parse_type(&tts[0]),
+			expr: Self::parse_expr(&tts[1]),
 			pos: pos,
 		}
 	}
 
 	fn parse_quoted_expr(ttm: &TokenTreeMeta<'src>) -> Expr<'src> {
 		match ttm.tt {
-			TokenTree::List(ref list) => Expr::Call(Call{
-				proced: ExprMeta::new(Expr::Binding(Path::from_str("list", ttm.pos.clone()))),
+			TokenTree::List(ref list) => Expr::Call(Box::new(Call{
+				proced: Expr::Binding(Binding {
+					path: Path::from_str("list", ttm.pos.clone()),
+					typ: Type::Unknown
+				}),
 				args: list.iter()
-					.map(|li| ExprMeta::new(Self::parse_quoted_expr(li)))
+					.map(|li| Self::parse_quoted_expr(li))
 					.collect(),
 				pos: ttm.pos.clone(),
+			})),
+			TokenTree::Ident(ident) => Expr::Symbol(Symbol {
+				ident: Ident::new(ident, ttm.pos.clone()),
+				typ: Type::Unknown
 			}),
-			TokenTree::Ident(ident) => Expr::Symbol(Ident::new(ident, ttm.pos.clone())),
-			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos.clone()),
-			TokenTree::Str(ref s) => Expr::StrLit(s.clone(), ttm.pos.clone()),
+			TokenTree::Num(num) => Expr::NumLit(NumLit {
+				lit: num,
+				typ: Type::Unknown,
+				pos: ttm.pos.clone()
+			}),
+			TokenTree::Str(ref s) => Expr::StrLit(StrLit {
+				lit: s.clone(),
+				typ: Type::Unknown,
+				pos: ttm.pos.clone()
+			}),
 		}
 	}
 
@@ -237,46 +269,51 @@ impl<'src> Parser {
 					} else {
 						ttm.pos.error(ArityMis(1, sexpr.len()))
 					},
-					TokenTree::Ident("if") => Expr::If(Self::parse_if(tail, ttm.pos.clone())),
+					TokenTree::Ident("if") =>
+						Expr::If(Box::new(Self::parse_if(tail, ttm.pos.clone()))),
 					TokenTree::Ident("lambda") =>
-						Expr::Lambda(Self::parse_lambda(tail, ttm.pos.clone())),
-					TokenTree::Ident("block") =>
-						Expr::Block(Self::parse_block(tail, ttm.pos.clone())),
+						Expr::Lambda(Box::new(Self::parse_lambda(tail, ttm.pos.clone()))),
+					TokenTree::Ident("block") => Self::parse_block(tail, ttm.pos.clone())
+						.map(|block| Expr::Block(Box::new(block)))
+						.unwrap_or(Expr::Nil(Nil { typ: Type::Unknown, pos: ttm.pos.clone() })),
 					TokenTree::Ident("def-var") =>
-						Expr::VarDef(Self::parse_var_def(tail, ttm.pos.clone())),
-					TokenTree::Ident("def-var-mut") => Expr::VarDef(
-						VarDef {
-							mutable: true,
-							.. Self::parse_var_def(tail, ttm.pos.clone())
-						}),
+						Expr::VarDef(Box::new(Self::parse_var_def(tail, ttm.pos.clone()))),
+					TokenTree::Ident("def-var-mut") => Expr::VarDef(Box::new(VarDef {
+						mutable: true,
+						.. Self::parse_var_def(tail, ttm.pos.clone())
+					})),
 					TokenTree::Ident("set") =>
-						Expr::Assign(Self::parse_assign(tail, ttm.pos.clone())),
+						Expr::Assign(Box::new(Self::parse_assign(tail, ttm.pos.clone()))),
 					TokenTree::Ident("deref") if tail.len() == 1 =>
-						Expr::Deref(Self::parse_deref(tail, ttm.pos.clone())),
-					_ => Expr::Call(Self::parse_sexpr(&sexpr[0], tail, ttm.pos.clone())),
+						Expr::Deref(Box::new(Self::parse_deref(tail, ttm.pos.clone()))),
+					TokenTree::Ident(":") => Expr::TypeAscript(Box::new(
+						Self::parse_type_ascript(tail, ttm.pos.clone()))),
+					_ => Expr::Call(Box::new(Self::parse_sexpr(&sexpr[0], tail, ttm.pos.clone()))),
 				}
 			} else {
-				Expr::Nil(ttm.pos.clone())
+				Expr::Nil(Nil { typ: Type::Unknown, pos: ttm.pos.clone() })
 			},
-			TokenTree::Ident("true") => Expr::Bool(true, ttm.pos.clone()),
-			TokenTree::Ident("false") => Expr::Bool(false, ttm.pos.clone()),
-			TokenTree::Ident(ident) => Expr::Binding(Path::from_str(ident, ttm.pos.clone())),
-			TokenTree::Num(num) => Expr::NumLit(num, ttm.pos.clone()),
-			TokenTree::Str(ref s) => Expr::StrLit(s.clone(), ttm.pos.clone()),
-		}
-	}
-
-	pub fn parse_expr_meta(ttm: &TokenTreeMeta<'src>) -> ExprMeta<'src> {
-		match ttm.tt {
-			// Check for type ascription around expression, e.g. `(:F64 12)`
-			TokenTree::List(ref sexpr) if sexpr.len() == 3 && sexpr[0].tt == TokenTree::Ident(":")
-				=> ExprMeta::new_type_ascripted(
-					Self::parse_expr(&sexpr[2]),
-					Self::parse_type(&sexpr[1]),
-					ttm.pos.clone()),
-			TokenTree::List(ref sexpr) if sexpr.len() > 0 && sexpr[0].tt == TokenTree::Ident(":")
-				=> ttm.pos.error(ArityMis(2, sexpr.len() - 1)),
-			_ => ExprMeta::new(Self::parse_expr(ttm))
+			TokenTree::Ident("true") => Expr::Bool(Bool {
+				val: true,
+				typ: Type::Unknown,
+				pos: ttm.pos.clone()
+			}),
+			TokenTree::Ident("false") => Expr::Bool(Bool {
+				val: false,
+				typ: Type::Unknown,
+				pos: ttm.pos.clone()
+			}),
+			TokenTree::Ident(ident) => Expr::Binding(Binding {
+				path: Path::from_str(ident, ttm.pos.clone()),
+				typ: Type::Unknown,
+			}),
+			TokenTree::Num(num) =>
+				Expr::NumLit(NumLit { lit: num, typ: Type::Unknown, pos: ttm.pos.clone() }),
+			TokenTree::Str(ref s) => Expr::StrLit(StrLit {
+				lit: s.clone(),
+				typ: Type::Unknown,
+				pos: ttm.pos.clone()
+			}),
 		}
 	}
 
@@ -304,7 +341,7 @@ impl<'src> Parser {
 		Vec<Use<'src>>,
 		HashMap<Ident<'src>, ConstDef<'src>>,
 		HashMap<Ident<'src>, Type<'src>>,
-		Vec<ExprMeta<'src>>
+		Vec<Expr<'src>>
 	) {
 		let mut uses = Vec::new();
 		let (mut const_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
@@ -316,12 +353,10 @@ impl<'src> Parser {
 					TokenTree::Ident("use") => uses.push(
 						Self::parse_use(&sexpr[1..], ttm.pos.clone())),
 					TokenTree::Ident("def-const") => {
-						let (id, body) = Self::parse_const_def(&sexpr[1..], ttm.pos.clone());
+						let (id, def) = Self::parse_const_def(&sexpr[1..], ttm.pos.clone());
 						let id_s = id.s;
 
-						if const_defs.insert(id, ConstDef{ body: body, pos: ttm.pos.clone() })
-							.is_some()
-						{
+						if const_defs.insert(id, def).is_some() {
 							ttm.pos.error(format!("Duplicate constant definition `{}`", id_s))
 						}
 					},
@@ -334,9 +369,9 @@ impl<'src> Parser {
 								format!("Duplicate external constant declaration `{}`", id_s))
 						}
 					},
-					_ => exprs.push(Self::parse_expr_meta(ttm)),
+					_ => exprs.push(Self::parse_expr(ttm)),
 				},
-				_ => exprs.push(Self::parse_expr_meta(ttm)),
+				_ => exprs.push(Self::parse_expr(ttm)),
 			}
 		}
 

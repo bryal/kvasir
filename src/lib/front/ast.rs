@@ -23,8 +23,18 @@
 use std::fmt;
 use std::collections::HashMap;
 use std::hash;
-use std::borrow;
+use std::borrow::{ self, Cow };
 use super::SrcPos;
+
+lazy_static!{
+	pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
+	pub static ref TYPE_NIL: Type<'static> = Type::Basic("Nil");
+	pub static ref TYPE_BOOL: Type<'static> = Type::Basic("Bool");
+	pub static ref TYPE_SYMBOL: Type<'static> = Type::Basic("Symbol");
+	pub static ref TYPE_BYTE_SLICE: Type<'static> = Type::Construct(
+		"Slice",
+		vec![Type::Basic("UInt8")]);
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<'src> {
@@ -40,7 +50,6 @@ impl<'src> Type<'src> {
 		arg_tys.push(return_ty);
 		Type::Construct("Proc", arg_tys)
 	}
-	pub fn nil() -> Self { Type::Basic("Nil") }
 
 	pub fn is_unknown(&self) -> bool {
 		match *self {
@@ -65,7 +74,7 @@ impl<'src> Type<'src> {
 			Type::Construct("Proc", ref ts) => Some(
 				ts.split_last()
 					.map(|(b, ps)| (ps, b))
-					.expect("ICE: `proc` construct with no arguments")),
+					.expect("ICE: `Proc` construct with no arguments")),
 			_ => None,
 		}
 	}
@@ -143,8 +152,12 @@ impl<'src> Path<'src> {
 	pub fn is_absolute(&self) -> bool { self.is_absolute }
 
 	/// If self is just a simple ident, return it as Some
-	pub fn ident(&self) -> Option<&str> {
-		if ! self.is_absolute { self.parts.first().map(|&s| s) } else { None }
+	pub fn as_ident(&self) -> Option<&str> {
+		if ! self.is_absolute && self.parts.len() == 1 {
+			Some(*self.parts.first().unwrap())
+		} else {
+			None
+		}
 	}
 
 	/// Concatenates two paths.
@@ -205,19 +218,65 @@ pub struct Use<'src> {
 
 #[derive(Clone, Debug)]
 pub struct ConstDef<'src> {
-	pub body: ExprMeta<'src>,
+	pub body: Expr<'src>,
+	pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Nil<'src> {
+	pub typ: Type<'src>,
+	pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NumLit<'src> {
+	pub lit: &'src str,
+	pub typ: Type<'src>,
+	pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StrLit<'src> {
+	pub lit: borrow::Cow<'src, str>,
+	pub typ: Type<'src>,
+	pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Binding<'src> {
+	pub path: Path<'src>,
+	pub typ: Type<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Bool<'src> {
+	pub val: bool,
+	pub typ: Type<'src>,
 	pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Call<'src> {
-	pub proced: ExprMeta<'src>,
-	pub args: Vec<ExprMeta<'src>>,
+	pub proced: Expr<'src>,
+	pub args: Vec<Expr<'src>>,
 	pub pos: SrcPos<'src>,
 }
 impl<'src> Call<'src> {
-	pub fn body_type(&self) -> &Type<'src> {
-		self.proced.typ.get_proc_sig().expect("ICE: Call::body_type: get_proc_sig returned None").1
+	pub fn get_type(&self) -> Cow<Type<'src>> {
+		let proc_typ = self.proced.get_type();
+
+		if proc_typ.is_unknown() {
+			Cow::Borrowed(&TYPE_UNKNOWN)
+		} else {
+			let maybe_body = match self.proced.get_type() {
+				Cow::Borrowed(typ) => typ.get_proc_sig()
+					.map(|(_, body)| Cow::Borrowed(body)),
+				Cow::Owned(typ) => typ.get_proc_sig()
+					.map(|(_, body)| Cow::Owned(body.clone())),
+			};
+
+			maybe_body.expect("ICE: Call::get_type: get_proc_sig returned None")
+		}
 	}
 }
 
@@ -226,17 +285,27 @@ pub struct Block<'src> {
 	pub uses: Vec<Use<'src>>,
 	pub const_defs: HashMap<Ident<'src>, ConstDef<'src>>,
 	pub extern_funcs: HashMap<Ident<'src>, Type<'src>>,
-	pub exprs: Vec<ExprMeta<'src>>,
+	pub exprs: Vec<Expr<'src>>,
 	pub pos: SrcPos<'src>
+}
+impl<'src> Block<'src> {
+	fn get_type(&self) -> Cow<Type<'src>> {
+		self.exprs.last().unwrap().get_type()
+	}
 }
 
 /// if-then-else expression
 #[derive(Clone, Debug)]
 pub struct If<'src> {
-	pub predicate: ExprMeta<'src>,
-	pub consequent: ExprMeta<'src>,
-	pub alternative: ExprMeta<'src>,
+	pub predicate: Expr<'src>,
+	pub consequent: Expr<'src>,
+	pub alternative: Expr<'src>,
 	pub pos: SrcPos<'src>,
+}
+impl<'src> If<'src> {
+	fn get_type(&self) -> Cow<Type<'src>> {
+		self.consequent.get_type()
+	}
 }
 
 // A parameter for a function/lambda/procedure
@@ -254,19 +323,17 @@ impl<'src> Param<'src> {
 	}
 }
 
-// TODO: Add support for capturing all args as a list, like `(lambda all-eq xs (for-all xs eq))`
-//       for variadic expressions like `(all-eq a b c d)`
 #[derive(Clone, Debug)]
 pub struct Lambda<'src> {
 	pub params: Vec<Param<'src>>,
-	pub body: ExprMeta<'src>,
+	pub body: Expr<'src>,
 	pub pos: SrcPos<'src>,
 }
 impl<'src> Lambda<'src> {
 	pub fn get_type(&self) -> Type<'src> {
 		Type::new_proc(
 			self.params.iter().map(|p| p.typ.clone()).collect(),
-			self.body.typ.clone())
+			self.body.get_type().into_owned())
 	}
 }
 
@@ -274,94 +341,111 @@ impl<'src> Lambda<'src> {
 pub struct VarDef<'src> {
 	pub binding: Ident<'src>,
 	pub mutable: bool,
-	pub body: ExprMeta<'src>,
+	pub body: Expr<'src>,
+	pub typ: Type<'src>,
 	pub pos: SrcPos<'src>
-}
-impl<'src> VarDef<'src> {
-	pub fn get_type(&self) -> &Type<'src> {
-		&self.body.typ
-	}
 }
 
 #[derive(Clone, Debug)]
 pub struct Assign<'src> {
-	pub lhs: ExprMeta<'src>,
-	pub rhs: ExprMeta<'src>,
+	pub lhs: Expr<'src>,
+	pub rhs: Expr<'src>,
+	pub typ: Type<'src>,
 	pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
+pub struct Symbol<'src> {
+	pub ident: Ident<'src>,
+	pub typ: Type<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Deref<'src> {
-	pub r: ExprMeta<'src>,
+	pub r: Expr<'src>,
+	pub pos: SrcPos<'src>,
+}
+impl<'src> Deref<'src> {
+	pub fn get_type(&self) -> Cow<Type<'src>> {
+		match self.r.get_type() {
+			Cow::Owned(Type::Construct("RawPtr", ref args)) =>
+				Cow::Owned(args.first().cloned().unwrap_or_else(|| unreachable!())),
+			Cow::Borrowed(&Type::Construct("RawPtr", ref args)) =>
+				Cow::Borrowed(args.first().unwrap_or_else(|| unreachable!())),
+			ref t if **t == Type::Unknown => Cow::Borrowed(&TYPE_UNKNOWN),
+			_ => unreachable!(),
+		}
+	}
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeAscript<'src> {
+	pub typ: Type<'src>,
+	pub expr: Expr<'src>,
 	pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr<'src> {
-	Nil(SrcPos<'src>),
-	NumLit(&'src str, SrcPos<'src>),
-	StrLit(borrow::Cow<'src, str>, SrcPos<'src>),
-	Bool(bool, SrcPos<'src>),
-	Binding(Path<'src>),
-	Call(Call<'src>),
-	Block(Block<'src>),
-	If(If<'src>),
-	Lambda(Lambda<'src>),
-	VarDef(VarDef<'src>),
-	Assign(Assign<'src>),
-	Symbol(Ident<'src>),
-	Deref(Deref<'src>),
+	Nil(Nil<'src>),
+	NumLit(NumLit<'src>),
+	StrLit(StrLit<'src>),
+	Bool(Bool<'src>),
+	Binding(Binding<'src>),
+	Call(Box<Call<'src>>),
+	Block(Box<Block<'src>>),
+	If(Box<If<'src>>),
+	Lambda(Box<Lambda<'src>>),
+	VarDef(Box<VarDef<'src>>),
+	Assign(Box<Assign<'src>>),
+	Symbol(Symbol<'src>),
+	Deref(Box<Deref<'src>>),
+	/// Type ascription. E.g. `(:Int32 42)`
+	TypeAscript(Box<TypeAscript<'src>>),
 }
 impl<'src> Expr<'src> {
 	pub fn is_var_def(&self) -> bool {
 		if let &Expr::VarDef(_) = self { true } else { false }
 	}
 
-	fn pos(&self) -> &SrcPos<'src> {
+	pub fn pos(&self) -> &SrcPos<'src> {
 		match *self {
-			Expr::Nil(ref p)
-			| Expr::NumLit(_, ref p)
-			| Expr::StrLit(_, ref p)
-			| Expr::Bool(_, ref p)
-				=> p,
-			Expr::Binding(ref path) => &path.pos,
+			Expr::Nil(ref n) => &n.pos,
+			Expr::NumLit(ref l) => &l.pos,
+			Expr::StrLit(ref l) => &l.pos,
+			Expr::Bool(ref b) => &b.pos,
+			Expr::Binding(ref bnd) => &bnd.path.pos,
 			Expr::Call(ref call) => &call.pos,
 			Expr::Block(ref block) => &block.pos,
 			Expr::If(ref cond) => &cond.pos,
 			Expr::Lambda(ref l) => &l.pos,
 			Expr::VarDef(ref def) => &def.pos,
 			Expr::Assign(ref a) => &a.pos,
-			Expr::Symbol(ref s) => &s.pos,
+			Expr::Symbol(ref s) => &s.ident.pos,
 			Expr::Deref(ref deref) => &deref.pos,
+			Expr::TypeAscript(ref a) => &a.pos,
 		}
 	}
 
-	fn as_binding(&self) -> Option<&Path<'src>> {
+	pub fn get_type(&self) -> Cow<Type<'src>> {
 		match *self {
-			Expr::Binding(ref path) => Some(path),
-			_ => None,
+			Expr::Nil(ref n) => Cow::Borrowed(&n.typ),
+			Expr::NumLit(ref l) => Cow::Borrowed(&l.typ),
+			Expr::StrLit(ref l) => Cow::Borrowed(&l.typ),
+			Expr::Bool(ref b) => Cow::Borrowed(&b.typ),
+			Expr::Binding(ref bnd) => Cow::Borrowed(&bnd.typ),
+			Expr::Call(ref call) => call.get_type(),
+			Expr::Block(ref block) => block.get_type(),
+			Expr::If(ref cond) => cond.get_type(),
+			Expr::Lambda(ref lam) => Cow::Owned(lam.get_type()),
+			Expr::VarDef(ref def) => Cow::Borrowed(&def.typ),
+			Expr::Assign(ref assign) => Cow::Borrowed(&assign.typ),
+			Expr::Symbol(ref sym) => Cow::Borrowed(&sym.typ),
+			Expr::Deref(ref deref) => deref.get_type(),
+			// The existance of a type ascription implies that the expression has not yet been
+			// inferred. As such, return type `Unknown` to imply that inference is needed
+			Expr::TypeAscript(_) => Cow::Borrowed(&TYPE_UNKNOWN),
 		}
-	}
-}
-
-/// An expression with additional attributes such as type information
-#[derive(Clone, Debug)]
-pub struct ExprMeta<'src> {
-	pub val: Box<Expr<'src>>,
-	pub typ: Type<'src>,
-	pub ty_ascription: Option<(Type<'src>, SrcPos<'src>)>,
-}
-impl<'src> ExprMeta<'src> {
-	pub fn new(value: Expr<'src>) -> Self {
-		ExprMeta{ val: Box::new(value), typ: Type::Unknown, ty_ascription: None }
-	}
-
-	pub fn new_type_ascripted(value: Expr<'src>, typ: Type<'src>, pos: SrcPos<'src>) -> Self {
-		ExprMeta{ val: Box::new(value), typ: Type::Unknown, ty_ascription: Some((typ, pos)) }
-	}
-
-	pub fn pos(&self) -> &SrcPos<'src> {
-		self.ty_ascription.as_ref().map(|&(_, ref pos)| pos).unwrap_or(self.val.pos())
 	}
 }
 

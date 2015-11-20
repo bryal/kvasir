@@ -56,8 +56,8 @@ impl<'src> Cleaner<'src> {
 	}
 
 	fn clean_path(&mut self, path: &Path<'src>) {
-		if let Some((id, height))
-			= path.ident().and_then(|id| self.const_defs.get_height(id).map(|height| (id, height)))
+		if let Some((id, height)) = path.as_ident()
+			.and_then(|id| self.const_defs.get_height(id).map(|height| (id, height)))
 		{
 			let maybe_def = replace(
 				self.const_defs.get_at_height_mut(id, height).unwrap(),
@@ -76,10 +76,10 @@ impl<'src> Cleaner<'src> {
 	}
 
 	fn clean_call(&mut self, call: &mut Call<'src>) {
-		self.clean_expr_meta(&mut call.proced);
+		self.clean_expr(&mut call.proced);
 
 		for arg in &mut call.args {
-			self.clean_expr_meta(arg);
+			self.clean_expr(arg);
 		}
 	}
 
@@ -91,7 +91,7 @@ impl<'src> Cleaner<'src> {
 				.collect());
 
 		for expr in &mut block.exprs {
-			self.clean_expr_meta(expr);
+			self.clean_expr(expr);
 		}
 
 		block.const_defs = self.const_defs.pop()
@@ -110,37 +110,38 @@ impl<'src> Cleaner<'src> {
 
 	fn clean_if(&mut self, cond: &mut If<'src>) {
 		for expr in &mut [&mut cond.predicate, &mut cond.consequent, &mut cond.alternative] {
-			self.clean_expr_meta(expr);
+			self.clean_expr(expr);
 		}
 	}
 
 	fn clean_lambda(&mut self, lambda: &mut Lambda<'src>) {
-		self.clean_expr_meta(&mut lambda.body);
+		self.clean_expr(&mut lambda.body);
 	}
 
 	fn clean_var_def(&mut self, def: &mut VarDef<'src>) {
-		self.clean_expr_meta(&mut def.body);
+		self.clean_expr(&mut def.body);
 	}
 
 	fn clean_assign(&mut self, assign: &mut Assign<'src>) {
-		self.clean_expr_meta(&mut assign.rhs);
+		self.clean_expr(&mut assign.rhs);
 	}
 
-	fn clean_expr_meta(&mut self, expr: &mut ExprMeta<'src>) {
-		match *expr.val {
-			Expr::Binding(ref path) => self.clean_path(path),
+	fn clean_expr(&mut self, expr: &mut Expr<'src>) {
+		match *expr {
+			Expr::Binding(ref bnd) => self.clean_path(&bnd.path),
 			Expr::Call(ref mut call) => self.clean_call(call),
 			Expr::Block(ref mut block) => self.clean_block(block),
 			Expr::If(ref mut cond) => self.clean_if(cond),
 			Expr::Lambda(ref mut lambda) => self.clean_lambda(lambda),
 			Expr::VarDef(ref mut def) => self.clean_var_def(def),
 			Expr::Assign(ref mut assign) => self.clean_assign(assign),
+			Expr::TypeAscript(ref mut ascr) => self.clean_expr(&mut ascr.expr),
 			_ => (),
 		}
 	}
 
 	fn clean_const_def(&mut self, def: &mut ConstDef<'src>) {
-		self.clean_expr_meta(&mut def.body)
+		self.clean_expr(&mut def.body)
 	}
 }
 

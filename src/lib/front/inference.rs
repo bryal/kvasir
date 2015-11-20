@@ -1,4 +1,3 @@
-
 // The MIT License (MIT)
 //
 // Copyright (c) 2015 Johan Johansson
@@ -30,8 +29,9 @@
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
 use std::fmt::{ self, Display };
-use std::mem::replace;
+use std::mem::{ replace, swap };
 use std::collections::HashMap;
+use std::borrow::Cow;
 use lib::front::ast::*;
 use lib::collections::ScopeStack;
 use self::InferenceErr::*;
@@ -104,18 +104,52 @@ impl<'src> Inferer<'src> {
 	fn infer_const_def(&mut self, def: &mut ConstDef<'src>, expected_ty: &Type<'src>)
 		-> Type<'src>
 	{
-		self.infer_expr_meta(&mut def.body, expected_ty)
-			.unwrap_or_else(|found_ty| def.body.pos().error(TypeMis(expected_ty, &found_ty)))
+		self.infer_expr(&mut def.body, expected_ty)
 	}
 
-	fn infer_path(&mut self, path: &Path<'src>, expected_ty: &Type<'src>)
-		-> Result<Type<'src>, Type<'src>>
-	{
-		let ident = if let Some(ident) = path.ident() {
-			ident
+	fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		if let Some(type_nil) = expected_ty.infer_by(&TYPE_NIL) {
+			nil.typ = type_nil.clone();
+			type_nil
 		} else {
-			panic!("Inferer::infer_path: Not implemented for anything but basic identifiers")
-		};
+			nil.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+		}
+	}
+
+	fn infer_num_lit(&mut self, lit: &mut NumLit<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		match *expected_ty {
+			Type::Unknown
+			| Type::Basic("Int8") | Type::Basic("UInt8")
+			| Type::Basic("Int16") | Type::Basic("UInt16")
+			| Type::Basic("Int32") | Type::Basic("UInt32") | Type::Basic("Float32")
+			| Type::Basic("Int64") | Type::Basic("UInt64") | Type::Basic("Float64")
+				=> { lit.typ = expected_ty.clone(); expected_ty.clone() },
+			_ => lit.pos.error(format!(
+				"Type mismatch. Expected `{}`, found numeric literal",
+				expected_ty)),
+		}
+	}
+
+	fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		if expected_ty.infer_by(&TYPE_BYTE_SLICE).is_some() {
+			lit.typ = TYPE_BYTE_SLICE.clone();
+			TYPE_BYTE_SLICE.clone()
+		} else {
+			lit.pos.error(TypeMis(expected_ty, &TYPE_BYTE_SLICE))
+		}
+	}
+
+	fn infer_bool(&mut self, b: &mut Bool<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		if expected_ty.infer_by(&TYPE_BOOL).is_some() {
+			b.typ = TYPE_BOOL.clone();
+			TYPE_BOOL.clone()
+		} else {
+			b.pos.error(TypeMis(expected_ty, &TYPE_BOOL))
+		}
+	}
+
+	fn infer_binding(&mut self, bnd: &mut Binding<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		let ident = bnd.path.as_ident().unwrap_or_else(|| unimplemented!());
 
 		// In order to not violate any borrowing rules, use get_height to check if entry exists
 		// and to speed up upcoming lookup
@@ -123,10 +157,15 @@ impl<'src> Inferer<'src> {
 			// Don't infer types for external items,
 			// just check compatibility with expected_ty
 
-			let typ = self.extern_funcs.get_at_height(ident, height).unwrap();
-			typ.infer_by(expected_ty).ok_or(typ.clone())
+			let extern_typ = self.extern_funcs.get_at_height(ident, height).unwrap();
+			if let Some(inferred) = extern_typ.infer_by(expected_ty) {
+				bnd.typ = inferred.clone();
+				inferred
+			} else {
+				bnd.path.pos.error(TypeMis(expected_ty, &extern_typ))
+			}
 		} else if let Some(height) = self.const_defs.get_height(ident) {
-			// Path is a constant
+			// Binding is a constant. Do inference
 
 			let maybe_def = replace(
 				self.const_defs.get_at_height_mut(ident, height).unwrap(),
@@ -135,39 +174,44 @@ impl<'src> Inferer<'src> {
 			if let Some(mut def) = maybe_def {
 				let old_vars = replace(&mut self.vars, Vec::new());
 
-				let infered = self.infer_const_def(&mut def, expected_ty);
+				let inferred = self.infer_const_def(&mut def, expected_ty);
 
 				self.vars = old_vars;
 				self.const_defs.update(ident, Some(def));
+				bnd.typ = inferred.clone();
 
-				Ok(infered)
+				inferred
 			} else {
-				// We are currently doing inference inside this definition
+				// We are currently doing inference inside this definition, and as such
+				// no more type information can be given for sure than Unknown
 
-				Ok(Type::Unknown)
+				Type::Unknown
 			}
-		} else if let Some(stack_bnd_ty) = self.get_var_type_mut(ident) {
-			// Path is a var
+		} else if let Some(var_ty) = self.get_var_type_mut(ident) {
+			// Binding is a variable
 
-			stack_bnd_ty.infer_by(expected_ty)
-				.map(|inferred| {
-					*stack_bnd_ty = inferred.clone();
-					inferred
-				})
-				.ok_or(stack_bnd_ty.clone())
+			if let Some(inferred) = var_ty.infer_by(expected_ty) {
+				*var_ty = inferred.clone();
+				bnd.typ = inferred.clone();
+				inferred
+			} else {
+				bnd.path.pos.error(TypeMis(expected_ty, var_ty))
+			}
 		} else {
-			path.pos.error(format!("Unresolved path `{}`", ident))
+			bnd.path.pos.error(format!("Unresolved path `{}`", ident))
 		}
 	}
 
 	fn infer_call_arg_types(&mut self, call: &mut Call<'src>)  {
-		let expected_types: Vec<&Type> = if call.proced.typ.is_partially_known() {
+		let proc_type = call.proced.get_type();
+
+		let expected_types: Vec<Cow<Type>> = if proc_type.is_partially_known() {
 			// The type of the procedure is not unknown.
 			// If it's a valid procedure type, use it for inference
 
-			match call.proced.typ.get_proc_sig() {
+			match proc_type.get_proc_sig() {
 				Some((param_tys, _)) if param_tys.len() == call.args.len() =>
-					param_tys.iter().collect(),
+					param_tys.iter().map(Cow::Borrowed).collect(),
 				Some((param_tys, _)) => call.pos.error(
 					format!("Arity mismatch. Expected {}, found {}",
 						param_tys.len(),
@@ -175,52 +219,46 @@ impl<'src> Inferer<'src> {
 				None => call.proced.pos().error(
 					TypeMis(
 						&Type::new_proc(vec![Type::Unknown], Type::Unknown),
-						&call.proced.typ)),
+						&proc_type)),
 			}
 		} else {
-			vec![&call.proced.typ; call.args.len()]
+			vec![call.proced.get_type(); call.args.len()]
 		};
 
 		for (arg, expect_ty) in call.args.iter_mut().zip(expected_types) {
-			if let Err(ref err_ty) = self.infer_expr_meta(arg, expect_ty) {
-				arg.pos().error(TypeMis(expect_ty, err_ty));
-			}
+			self.infer_expr(arg, &expect_ty);
 		}
 	}
 
 	fn infer_call<'call>(&mut self, call: &'call mut Call<'src>, expected_ty: &Type<'src>)
-		-> &'call Type<'src>
+		-> Cow<'call, Type<'src>>
 	{
 		self.infer_call_arg_types(call);
 
 		let expected_proc_type = Type::new_proc(
-			call.args.iter().map(|tb| tb.typ.clone()).collect(),
+			call.args.iter().map(|arg| arg.get_type().into_owned()).collect(),
 			expected_ty.clone());
 
-		if let Err(err_ty) = self.infer_expr_meta(&mut call.proced, &expected_proc_type) {
-			call.proced.pos().error(TypeMis(&expected_proc_type, &err_ty));
-		}
+		let old_proc_typ = call.proced.get_type().into_owned();
+
+		let proc_typ = self.infer_expr(&mut call.proced, &expected_proc_type);
 
 		// TODO: This only works for function pointers, i.e. lambdas will need some different type.
 		//       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 
-		if call.proced.typ.is_partially_known() {
-			// If type of the calls procedure hasn't been infered,
-			// there's no new data to help with infence
+		if old_proc_typ != proc_typ {
+			// New type information regarding arg types available
 			self.infer_call_arg_types(call);
 		}
 
-		call.body_type()
+		call.get_type()
 	}
 
 	fn infer_block(&mut self, block: &mut Block<'src>, expected_ty: &Type<'src>) -> Type<'src> {
 		let (init, last) = if let Some((last, init)) = block.exprs.split_last_mut() {
-			if last.val.is_var_def() {
-				last.pos().error("Block ended with variable definition");
-			}
 			(init, last)
 		} else {
-			return Type::nil()
+			return TYPE_NIL.clone()
 		};
 
 		self.const_defs.push(
@@ -231,38 +269,34 @@ impl<'src> Inferer<'src> {
 
 		let old_vars_len = self.vars.len();
 
-		// First pass. If possible, all vars defined in block should have types infered.
+		// First pass. If possible, all vars defined in block should have types inferred.
 		for expr in init.iter_mut() {
-			if let Expr::VarDef(ref mut var_def) = *expr.val {
-				self.infer_var_def(var_def);
-				self.vars.push((var_def.binding.clone(), var_def.get_type().clone()));
+			if let Expr::VarDef(ref mut var_def) = *expr {
+				self.infer_var_def(var_def, &Type::Unknown);
+				self.vars.push((var_def.binding.clone(), var_def.body.get_type().into_owned()));
 			} else {
-				self.infer_expr_meta(expr, &Type::Unknown)
-					.expect("ICE: error infering expr in block");
+				self.infer_expr(expr, &Type::Unknown);
 			}
 		}
 
-		self.infer_expr_meta(last, expected_ty)
-			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
+		self.infer_expr(last, expected_ty);
 
 		let mut block_defined_vars = self.vars.split_off(old_vars_len).into_iter();
 
 		// Second pass. Infer types for all expressions in block now that types for all bindings
 		// are, if possible, known.
 		for expr in init {
-			if let Expr::VarDef(ref mut var_def) = *expr.val {
+			if let Expr::VarDef(ref mut var_def) = *expr {
 				let v = block_defined_vars.next().expect("ICE: block_defined_vars empty");
 
-				self.infer_expr_meta(&mut var_def.body, &v.1);
+				self.infer_expr(&mut var_def.body, &v.1);
 
 				self.vars.push(v);
 			} else {
-				self.infer_expr_meta(expr, &Type::Unknown)
-					.unwrap_or_else(|err_ty| expr.pos().error(TypeMis(&Type::Unknown, &err_ty)));
+				self.infer_expr(expr, &Type::Unknown);
 			}
 		}
-		self.infer_expr_meta(last, expected_ty)
-			.unwrap_or_else(|err_ty| last.pos().error(TypeMis(expected_ty, &err_ty)));
+		let last_typ = self.infer_expr(last, expected_ty);
 
 		self.vars.truncate(old_vars_len);
 
@@ -272,66 +306,58 @@ impl<'src> Inferer<'src> {
 			.map(|(k, v)| (k, v.expect("ICE: None when unmapping block const def")))
 			.collect();
 
-		last.typ.clone()
+		last_typ
 	}
 
-	fn infer_if(&mut self, cond: &mut If<'src>, expected_type: &Type<'src>)
-		-> Result<Type<'src>, Type<'src>>
-	{
-		self.infer_expr_meta(&mut cond.predicate, &Type::Basic("Bool"))
-			.unwrap_or_else(|err_ty|
-				cond.predicate.pos().error(TypeMis(&Type::Basic("Bool"), &err_ty)));
+	fn infer_if(&mut self, cond: &mut If<'src>, expected_typ: &Type<'src>) -> Type<'src> {
+		self.infer_expr(&mut cond.predicate, &TYPE_BOOL);
 
-		for clause in &mut [&mut cond.consequent, &mut cond.alternative] {
-			self.infer_expr_meta(clause, expected_type)
-				.unwrap_or_else(|err_ty|
-					clause.pos().error(TypeMis(expected_type, &err_ty)));
-		}
+		let cons_typ = self.infer_expr(&mut cond.consequent, expected_typ);
+		let alt_typ = self.infer_expr(&mut cond.alternative, expected_typ);
 
-		if let Some(inferred) = cond.consequent.typ.infer_by(&cond.alternative.typ) {
-			if cond.consequent.typ == inferred && cond.alternative.typ == inferred {
-				Ok(inferred)
+		if let Some(inferred) = cons_typ.infer_by(&alt_typ) {
+			if cons_typ == inferred && alt_typ == inferred {
+				inferred
 			} else {
 				self.infer_if(cond, &inferred)
 			}
 		} else {
-			cond.pos.error(ArmsDiffer(&cond.consequent.typ, &cond.alternative.typ))
+			cond.pos.error(ArmsDiffer(&cons_typ, &alt_typ))
 		}
 	}
 
 	fn infer_lambda_args(&mut self, lam: &mut Lambda<'src>, expected_params: &[&Type<'src>]) {
 		for (param, expected_param) in lam.params.iter_mut().zip(expected_params) {
 			match param.typ.infer_by(expected_param) {
-				Some(infered) => param.typ = infered,
+				Some(inferred) => param.typ = inferred,
 				None => param.ident.pos.error(TypeMis(expected_param, &param.typ))
 			}
 		}
 	}
 
-	fn infer_lambda(&mut self, lam: &mut Lambda<'src>, expected_ty: &Type<'src>)
-		-> Result<Type<'src>, Type<'src>>
-	{
+	fn infer_lambda(&mut self, lam: &mut Lambda<'src>, expected_ty: &Type<'src>) -> Type<'src> {
 		let (expected_params, expected_body) = match expected_ty.get_proc_sig() {
-			Some((params, _)) if params.len() != lam.params.len() => return Err(lam.get_type()),
+			Some((params, _)) if params.len() != lam.params.len() =>
+				lam.pos.error(TypeMis(expected_ty, &lam.get_type())),
 			Some((params, body)) => (params.iter().collect(), body),
 			None if *expected_ty == Type::Unknown => (
 				vec![expected_ty; lam.params.len()],
 				expected_ty,
 			),
-			None => return Err(lam.get_type()),
+			None => lam.pos.error(TypeMis(expected_ty, &lam.get_type())),
 		};
 
-		// Own type is `Unknown` if no type has been infered yet, or none was inferable
+		// Own type is `Unknown` if no type has been inferred yet, or none was inferable
 
 		if lam.get_type().is_partially_known() {
-			if let Some(infered) = expected_ty.infer_by(&lam.get_type()) {
-				if lam.get_type() == infered {
-					// Own type can't be infered further by `expected_ty`
-					return Ok(lam.get_type());
+			if let Some(inferred) = expected_ty.infer_by(&lam.get_type()) {
+				if lam.get_type() == inferred {
+					// Own type can't be inferred further by `expected_ty`
+					return lam.get_type();
 				}
 			} else {
 				// Own type and expected type are not compatible. Type mismatch
-				return Err(lam.get_type());
+				lam.pos.error(TypeMis(expected_ty, &lam.get_type()));
 			}
 		}
 
@@ -341,8 +367,7 @@ impl<'src> Inferer<'src> {
 
 		self.vars.extend(lam.params.iter().cloned().map(|param| (param.ident, param.typ)));
 
-		self.infer_expr_meta(&mut lam.body, &expected_body)
-			.unwrap_or_else(|err_ty| lam.body.pos().error(TypeMis(expected_body, &err_ty)));
+		self.infer_expr(&mut lam.body, &expected_body);
 
 		assert_eq!(self.vars.len(), vars_len + n_params);
 
@@ -352,26 +377,45 @@ impl<'src> Inferer<'src> {
 		{
 			*param = found;
 		}
-		Ok(lam.get_type())
+		lam.get_type()
 	}
 
-	fn infer_var_def(&mut self, def: &mut VarDef<'src>) {
-		self.infer_expr_meta(&mut def.body, &Type::Unknown)
-			.expect("ICE: infer_var_def: infer_expr_meta returned Err");
+	fn infer_var_def(&mut self, def: &mut VarDef<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		if let Some(inferred) = expected_ty.infer_by(&TYPE_NIL) {
+			self.infer_expr(&mut def.body, &Type::Unknown);
+			def.typ = inferred.clone();
+			inferred
+		} else {
+			def.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+		}
 	}
 
-	fn infer_assign(&mut self, assign: &mut Assign<'src>) {
-		let rhs_typ = self.infer_expr_meta(&mut assign.rhs, &assign.lhs.typ)
-			.unwrap_or_else(|found| assign.rhs.pos().error(TypeMis(&assign.lhs.typ, &found)));
-
-		self.infer_expr_meta(&mut assign.lhs, &rhs_typ)
-			.expect("ICE: infer_assign: type mismatch on lhs inference");
+	fn infer_assign(&mut self, assign: &mut Assign<'src>, expected_ty: &Type<'src>)
+		-> Type<'src>
+	{
+		if let Some(inferred) = expected_ty.infer_by(&TYPE_NIL) {
+			let rhs_typ = self.infer_expr(&mut assign.rhs, &assign.lhs.get_type());
+			self.infer_expr(&mut assign.lhs, &rhs_typ);
+			inferred
+		} else {
+			assign.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+		}
 	}
+
+	fn infer_symbol(&mut self, symbol: &mut Symbol<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		if let Some(inferred) = expected_ty.infer_by(&TYPE_SYMBOL) {
+			symbol.typ = inferred.clone();
+			inferred
+		} else {
+			symbol.ident.pos.error(TypeMis(expected_ty, &TYPE_SYMBOL))
+		}
+	}
+
 
 	fn infer_deref(&mut self, deref: &mut Deref<'src>, expected_ty: &Type<'src>) -> Type<'src> {
 		let expected_ref_typ = Type::Construct("RawPtr", vec![expected_ty.clone()]);
-		let ref_typ = self.infer_expr_meta(&mut deref.r, &expected_ref_typ)
-			.unwrap_or_else(|found| deref.r.pos().error(TypeMis(&expected_ref_typ, &found)));
+
+		let ref_typ = self.infer_expr(&mut deref.r, &expected_ref_typ);
 
 		match ref_typ {
 			Type::Construct("RawPtr", mut args) => args.pop().unwrap_or_else(|| unreachable!()),
@@ -379,86 +423,66 @@ impl<'src> Inferer<'src> {
 		}
 	}
 
-	/// On success, return expected, infered type. On failure, return unexpected, found type
-	fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>)
-		-> Result<Type<'src>, Type<'src>>
+	fn infer_type_ascript(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>)
+		-> Type<'src>
 	{
-		match *expr {
-			Expr::Nil(_) => expected_ty.infer_by(&Type::nil()).ok_or(Type::nil()),
-			Expr::VarDef(ref mut def) => if expected_ty.infer_by(&Type::nil()).is_some() {
-				self.infer_var_def(def);
-				Ok(Type::nil())
-			} else {
-				Err(Type::nil())
-			},
-			Expr::Assign(ref mut assign) => if expected_ty.infer_by(&Type::nil()).is_some() {
-				self.infer_assign(assign);
-				Ok(Type::nil())
-			} else {
-				Err(Type::nil())
-			},
-			Expr::NumLit(_, _) => match *expected_ty {
-				Type::Unknown
-				| Type::Basic("Int8") | Type::Basic("UInt8")
-				| Type::Basic("Int16") | Type::Basic("UInt16")
-				| Type::Basic("Int32") | Type::Basic("UInt32") | Type::Basic("Float32")
-				| Type::Basic("Int64") | Type::Basic("UInt64") | Type::Basic("Float64")
-					=> Ok(expected_ty.clone()),
-				_ => Err(Type::Basic("numeric literal"))
-			},
-			Expr::StrLit(_, _) => {
-				let u8_slice = Type::Construct("Slice", vec![Type::Basic("UInt8")]);
-				expected_ty.infer_by(&u8_slice).ok_or(u8_slice)
-			},
-			Expr::Bool(_, _) => expected_ty.infer_by(&Type::Basic("Bool"))
-				.ok_or(Type::Basic("Bool")),
-			Expr::Binding(ref path) => self.infer_path(path, &expected_ty),
-			Expr::Call(ref mut call) =>
-				Ok(self.infer_call(call, &expected_ty).clone()),
-			Expr::Block(ref mut block) =>
-				Ok(self.infer_block(block, &expected_ty)),
-			Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
-			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
-			Expr::Symbol(_) => expected_ty.infer_by(&Type::Basic("Symbol"))
-				.ok_or(Type::Basic("Symbol")),
-			Expr::Deref(ref mut deref) => Ok(self.infer_deref(deref, expected_ty)),
-		}
-	}
+		let (expected_ty2, inner_expr) = if let Expr::TypeAscript(ref mut ascr) = *expr {
+			let expected_ty2 = expected_ty.infer_by(&ascr.typ)
+				.unwrap_or_else(|| ascr.pos.error(TypeMis(expected_ty, &ascr.typ)));
 
-	/// On type mismatch, return mismatched, found type as `Err`.
-	/// Otherwise, return type of `self` as `Ok`
-	fn infer_expr_meta(&mut self, expr: &mut ExprMeta<'src>, expected_ty: &Type<'src>)
-		-> Result<Type<'src>, Type<'src>>
-	{
-		// Own type is `Unknown` if no type has been infered yet, or none was inferable
-		if expr.typ.is_partially_known() {
-			if let Some(infered) = expected_ty.infer_by(&expr.typ) {
-				if expr.typ == infered {
-					// Own type can't be infered further by `expected_ty`
-					return Ok(expr.typ.clone());
-				}
-			} else {
-				// Own type and expected type are not compatible. Type mismatch
-				return Err(expr.typ.clone());
-			}
-		}
-
-		// Own type is unknown, or `expected_ty` is more known than own type
-
-		// Fill in the gaps of `expected_ty` using own type ascription, if any
-		let expected_ty = if let Some(ref ty_ascription) = expr.ty_ascription {
-			match expected_ty.infer_by(&ty_ascription.0) {
-				Some(infered) => infered,
-				None => return Err(ty_ascription.0.clone()),
-			}
+			(expected_ty2, &mut ascr.expr as *mut _)
 		} else {
-			expected_ty.clone()
+			// This method should only be called when `expr` is a type ascription
+			unreachable!()
 		};
 
-		let found_type = try!(self.infer_expr(&mut expr.val, &expected_ty));
+		// FIXME: Safe way of conducting this replacement
+		unsafe { swap(expr, &mut *inner_expr) };
 
-		expr.typ = found_type.clone();
-		Ok(found_type)
+		self.infer_expr(expr, &expected_ty2)
+	}
+
+	/// On type mismatch, return unexpected type as `Err`.
+	/// Otherwise, return type of `self` as `Ok`
+	fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+		let mut expected_ty = Cow::Borrowed(expected_ty);
+
+		{
+			let expr_typ = expr.get_type();
+
+			// Own type is `Unknown` if no type has been inferred yet, or none was inferable
+			if expr_typ.is_partially_known() {
+				if let Some(inferred) = expected_ty.infer_by(&expr_typ) {
+					if *expr_typ == inferred {
+						// Own type can't be inferred further by `expected_ty`
+						return expr_typ.into_owned();
+					}
+					expected_ty = Cow::Owned(inferred)
+				} else {
+					// Own type and expected type are not compatible. Type mismatch
+					expr.pos().error(TypeMis(&expected_ty, &expr_typ));
+				}
+			}
+		}
+
+		// Own type is unknown, or `expected_ty` is more known than own type. Do inference
+
+		match *expr {
+			Expr::Nil(ref mut nil) => self.infer_nil(nil, &expected_ty),
+			Expr::VarDef(ref mut def) => self.infer_var_def(def, &expected_ty),
+			Expr::Assign(ref mut assign) => self.infer_assign(assign, &expected_ty),
+			Expr::NumLit(ref mut l) => self.infer_num_lit(l, &expected_ty),
+			Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_ty),
+			Expr::Bool(ref mut b) => self.infer_bool(b, &expected_ty),
+			Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_ty),
+			Expr::Call(ref mut call) => self.infer_call(call, &expected_ty).into_owned(),
+			Expr::Block(ref mut block) => self.infer_block(block, &expected_ty),
+			Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
+			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
+			Expr::Symbol(ref mut sym) => self.infer_symbol(sym, &expected_ty),
+			Expr::Deref(ref mut deref) => self.infer_deref(deref, &expected_ty),
+			Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
+		}
 	}
 }
 

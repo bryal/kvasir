@@ -101,6 +101,7 @@ extern crate getopts;
 extern crate bitflags;
 extern crate term;
 extern crate llvm;
+extern crate llvm_sys;
 
 use std::{ env, fmt };
 use std::io::{ Read };

@@ -130,15 +130,17 @@ fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
 	let src_num = &src[start..];
 	let mut has_decimal_pt = false;
 	let mut has_e = false;
+	let mut has_x = false;
 	let mut prev_was_e = false;
 
 	for (i, c) in src_num.char_indices() {
 		match c {
 			'_' => (),
-			'E' if !has_e => {
+			'E' if ! has_e => {
 				has_e = true;
 				prev_was_e = true
 			},
+			'x' if ! has_x => has_x = true,
 			'-' if prev_was_e => (),
 			_ if c.is_numeric() => (),
 			'.' if !has_decimal_pt => has_decimal_pt = true,
@@ -164,7 +166,7 @@ fn is_delim_char(c: char) -> bool {
 /// Returns whether `c` is a valid character of an ident
 fn is_ident_char(c: char) -> bool {
 	match c {
-		'\'' | ':' | '"' => false,
+		'\'' | '"' => false,
 		_ if is_delim_char(c) => false,
 		_ => true,
 	}
@@ -215,7 +217,6 @@ impl<'src> Iterator for Tokens<'src> {
 					continue
 				},
 				'\'' => (Token::Quote, 1),
-				':' => (Token::Ident(":"), 1),
 				'(' => (Token::LParen, 1),
 				')' => (Token::RParen, 1),
 				'"' => tokenize_str_lit(self.src, i),
