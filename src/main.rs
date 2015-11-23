@@ -103,12 +103,12 @@ extern crate term;
 extern crate llvm;
 extern crate llvm_sys;
 
-use std::{ env, fmt };
-use std::io::{ Read };
-use std::fs::{ File, canonicalize };
-use std::path::{ Path, PathBuf };
+use std::{env, fmt};
+use std::io::Read;
+use std::fs::{File, canonicalize};
+use std::path::{Path, PathBuf};
 use getopts::Options;
-use lib::{ token_trees_from_src, expand_macros };
+use lib::{token_trees_from_src, expand_macros};
 use lib::front::parse::parse;
 use lib::front::inference::infer_types;
 use lib::middle::clean_ast;
@@ -117,54 +117,54 @@ use lib::back::compile;
 mod lib;
 
 pub enum Emission {
-	LlvmIr,
-	LlvmBc,
-	Obj,
-	Bin,
+    LlvmIr,
+    LlvmBc,
+    Obj,
+    Bin,
 }
 impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
-	fn from(s: S) -> Emission {
-		match s.as_ref() {
-			"llvm-ir" => Emission::LlvmIr,
-			"llvm-bc" => Emission::LlvmBc,
-			"obj" => Emission::Obj,
-			_ => panic!("Unknown emission type `{}`", s),
-		}
-	}
+    fn from(s: S) -> Emission {
+        match s.as_ref() {
+            "llvm-ir" => Emission::LlvmIr,
+            "llvm-bc" => Emission::LlvmBc,
+            "obj" => Emission::Obj,
+            _ => panic!("Unknown emission type `{}`", s),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub enum FileName {
-	Some(PathBuf),
-	Default(PathBuf),
+    Some(PathBuf),
+    Default(PathBuf),
 }
 impl FileName {
-	pub fn path(&self) -> &Path {
-		match *self {
-			FileName::Some(ref p) => p,
-			FileName::Default(ref p) => p,
-		}
-	}
+    pub fn path(&self) -> &Path {
+        match *self {
+            FileName::Some(ref p) => p,
+            FileName::Default(ref p) => p,
+        }
+    }
 
-	pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
-		match self {
-			FileName::Some(p) => FileName::Some(f(p)),
-			FileName::Default(p) => FileName::Default(f(p)),
-		}
-	}
+  pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
+        match self {
+            FileName::Some(p) => FileName::Some(f(p)),
+            FileName::Default(p) => FileName::Default(f(p)),
+        }
+    }
 
-	/// If `Some`, unwrap it. If `Default`, change the extension before unwrapping
-	pub fn unwrap_or_with_ext(self, ext: &str) -> PathBuf {
-		match self {
-			FileName::Some(p) => p,
-			FileName::Default(p) => p.with_extension(ext),
-		}
-	}
+    /// If `Some`, unwrap it. If `Default`, change the extension before unwrapping
+    pub fn unwrap_or_with_ext(self, ext: &str) -> PathBuf {
+        match self {
+            FileName::Some(p) => p,
+            FileName::Default(p) => p.with_extension(ext),
+        }
+    }
 }
 impl fmt::Display for FileName {
-	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-		fmt::Display::fmt(&self.path().display(), fmt)
-	}
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.path().display(), fmt)
+    }
 }
 
 #[cfg(windows)]
@@ -173,86 +173,88 @@ const BIN_EXT: &'static str = "exe";
 const BIN_EXT: &'static str = "bin";
 
 fn print_usage(program: &str, opts: Options) {
-	let brief = format!("Usage: {} [options] SOURCE-FILE", program);
-	print!("{}", opts.usage(&brief));
+    let brief = format!("Usage: {} [options] SOURCE-FILE", program);
+    print!("{}", opts.usage(&brief));
 }
 
 fn main() {
-	let args: Vec<_> = env::args().collect();
-	let bin_name = args[0].clone();
+    let args: Vec<_> = env::args().collect();
+    let bin_name = args[0].clone();
 
-	let mut opts = Options::new();
-	opts.optopt("o", "out-file", "Write output to <FILENAME>", "FILENAME")
-		.optopt("", "emit",
-			"Specify the type of output for the compiler to emit",
-			"llvm-ir|llvm-bc|obj")
-		.optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
-		.optmulti("L", "", "Add <PATH> to the library search path", "PATH")
-		.optflag("h", "help", "Display this help menu");
+    let mut opts = Options::new();
+    opts.optopt("o", "out-file", "Write output to <FILENAME>", "FILENAME")
+        .optopt("",
+                "emit",
+                "Specify the type of output for the compiler to emit",
+                "llvm-ir|llvm-bc|obj")
+        .optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
+        .optmulti("L", "", "Add <PATH> to the library search path", "PATH")
+        .optflag("h", "help", "Display this help menu");
 
-	let matches = match opts.parse(&args[1..]) {
-		Ok(m) => m,
-		Err(e) => panic!(e)
-	};
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(e) => panic!(e),
+    };
 
-	if matches.opt_present("h") {
-		print_usage(&bin_name, opts);
-		return;
-	}
+    if matches.opt_present("h") {
+        print_usage(&bin_name, opts);
+        return;
+    }
 
-	let inp_file_name = if !matches.free.is_empty() {
-		PathBuf::from(matches.free[0].clone())
-	} else {
-		print_usage(&bin_name, opts);
-		return;
-	};
+    let inp_file_name = if !matches.free.is_empty() {
+        PathBuf::from(matches.free[0].clone())
+    } else {
+        print_usage(&bin_name, opts);
+        return;
+    };
 
-	let out_file_name = matches.opt_str("o")
-		.map(|p| FileName::Some(PathBuf::from(p)))
-		.unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
-		.map(|filename| {
-			let parent = match filename.parent() {
-				None => "./".as_ref(),
-				Some(p) if p == "".as_ref() => "./".as_ref(),
-				Some(p) => p
-			};
-			canonicalize(parent)
-				.expect("Failed to canonicalize output filename")
-				.join(filename.file_name().expect("No filename supplied"))
-		});
+    let out_file_name = matches.opt_str("o")
+                               .map(|p| FileName::Some(PathBuf::from(p)))
+                               .unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
+                               .map(|filename| {
+                                   let parent = match filename.parent() {
+                                       None => "./".as_ref(),
+                                       Some(p) if p == "".as_ref() => "./".as_ref(),
+                                       Some(p) => p,
+                                   };
+                                   canonicalize(parent)
+                                       .expect("Failed to canonicalize output filename")
+                                       .join(filename.file_name().expect("No filename supplied"))
+                               });
 
-	let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
+    let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
 
-	let link_libs = matches.opt_strs("l");
-	let lib_paths = matches.opt_strs("L");
+    let link_libs = matches.opt_strs("l");
+    let lib_paths = matches.opt_strs("L");
 
-	println!("    Compiling {}",
-		canonicalize(inp_file_name.as_path())
-			.expect("Failed to canonicalize input filename")
-			.to_string_lossy());
+    println!("    Compiling {}",
+             canonicalize(inp_file_name.as_path())
+                 .expect("Failed to canonicalize input filename")
+                 .to_string_lossy());
 
-	let mut src_code = String::with_capacity(4_000);
-	let src_file = File::open(&inp_file_name)
-		.expect(&format!("Failed to open file `{}`", inp_file_name.display()))
-		.read_to_string(&mut src_code)
-		.expect(&format!("Reading contents of `{}` failed", inp_file_name.display()));
+    let mut src_code = String::with_capacity(4_000);
+    let src_file = File::open(&inp_file_name)
+                       .expect(&format!("Failed to open file `{}`", inp_file_name.display()))
+                       .read_to_string(&mut src_code)
+                       .expect(&format!("Reading contents of `{}` failed",
+                                        inp_file_name.display()));
 
-	let token_tree = token_trees_from_src(&src_code);
+    let token_tree = token_trees_from_src(&src_code);
 
-	// println!("TOKEN TREE{:#?}", token_tree);
+    // println!("TOKEN TREE{:#?}", token_tree);
 
-	let expanded_macros = expand_macros(&token_tree);
+    let expanded_macros = expand_macros(&token_tree);
 
-	// println!("MACRO EXPANDED: {:#?}", expanded_macros);
+    // println!("MACRO EXPANDED: {:#?}", expanded_macros);
 
-	let mut ast = parse(&expanded_macros);
-	// println!("AST PARSED:\n{:#?}\n", ast);
+    let mut ast = parse(&expanded_macros);
+    // println!("AST PARSED:\n{:#?}\n", ast);
 
-	clean_ast(&mut ast);
-	// println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
+    clean_ast(&mut ast);
+    // println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
-	infer_types(&mut ast);
-	println!("AST INFERED:\n{:#?}\n", ast);
+    infer_types(&mut ast);
+    println!("AST INFERED:\n{:#?}\n", ast);
 
-	compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
+    compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

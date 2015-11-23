@@ -20,45 +20,48 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::collections::hash_map::{ HashMap, IntoIter };
+use std::collections::hash_map::{HashMap, IntoIter};
 use std::iter::FromIterator;
 use std::hash::Hash;
 use std::mem::replace;
 use std::borrow::Borrow;
-use std::ops::{ Deref, DerefMut };
-use std::fmt::{ self, Debug };
+use std::ops::{Deref, DerefMut};
+use std::fmt::{self, Debug};
 
-struct BorrowGuard<
-	'stack,
-	K: 'stack + Hash + Eq,
-	E: 'stack,
-	V: 'stack,
-	ItOut: Iterator<Item=(K, E)> + 'stack,
-	Fi: Fn(IntoIter<K, V>) -> ItOut + 'stack
-> {
-	scope_stack: &'stack mut ScopeStack<K, V>,
-	borrowed_map: &'stack mut HashMap<K, E>,
-	f_inverse: Fi
+struct BorrowGuard<'stack,
+                   K: 'stack + Hash + Eq,
+                   E: 'stack,
+                   V: 'stack,
+                   ItOut: Iterator<Item = (K, E)> + 'stack,
+                   Fi: Fn(IntoIter<K, V>) -> ItOut + 'stack>
+{
+    scope_stack: &'stack mut ScopeStack<K, V>,
+    borrowed_map: &'stack mut HashMap<K, E>,
+    f_inverse: Fi,
 }
 impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
 	Drop for BorrowGuard<'a, K, E, V, ItOut, Fi>
 {
-	fn drop(&mut self) {
-		let scope = self.scope_stack.pop().expect("BorrowGuard::drop: failed to pop stack");
+    fn drop(&mut self) {
+        let scope = self.scope_stack.pop().expect("BorrowGuard::drop: failed to pop stack");
 
-		*self.borrowed_map = (self.f_inverse)(scope.into_iter()).collect();
-	}
+        *self.borrowed_map = (self.f_inverse)(scope.into_iter()).collect();
+    }
 }
 impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
 	Deref for BorrowGuard<'a, K, E, V, ItOut, Fi>
 {
 	type Target = ScopeStack<K, V>;
-	fn deref(&self) -> &ScopeStack<K, V> { &self.scope_stack }
+    fn deref(&self) -> &ScopeStack<K, V> {
+        &self.scope_stack
+    }
 }
 impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>) -> ItOut>
 	DerefMut for BorrowGuard<'a, K, E, V, ItOut, Fi>
 {
-	fn deref_mut(&mut self) -> &mut ScopeStack<K, V> { self.scope_stack }
+    fn deref_mut(&mut self) -> &mut ScopeStack<K, V> {
+        self.scope_stack
+    }
 }
 
 // TODO: Consider using BTreeMap, possible perforance increase. Do benchmarks.
@@ -67,144 +70,171 @@ impl<'a, K: Hash + Eq, E, V, ItOut: Iterator<Item=(K, E)>, Fi: Fn(IntoIter<K, V>
 ///
 /// Used for ConstDef:s. Only one constant can be defined for a single name at any given moment.
 #[derive(Clone)]
-pub struct ScopeStack<K, V>(
-	Vec<HashMap<K, V>>
-);
+pub struct ScopeStack<K, V>(Vec<HashMap<K, V>>);
 impl<K: Hash + Eq, V> ScopeStack<K, V> {
-	pub fn new() -> ScopeStack<K, V> { ScopeStack(Vec::new()) }
+    pub fn new() -> ScopeStack<K, V> {
+        ScopeStack(Vec::new())
+    }
 
-	fn split_from(&mut self, from: usize) -> Vec<HashMap<K, V>> { self.0.split_off(from) }
+    fn split_from(&mut self, from: usize) -> Vec<HashMap<K, V>> {
+        self.0.split_off(from)
+    }
 
-	pub fn push(&mut self, scope: HashMap<K, V>) {
-		if scope.keys().any(|key| self.contains_key(key)) {
-			panic!("ScopeStack::push: Key already exists");
-		}
-		self.0.push(scope);
-	}
+    pub fn push(&mut self, scope: HashMap<K, V>) {
+        if scope.keys().any(|key| self.contains_key(key)) {
+            panic!("ScopeStack::push: Key already exists");
+        }
+        self.0.push(scope);
+    }
 
-	pub fn pop(&mut self) -> Option<HashMap<K, V>> { self.0.pop() }
+    pub fn pop(&mut self) -> Option<HashMap<K, V>> {
+        self.0.pop()
+    }
 
-	fn extend<I: IntoIterator<Item=HashMap<K, V>>>(&mut self, scopes: I) {
-		for scope in scopes {
-			self.push(scope);
-		}
-	}
+    fn extend<I: IntoIterator<Item = HashMap<K, V>>>(&mut self, scopes: I) {
+        for scope in scopes {
+            self.push(scope);
+        }
+    }
 
-	/// Borrows a `HashMap<K, E>`, maps it to a `HashMap<K, V>`,
-	/// then pushes it onto the stack as a scope.
-	/// When the returned `BorrowGuard` goes out of scope, pop and replace back the borrowed map.
-	pub fn map_push_local<'a, E, ItIn, F, ItOut, Fi>(&'a mut self,
-		borrowed: &'a mut HashMap<K, E>,
-		map_f: F,
-		map_f_inverse: Fi
-	) -> BorrowGuard<K, E, V, ItOut, Fi>
-		where
-			ItIn: Iterator<Item=(K, V)>,
-			ItOut: Iterator<Item=(K, E)>,
-			F: Fn(IntoIter<K, E>) -> ItIn,
-			Fi: Fn(IntoIter<K, V>) -> ItOut
-	{
-		let map = replace(borrowed, HashMap::new());
+    /// Borrows a `HashMap<K, E>`, maps it to a `HashMap<K, V>`,
+    /// then pushes it onto the stack as a scope.
+    /// When the returned `BorrowGuard` goes out of scope, pop and replace back the borrowed map.
+    pub fn map_push_local<'a, E, ItIn, F, ItOut, Fi>(&'a mut self,
+                                                     borrowed: &'a mut HashMap<K, E>,
+                                                     map_f: F,
+                                                     map_f_inverse: Fi)
+                                                     -> BorrowGuard<K, E, V, ItOut, Fi>
+        where ItIn: Iterator<Item = (K, V)>,
+              ItOut: Iterator<Item = (K, E)>,
+              F: Fn(IntoIter<K, E>) -> ItIn,
+              Fi: Fn(IntoIter<K, V>) -> ItOut
+    {
+        let map = replace(borrowed, HashMap::new());
 
-		self.push(HashMap::from_iter(map_f(map.into_iter())));
+        self.push(HashMap::from_iter(map_f(map.into_iter())));
 
-		BorrowGuard{ scope_stack: self, borrowed_map: borrowed, f_inverse: map_f_inverse }
-	}
+        BorrowGuard {
+            scope_stack: self,
+            borrowed_map: borrowed,
+            f_inverse: map_f_inverse,
+        }
+    }
 
-	pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: Hash + Eq, K: Borrow<Q> {
-		self.0.iter().any(|scope| scope.contains_key(key))
-	}
+    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        self.0.iter().any(|scope| scope.contains_key(key))
+    }
 
-	pub fn get_height<Q: ?Sized>(&self, key: &Q) -> Option<usize> where Q: Hash + Eq, K: Borrow<Q> {
-		for (height, scope) in self.0.iter().enumerate() {
-			if scope.contains_key(key) {
-				return Some(height);
-			}
-		}
-		None
-	}
+    pub fn get_height<Q: ?Sized>(&self, key: &Q) -> Option<usize>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        for (height, scope) in self.0.iter().enumerate() {
+            if scope.contains_key(key) {
+                return Some(height);
+            }
+        }
+        None
+    }
 
-	pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: Hash + Eq, K: Borrow<Q> {
-		self.get_with_height(key).map(|(v, _)| v)
-	}
+    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        self.get_with_height(key).map(|(v, _)| v)
+    }
 
-	pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: Hash + Eq, K: Borrow<Q>
-	{
-		self.get_mut_with_height(key).map(|(v, _)| v)
-	}
+    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        self.get_mut_with_height(key).map(|(v, _)| v)
+    }
 
-	pub fn get_with_height<Q: ?Sized>(&self, key: &Q) -> Option<(&V, usize)>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		for (height, scope) in self.0.iter().enumerate().rev() {
-			if let Some(def) = scope.get(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
+    pub fn get_with_height<Q: ?Sized>(&self, key: &Q) -> Option<(&V, usize)>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        for (height, scope) in self.0.iter().enumerate().rev() {
+            if let Some(def) = scope.get(key) {
+                return Some((def, height));
+            }
+        }
+        None
+    }
 
-	pub fn get_mut_with_height<Q: ?Sized>(&mut self, key: &Q) -> Option<(&mut V, usize)>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		for (height, scope) in self.0.iter_mut().enumerate().rev() {
-			if let Some(def) = scope.get_mut(key) {
-				return Some((def, height));
-			}
-		}
-		None
-	}
+    pub fn get_mut_with_height<Q: ?Sized>(&mut self, key: &Q) -> Option<(&mut V, usize)>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        for (height, scope) in self.0.iter_mut().enumerate().rev() {
+            if let Some(def) = scope.get_mut(key) {
+                return Some((def, height));
+            }
+        }
+        None
+    }
 
-	/// Faster than `get` because only one level is searched in.
-	pub fn get_at_height<Q: ?Sized>(&self, key: &Q, height: usize) -> Option<&V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		self.0.get(height).and_then(|scope| scope.get(key))
-	}
-	pub fn get_at_height_mut<Q: ?Sized>(&mut self, key: &Q, height: usize) -> Option<&mut V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
-	}
+    /// Faster than `get` because only one level is searched in.
+    pub fn get_at_height<Q: ?Sized>(&self, key: &Q, height: usize) -> Option<&V>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        self.0.get(height).and_then(|scope| scope.get(key))
+    }
+    pub fn get_at_height_mut<Q: ?Sized>(&mut self, key: &Q, height: usize) -> Option<&mut V>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
+    }
 
-	pub fn update<Q: ?Sized>(&mut self, key: &Q, v: V) -> Option<V>
-		where Q: Hash + Eq, K: Borrow<Q>
-	{
-		match self.get_mut(key) {
-			Some(entry) => {
-				*entry = v;
-				None
-			},
-			None => Some(v)
-		}
-	}
+    pub fn update<Q: ?Sized>(&mut self, key: &Q, v: V) -> Option<V>
+        where Q: Hash + Eq,
+              K: Borrow<Q>
+    {
+        match self.get_mut(key) {
+            Some(entry) => {
+                *entry = v;
+                None
+            }
+            None => Some(v),
+        }
+    }
 }
 impl<K: Hash + Eq, V> ScopeStack<K, Option<V>> {
-	// TODO: `action` could probably take `&mut Self`
-	pub fn do_for_item_at_height<Q: ?Sized, R, F>(&mut self, key: &Q, height: usize, action: F) -> R
-		where Q: Hash + Eq + Debug, K: Borrow<Q>, V: Debug, F: Fn(&mut Self, &mut V) -> R
-	{
-		let mut item = match self.get_at_height_mut(key, height) {
-			Some(item) => replace(item, None)
-				.expect("ScopeStack::do_for_item_at_height: Item was `None`"),
-			None => panic!("ScopeStack::do_for_item_at_height: Already using item")
-		};
+    // TODO: `action` could probably take `&mut Self`
+    pub fn do_for_item_at_height<Q: ?Sized, R, F>(&mut self, key: &Q, height: usize, action: F) -> R
+        where Q: Hash + Eq + Debug,
+              K: Borrow<Q>,
+              V: Debug,
+              F: Fn(&mut Self, &mut V) -> R
+    {
+        let mut item = match self.get_at_height_mut(key, height) {
+            Some(item) => {
+                replace(item, None).expect("ScopeStack::do_for_item_at_height: Item was `None`")
+            }
+            None => panic!("ScopeStack::do_for_item_at_height: Already using item"),
+        };
 
-		let above = self.split_from(height + 1);
+        let above = self.split_from(height + 1);
 
-		let result = action(self, &mut item);
+        let result = action(self, &mut item);
 
-		*self.get_at_height_mut(key, height)
-			.expect(&format!("ScopeStack::do_for_item_at_height: key `{:?}` not found", key))
-			= Some(item);
+        *self.get_at_height_mut(key, height)
+             .expect(&format!("ScopeStack::do_for_item_at_height: key `{:?}` not found",
+                              key)) = Some(item);
 
-		self.extend(above);
+        self.extend(above);
 
-		result
-	}
+        result
+    }
 }
 impl<K: Debug + Hash + Eq, V: Debug> Debug for ScopeStack<K, V> {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		Debug::fmt(&self.0, f)
-	}
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
 }
