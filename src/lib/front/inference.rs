@@ -123,6 +123,7 @@ impl<'src> Inferer<'src> {
 			| Type::Basic("Int16") | Type::Basic("UInt16")
 			| Type::Basic("Int32") | Type::Basic("UInt32") | Type::Basic("Float32")
 			| Type::Basic("Int64") | Type::Basic("UInt64") | Type::Basic("Float64")
+			| Type::Basic("IntPtr") | Type::Basic("UIntPtr")
 				=> { lit.typ = expected_ty.clone(); expected_ty.clone() },
 			_ => lit.pos.error(format!(
 				"Type mismatch. Expected `{}`, found numeric literal",
@@ -349,15 +350,17 @@ impl<'src> Inferer<'src> {
 
 		// Own type is `Unknown` if no type has been inferred yet, or none was inferable
 
-		if lam.get_type().is_partially_known() {
-			if let Some(inferred) = expected_ty.infer_by(&lam.get_type()) {
-				if lam.get_type() == inferred {
+		let lam_typ = lam.get_type();
+
+		if lam_typ.is_partially_known() {
+			if let Some(inferred) = expected_ty.infer_by(&lam_typ) {
+				if lam_typ == inferred {
 					// Own type can't be inferred further by `expected_ty`
-					return lam.get_type();
+					return lam_typ;
 				}
 			} else {
 				// Own type and expected type are not compatible. Type mismatch
-				lam.pos.error(TypeMis(expected_ty, &lam.get_type()));
+				lam.pos.error(TypeMis(expected_ty, &lam_typ));
 			}
 		}
 
@@ -377,6 +380,7 @@ impl<'src> Inferer<'src> {
 		{
 			*param = found;
 		}
+
 		lam.get_type()
 	}
 
@@ -423,6 +427,20 @@ impl<'src> Inferer<'src> {
 		}
 	}
 
+	fn infer_transmute<'ast>(&mut self, trans: &'ast mut Transmute<'src>, expected_ty: &Type<'src>)
+		-> &'ast Type<'src>
+	{
+		if let Some(inferred) = trans.typ.infer_by(expected_ty) {
+			trans.typ = inferred;
+
+			self.infer_expr(&mut trans.arg, &Type::Unknown);
+
+			&trans.typ
+		} else {
+			trans.pos.error(TypeMis(expected_ty, &trans.typ))
+		}
+	}
+
 	fn infer_type_ascript(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>)
 		-> Type<'src>
 	{
@@ -442,8 +460,6 @@ impl<'src> Inferer<'src> {
 		self.infer_expr(expr, &expected_ty2)
 	}
 
-	/// On type mismatch, return unexpected type as `Err`.
-	/// Otherwise, return type of `self` as `Ok`
 	fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>) -> Type<'src> {
 		let mut expected_ty = Cow::Borrowed(expected_ty);
 
@@ -481,6 +497,7 @@ impl<'src> Inferer<'src> {
 			Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
 			Expr::Symbol(ref mut sym) => self.infer_symbol(sym, &expected_ty),
 			Expr::Deref(ref mut deref) => self.infer_deref(deref, &expected_ty),
+			Expr::Transmute(ref mut trans) => self.infer_transmute(trans, &expected_ty).clone(),
 			Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
 		}
 	}

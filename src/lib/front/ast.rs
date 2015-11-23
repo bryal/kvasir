@@ -95,6 +95,29 @@ impl<'src> Type<'src> {
 			(_, _) => None,
 		}
 	}
+
+	pub fn is_int(&self) -> bool {
+		match *self {
+			Type::Basic("Int8")
+			| Type::Basic("Int16")
+			| Type::Basic("Int32")
+			| Type::Basic("Int64")
+			| Type::Basic("IntPtr")
+			| Type::Basic("UInt8")
+			| Type::Basic("UInt16")
+			| Type::Basic("UInt32")
+			| Type::Basic("UInt64")
+			| Type::Basic("UIntPtr") => true,
+			_ => false,
+		}
+	}
+
+	pub fn is_ptr(&self) -> bool {
+		match *self {
+			Type::Construct("RawPtr", _) => true,
+			_ => false,
+		}
+	}
 }
 impl<'src> fmt::Display for Type<'src> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -379,6 +402,13 @@ impl<'src> Deref<'src> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Transmute<'src> {
+	pub arg: Expr<'src>,
+	pub typ: Type<'src>,
+	pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub struct TypeAscript<'src> {
 	pub typ: Type<'src>,
 	pub expr: Expr<'src>,
@@ -400,6 +430,7 @@ pub enum Expr<'src> {
 	Assign(Box<Assign<'src>>),
 	Symbol(Symbol<'src>),
 	Deref(Box<Deref<'src>>),
+	Transmute(Box<Transmute<'src>>),
 	/// Type ascription. E.g. `(:Int32 42)`
 	TypeAscript(Box<TypeAscript<'src>>),
 }
@@ -423,6 +454,7 @@ impl<'src> Expr<'src> {
 			Expr::Assign(ref a) => &a.pos,
 			Expr::Symbol(ref s) => &s.ident.pos,
 			Expr::Deref(ref deref) => &deref.pos,
+			Expr::Transmute(ref trans) => &trans.pos,
 			Expr::TypeAscript(ref a) => &a.pos,
 		}
 	}
@@ -442,6 +474,7 @@ impl<'src> Expr<'src> {
 			Expr::Assign(ref assign) => Cow::Borrowed(&assign.typ),
 			Expr::Symbol(ref sym) => Cow::Borrowed(&sym.typ),
 			Expr::Deref(ref deref) => deref.get_type(),
+			Expr::Transmute(ref trans) => Cow::Borrowed(&trans.typ),
 			// The existance of a type ascription implies that the expression has not yet been
 			// inferred. As such, return type `Unknown` to imply that inference is needed
 			Expr::TypeAscript(_) => Cow::Borrowed(&TYPE_UNKNOWN),

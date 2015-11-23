@@ -100,8 +100,8 @@ impl<'src> Cleaner<'src> {
 			.filter_map(|(key, maybe_def)|
 				match maybe_def.expect("ICE: clean_block: None when unmapping block const def") {
 					(def, Usage::Used) => Some((key, def)),
-					(def, Usage::Unused) => {
-						def.pos.warn(format!("Unused constant `{}`", key));
+					(_, Usage::Unused) => {
+						key.pos.warn(format!("Unused constant `{}`", key));
 						None
 					},
 				})
@@ -123,6 +123,7 @@ impl<'src> Cleaner<'src> {
 	}
 
 	fn clean_assign(&mut self, assign: &mut Assign<'src>) {
+		self.clean_expr(&mut assign.lhs);
 		self.clean_expr(&mut assign.rhs);
 	}
 
@@ -136,7 +137,9 @@ impl<'src> Cleaner<'src> {
 			Expr::VarDef(ref mut def) => self.clean_var_def(def),
 			Expr::Assign(ref mut assign) => self.clean_assign(assign),
 			Expr::TypeAscript(ref mut ascr) => self.clean_expr(&mut ascr.expr),
-			_ => (),
+			Expr::Deref(ref mut deref) => self.clean_expr(&mut deref.r),
+			Expr::Transmute(ref mut trans) => self.clean_expr(&mut trans.arg),
+			Expr::Bool(_) | Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Symbol(_) => ()
 		}
 	}
 
@@ -159,13 +162,11 @@ pub fn clean_ast(ast: &mut AST) {
 			.unwrap_or_else(|| error("No `main` procedure found")),
 		None);
 
-	let (mut main_def, mut main_usage) = main.unwrap();
-
-	main_usage = Usage::Used;
+	let (mut main_def, _) = main.unwrap();
 
 	cleaner.clean_const_def(&mut main_def);
 
-	cleaner.const_defs.update("main", Some((main_def, main_usage)));
+	cleaner.const_defs.update("main", Some((main_def, Usage::Used)));
 
 	ast.const_defs = cleaner.const_defs.pop()
 		.expect("ICE: clean_ast: ScopeStack was empty when replacing AST const defs")
@@ -175,8 +176,8 @@ pub fn clean_ast(ast: &mut AST) {
 				&format!("ICE: clean_ast: `{}` was None when unmapping AST const def", key))
 			{
 				(def, Usage::Used) => Some((key, def)),
-				(def, Usage::Unused) => {
-					def.pos.warn(format!("Unused constant `{}`", key));
+				(_, Usage::Unused) => {
+					key.pos.warn(format!("Unused constant `{}`", key));
 					None
 				},
 			})

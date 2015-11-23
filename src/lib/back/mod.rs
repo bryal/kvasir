@@ -47,6 +47,8 @@ pub fn compile(
 
 	codegenerator.gen_const_defs(&mut env, &ast.const_defs);
 
+	println!("module: {:?}", codegenerator.module);
+
 	codegenerator.module.verify().unwrap_or_else(|e| panic!("Verifying module failed\n{}", e));
 
 	match emission {

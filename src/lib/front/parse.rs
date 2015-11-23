@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 use std::fmt::{ self, Display };
-use std::borrow::Cow;
 use super::SrcPos;
 use super::lex::{ TokenTree, TokenTreeMeta };
 use super::ast::*;
@@ -55,7 +54,7 @@ impl<'src> Parser {
 				TokenTree::Ident(constructor) => Type::Construct(
 					constructor,
 					construct[1..].iter().map(Self::parse_type).collect()),
-				_ => construct[0].pos.error(Invalid("type constructor")),
+				_ => construct[0].pos.error(Invalid("type constructor"))
 			},
 			TokenTree::List(_) => TYPE_NIL.clone(),
 			TokenTree::Ident("_") => Type::Unknown,
@@ -220,6 +219,17 @@ impl<'src> Parser {
 		}
 	}
 
+	fn parse_transmute(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Transmute<'src> {
+		if tts.len() != 1 {
+			pos.error(ArityMis(1, tts.len()))
+		}
+		Transmute {
+			arg: Self::parse_expr(&tts[0]),
+			typ: Type::Unknown,
+			pos: pos,
+		}
+	}
+
 	fn parse_type_ascript(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
 		if tts.len() != 2 {
 			pos.error(ArityMis(2, tts.len()))
@@ -284,8 +294,10 @@ impl<'src> Parser {
 					})),
 					TokenTree::Ident("set") =>
 						Expr::Assign(Box::new(Self::parse_assign(tail, ttm.pos.clone()))),
-					TokenTree::Ident("deref") if tail.len() == 1 =>
+					TokenTree::Ident("deref") =>
 						Expr::Deref(Box::new(Self::parse_deref(tail, ttm.pos.clone()))),
+					TokenTree::Ident("transmute") =>
+						Expr::Transmute(Box::new(Self::parse_transmute(tail, ttm.pos.clone()))),
 					TokenTree::Ident(":") => Expr::TypeAscript(Box::new(
 						Self::parse_type_ascript(tail, ttm.pos.clone()))),
 					_ => Expr::Call(Box::new(Self::parse_sexpr(&sexpr[0], tail, ttm.pos.clone()))),

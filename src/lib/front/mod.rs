@@ -52,25 +52,6 @@ impl<'src> SrcPos<'src> {
 		SrcPos { src: src, start: start, end: Some(end), in_expansion: None }
 	}
 
-	/// Construct a new `SrcPos` with a positive offset in relation to `self`
-	pub fn with_positive_offset(&self, offset: usize) -> Self {
-		SrcPos {
-			start: self.start + offset,
-			end: None,
-			.. self.clone()
-		}
-	}
-
-	/// Construct a new `SrcPos` with a negative offset in relation to `self`
-	pub fn with_negative_offset(&self, offset: usize) -> Self {
-		SrcPos {
-			start: self.start - offset,
-			end: None,
-			.. self.clone()
-		}
-	}
-
-
 	pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
 		if self.in_expansion.is_some() {
 		// if let Some(ref mut self_exp) = self.in_expansion {

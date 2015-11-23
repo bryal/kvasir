@@ -26,11 +26,7 @@ use std::collections::HashMap;
 use llvm::*;
 use llvm_sys::core;
 use lib::front::SrcPos;
-use lib::front::ast::{
-	self, Ident, Deref,
-	Expr, Path, Call,
-	Block, If, Lambda,
-	VarDef, Assign };
+use lib::front::ast::{ self, Expr };
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
@@ -76,19 +72,28 @@ impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
 pub struct CodeGenerator<'ctx> {
 	context: &'ctx Context,
 	pub module: CSemiBox<'ctx, Module>,
+	target_data: CBox<TargetData>,
 	builder: CSemiBox<'ctx, Builder>,
 }
 impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	pub fn new(context: &'ctx Context) -> Self {
+		let module = Module::new("main", context);
+		let td = TargetData::new(module.get_target());
+
 		CodeGenerator {
 			context: context,
-			module: Module::new("main", context),
+			module: module,
+			target_data: td,
 			builder: Builder::new(context),
 		}
 	}
 
 	fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
 		self.builder.get_insert_block().and_then(|bb| bb.get_parent()).and_then(CastFrom::cast)
+	}
+
+	fn size_of(&self, typ: &Type) -> u64 {
+		self.target_data.size_of(typ)
 	}
 
 	fn gen_nil(&self) -> &'ctx Value {
@@ -104,10 +109,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 			PType::Basic("Int16") => Type::get::<i16>(self.context),
 			PType::Basic("Int32") => Type::get::<i32>(self.context),
 			PType::Basic("Int64") => Type::get::<i64>(self.context),
+			PType::Basic("IntPtr") => Type::get::<isize>(self.context),
 			PType::Basic("UInt8") => Type::get::<u8>(self.context),
 			PType::Basic("UInt16") => Type::get::<u16>(self.context),
 			PType::Basic("UInt32") => Type::get::<u32>(self.context),
 			PType::Basic("UInt64") => Type::get::<u64>(self.context),
+			PType::Basic("UIntPtr") => Type::get::<usize>(self.context),
 			PType::Basic("Bool") => Type::get::<bool>(self.context),
 			PType::Basic("Float32") => Type::get::<f32>(self.context),
 			PType::Basic("Float64") => Type::get::<f64>(self.context),
@@ -118,7 +125,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 					self.gen_type(ret),
 					&params.iter().map(|param| self.gen_type(param)).collect::<Vec<_>>())
 			},
-			_ => unimplemented!(),
+			PType::Construct("RawPtr", ref args) => Type::new_pointer(self.gen_type(&args[0])),
+			_ => {
+				panic!("Type `{}` is not yet implemented", typ)
+			},
 		}
 	}
 
@@ -201,7 +211,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	/// Generates IR code for a procedure call. If the call is in a tail position and the call
 	/// is a recursive call to the caller itself, make a tail call and return `Nothing`.
 	/// Otherwise, make a normal call and return the result.
-	fn gen_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast Call<'src>) -> &Value {
+	fn gen_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>)
+		-> &Value
+	{
 		let proced: &Function = CastFrom::cast(self.gen_expr(env, &call.proced))
 			.unwrap_or_else(|| call.proced.pos()
 				.error(ICE("expression in procedure pos is not a function".into())));
@@ -216,7 +228,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 	fn gen_tail_call(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		call: &'ast Call<'src>
+		call: &'ast ast::Call<'src>
 	) {
 		let call = self.gen_call(env, call);
 		unsafe { core::LLVMSetTailCall(call.into(), 1) };
@@ -226,7 +238,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 	fn gen_handle_block<T, F>(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		block: &'ast Block<'src>,
+		block: &'ast ast::Block<'src>,
 		handler: F
 	)
 		-> T
@@ -251,20 +263,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		r
 	}
 
-	fn gen_block(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, block: &'ast Block<'src>) -> &Value {
+	fn gen_block(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, block: &'ast ast::Block<'src>)
+		-> &Value
+	{
 		self.gen_handle_block(env, block, Self::gen_expr)
 	}
 
 	fn gen_tail_block(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		block: &'ast Block<'src>
+		block: &'ast ast::Block<'src>
 	) -> Option<&Value> {
 		self.gen_handle_block(env, block, Self::gen_tail_expr)
 	}
 
 	fn gen_if(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		cond: &'ast If<'src>,
+		cond: &'ast ast::If<'src>,
 		typ: &ast::Type<'src>,
 	) -> &Value {
 		let parent_func = self.current_func().unwrap();
@@ -300,7 +314,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 	fn gen_tail_if(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		cond: &'ast If<'src>,
+		cond: &'ast ast::If<'src>,
 		typ: &ast::Type<'src>,
 	) -> Option<&Value> {
 		let parent_func = self.current_func().unwrap();
@@ -337,7 +351,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, lam: &'ast Lambda<'src>)
+	fn gen_lambda(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, lam: &'ast ast::Lambda<'src>)
 		-> &Value
 	{
 		let anon = self.gen_func_decl("lambda", &lam.get_type());
@@ -347,8 +361,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		anon
 	}
 
-	fn gen_var_def(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast VarDef<'src>) {
+	fn gen_var_def(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast ast::VarDef<'src>) {
 		let var = self.builder.build_alloca(self.gen_type(&def.body.get_type()));
+
 		var.set_name(def.binding.s);
 
 		self.builder.build_store(self.gen_expr(env, &def.body), var);
@@ -368,14 +383,58 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 		}
 	}
 
-	fn gen_assign(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast Assign<'src>) {
+	fn gen_assign(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast ast::Assign<'src>) {
 		let var = self.gen_lvalue(env, &assign.lhs);
 
 		self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
 	}
 
-	fn gen_deref(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, deref: &'ast Deref<'src>) -> &Value {
+	fn gen_deref(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, deref: &'ast ast::Deref<'src>)
+		-> &Value
+	{
 		self.builder.build_load(self.gen_expr(env, &deref.r))
+	}
+
+	fn gen_transmute(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, trans: &'ast ast::Transmute<'src>)
+		-> &Value
+	{
+		let ll_arg = self.gen_expr(env, &trans.arg);
+
+		let ll_arg_typ = ll_arg.get_type();
+		let ll_target_typ = self.gen_type(&trans.typ);
+
+		let (arg_size, target_size) = (self.size_of(ll_arg_typ), self.size_of(ll_target_typ));
+
+		if arg_size != target_size {
+			trans.pos.error(format!(
+				"Transmute to type of different size: {} ({} bytes) to {} ({} bytes)",
+				trans.arg.get_type(), arg_size,
+				trans.typ, target_size))
+		}
+
+		if ll_arg_typ == ll_target_typ {
+			ll_arg
+		} else if ll_arg_typ.is_pointer() && ll_target_typ.is_pointer() {
+			self.builder.build_bit_cast(ll_arg, ll_target_typ)
+		} else if ll_arg_typ.is_pointer()
+			&& (trans.typ == ast::Type::Basic("IntPtr") || trans.typ == ast::Type::Basic("UIntPtr"))
+		{
+			self.builder.build_ptr_to_int(ll_arg, ll_target_typ)
+		} else if ll_arg_typ.is_pointer() {
+			let ptr_int = self.builder.build_ptr_to_int(ll_arg, Type::get::<usize>(self.context));
+
+			self.builder.build_bit_cast(ptr_int, ll_target_typ)
+		} else if ll_target_typ.is_pointer()
+			&& (*trans.arg.get_type() == ast::Type::Basic("IntPtr")
+				|| *trans.arg.get_type() == ast::Type::Basic("UIntPtr")) {
+			self.builder.build_int_to_ptr(ll_arg, ll_target_typ)
+		} else if ll_target_typ.is_pointer() {
+			let ptr_int = self.builder.build_bit_cast(ll_arg, Type::get::<usize>(self.context));
+
+			self.builder.build_int_to_ptr(ptr_int, ll_target_typ)
+		} else {
+			self.builder.build_bit_cast(ll_arg, ll_target_typ)
+		}
 	}
 
 	/// Generate llvm code for an expression and return its llvm Value.
@@ -400,6 +459,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 			},
 			Expr::Symbol(_) => unimplemented!(),
 			Expr::Deref(ref deref) => self.gen_deref(env, deref),
+			Expr::Transmute(ref trans) => self.gen_transmute(env, trans),
 			// All type ascriptions should be replaced at this stage
 			Expr::TypeAscript(_) => unreachable!(),
 		}
@@ -433,7 +493,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	}
 
 
-	fn gen_const_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast Call<'src>)
+	fn gen_const_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>)
 		-> &Value
 	{
 		let args = call.args.iter()
@@ -493,19 +553,25 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 	fn build_func_def(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
 		func: &'ctx Function,
-		def_lam: &'ast Lambda<'src>
+		def_lam: &'ast ast::Lambda<'src>
 	) {
 		let entry = func.append("entry");
 
 		self.builder.position_at_end(entry);
 
-		let params = def_lam.params.iter()
-			.map(|param| param.ident.s)
-			.enumerate()
-			.map(|(i, id)| (id, &*func[i]))
-			.collect::<Vec<_>>();
+		let mut param_vars = Vec::with_capacity(def_lam.params.len());
 
-		let old_vars = mem::replace(&mut env.vars, params);
+		for (i, param) in def_lam.params.iter().enumerate() {
+			let param_var = self.builder.build_alloca(self.gen_type(&param.typ));
+			param_var.set_name(param.ident.s);
+
+			self.builder.build_store(&*func[i], param_var);
+
+			param_vars.push((param.ident.s, param_var));
+		}
+
+		let old_vars = mem::replace(&mut env.vars, param_vars);
+
 		if let Some(e) = self.gen_tail_expr(env, &def_lam.body) {
 			self.builder.build_ret(e);
 		}
@@ -515,7 +581,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 	pub fn gen_extern_decls(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		extern_funcs: &HashMap<Ident<'src>, ast::Type<'src>>
+		extern_funcs: &HashMap<ast::Ident<'src>, ast::Type<'src>>
 	) {
 		let mut func_decls = HashMap::new();
 
@@ -528,7 +594,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 	pub fn gen_const_defs(&'ctx self,
 		env: &mut Env<'src, 'ast, 'ctx>,
-		const_defs: &'ast HashMap<Ident<'src>, ast::ConstDef<'src>>
+		const_defs: &'ast HashMap<ast::Ident<'src>, ast::ConstDef<'src>>
 	) {
 		let (mut func_decls, mut const_decls) = (HashMap::new(), HashMap::new());
 		// function declarations that are to be defined
