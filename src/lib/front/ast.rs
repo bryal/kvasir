@@ -250,7 +250,7 @@ impl<'src> PartialEq<str> for Path<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Use<'src> {
-    pub paths: Vec<Path<'src>>,
+    pub path: Path<'src>,
     pub pos: SrcPos<'src>,
 }
 
@@ -507,7 +507,7 @@ impl<'src> Expr<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct AST<'src> {
+pub struct Module<'src> {
     pub uses: Vec<Use<'src>>,
     pub const_defs: HashMap<Ident<'src>, ConstDef<'src>>,
     pub extern_funcs: HashMap<Ident<'src>, Type<'src>>,

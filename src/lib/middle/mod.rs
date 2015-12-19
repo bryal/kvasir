@@ -152,7 +152,7 @@ impl<'src> Cleaner<'src> {
     }
 }
 
-pub fn clean_ast(ast: &mut AST) {
+pub fn clean_ast(ast: &mut Module) {
     let mut cleaner = Cleaner::new();
 
     cleaner.const_defs.push(replace(&mut ast.const_defs, HashMap::new())

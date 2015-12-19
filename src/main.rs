@@ -86,6 +86,15 @@
 //       e.g: `(let [[a 3] [b 9]] (+ a b))`
 // TODO: Warn if a macro producing an expression is called using brackers, [], and vice versa
 // TODO: Tests. Maybe QuickCheck?
+// TODO: Add hooks for viewing of AST for 3rd party tools to use
+// TODO: linters. E.g linter that searches libraries for functions that do what
+//       a user expression does.
+//       Lint for unnecessarily specific types in function signatures
+// TODO: Implement some of current warnings, and maybe errors, as lints.
+// TODO: 3 message categories. error, warning, hint. disabling hints disables lints
+// TODO: Optionally enabled used of `Coerce` trait to allow implicit coercion between
+//       'coerceable' type pairs. E.g. `Int32` to `UInt8`, or `
+// TODO: Add frontends for existing laanguages to easily port projects
 
 #![feature(
 	non_ascii_idents,
@@ -102,13 +111,14 @@ extern crate bitflags;
 extern crate term;
 extern crate llvm;
 extern crate llvm_sys;
+extern crate itertools;
 
 use std::{env, fmt};
 use std::io::Read;
 use std::fs::{File, canonicalize};
 use std::path::{Path, PathBuf};
 use getopts::Options;
-use lib::{token_trees_from_src, expand_macros};
+use lib::{concrete_syntax_trees_from_src, expand_macros};
 use lib::front::parse::parse;
 use lib::front::inference::infer_types;
 use lib::middle::clean_ast;
@@ -146,7 +156,7 @@ impl FileName {
         }
     }
 
-  pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
+    pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
         match self {
             FileName::Some(p) => FileName::Some(f(p)),
             FileName::Default(p) => FileName::Default(f(p)),
@@ -214,7 +224,7 @@ fn main() {
                                .map(|filename| {
                                    let parent = match filename.parent() {
                                        None => "./".as_ref(),
-                                       Some(p) if p == "".as_ref() => "./".as_ref(),
+                                       Some(p) if p == Path::new("") => "./".as_ref(),
                                        Some(p) => p,
                                    };
                                    canonicalize(parent)
@@ -239,11 +249,11 @@ fn main() {
                        .expect(&format!("Reading contents of `{}` failed",
                                         inp_file_name.display()));
 
-    let token_tree = token_trees_from_src(&src_code);
+    let csts = concrete_syntax_trees_from_src(&src_code);
 
     // println!("TOKEN TREE{:#?}", token_tree);
 
-    let expanded_macros = expand_macros(&token_tree);
+    let expanded_macros = expand_macros(&csts);
 
     // println!("MACRO EXPANDED: {:#?}", expanded_macros);
 

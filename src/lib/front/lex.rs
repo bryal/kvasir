@@ -20,16 +20,26 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// TODO: Define a formal grammar
+// TODO: Instead of lexer functions returning length in source, return the source following
+//       the lexed token.
+// TODO: Use visitor pattern with a Tokenizer, wherein additional information can be stored,
+//       such as file name.
+
 use std::fmt;
 use std::borrow::Cow;
+use itertools::Itertools;
 use super::SrcPos;
 use self::LexErr::*;
 
+/// Common errors for various lexing actions
 enum LexErr {
+    // NOTE: For explanations of error variants, see messages in Display impl below
     UnknownEscape,
     InvalidEscapeSeq,
     UntermStr,
-    InvalidStrDelim,
+    UntermRawStr,
+    InvalidRawStrDelim(char),
     InvalidNum,
     InvalidIdent,
     UndelimItem,
@@ -41,7 +51,13 @@ impl fmt::Display for LexErr {
             UnknownEscape => write!(f, "Unknown character escape"),
             InvalidEscapeSeq => write!(f, "Invalid escape sequence"),
             UntermStr => write!(f, "Unterminated string literal"),
-            InvalidStrDelim => write!(f, "Invalid string literal delimiter"),
+            UntermRawStr => write!(f, "Unterminated raw string literal"),
+            InvalidRawStrDelim(c) => {
+                write!(f,
+                       "Invalid character found in raw string delimitation: `{}`. Only `#` is \
+                        allowed",
+                       c)
+            }
             InvalidNum => write!(f, "Invalid numeric literal"),
             InvalidIdent => write!(f, "Invalid ident"),
             UndelimItem => write!(f, "Undelimited item"),
@@ -50,6 +66,8 @@ impl fmt::Display for LexErr {
     }
 }
 
+/// Unescape the character of an escape sequence.
+/// E.g. `n` from the sequence `\n` unescapes to newline
 fn unescape_char(c: char) -> Option<char> {
     // TODO: add more escapes
     match c {
@@ -60,14 +78,26 @@ fn unescape_char(c: char) -> Option<char> {
     }
 }
 
-/// A token
+/// *"A token is a structure representing a lexeme that explicitly indicates its categorization
+///   for the purpose of parsing."*
+/// -- [Wikipedia](https://en.wikipedia.org/wiki/Lexical_analysis#Token)
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token<'src> {
+    /// Left parenthesis, `(`
     LParen,
+    /// Right parenthesis, `)`
     RParen,
+    /// Left bracket, `[`
+    LBracket,
+    /// Right bracket, `]`
+    RBracket,
+    /// Identifier
     Ident(&'src str),
+    /// Numeric literal
     Num(&'src str),
+    /// String literal
     Str(Cow<'src, str>),
+    /// Quote (`'`)
     Quote,
 }
 
@@ -101,33 +131,36 @@ fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
 }
 
 /// Tokenize the raw string literal in `src` at `start`.
-/// Return the `Token` and it's length, including delimiting characters, in the source.
+/// Return the literal as a `Token` and it's length, including delimiting characters, in the source.
 fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
     let str_src = &src[start + 1..];
-    let n_delim_octothorpes = str_src.chars().take_while(|&c| c == '#').count();
+    let n_delim_octos = str_src.chars().take_while(|&c| c == '#').count();
 
-    if !str_src[n_delim_octothorpes..].starts_with('"') {
-        SrcPos::new_pos(src, start).error(InvalidStrDelim)
+    if let Some(first_after_octos) = str_src[n_delim_octos..].chars().next() {
+        if first_after_octos != '"' {
+            SrcPos::new_pos(src, start + 1 + n_delim_octos)
+                .error(InvalidRawStrDelim(first_after_octos))
+        }
+    } else {
+        SrcPos::new_interval(src, start, start + 1 + n_delim_octos).error(UntermRawStr)
     }
 
-    let delim_octothorpes = &str_src[..n_delim_octothorpes];
+    let delim_octos = &str_src[..n_delim_octos];
 
-    let str_body_src = &str_src[n_delim_octothorpes + 1..];
+    let str_body_src = &str_src[n_delim_octos + 1..];
+
     for (i, c) in str_body_src.char_indices() {
-        if c == '"' && str_body_src[i + 1..].starts_with(delim_octothorpes) {
-            // octothorpes before and after + 'r' + open and end quotes + str len
-            let literal_len = n_delim_octothorpes * 2 + 3 + i;
+        if c == '"' && str_body_src[i + 1..].starts_with(delim_octos) {
+            // octos before and after + 'r' + open and end quotes + str len
+            let literal_len = n_delim_octos * 2 + 3 + i;
             return (Token::Str(Cow::Borrowed(&str_body_src[..i])), literal_len);
         }
     }
-    SrcPos::new_pos(src, start).error(UntermStr)
+    SrcPos::new_pos(src, start).error(UntermRawStr)
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
 /// Return the `Token` and it's length in the source.
-///
-/// # Panics
-/// Panics if the literal is not a valid numeric literal
 fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
     let src_num = &src[start..];
     let mut has_decimal_pt = false;
@@ -156,7 +189,7 @@ fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
     SrcPos::new_pos(src, start).error(InvalidNum)
 }
 
-/// Returns whether `c` delimits tokens
+/// Whether `c` is a general delimiter, i.e. it delimits identifiers and numeric literals and such
 fn is_delim_char(c: char) -> bool {
     match c {
         '(' | ')' | '[' | ']' | '{' | '}' | ';' => true,
@@ -175,10 +208,7 @@ fn is_ident_char(c: char) -> bool {
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
-/// Return the `Token` and it's length in the source.
-///
-/// # Panics
-/// Panics if the literal is not a valid numeric literal
+/// Return the literal as a `Token` and it's length in the source.
 fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
     let src_ident = &src[start..];
     for (i, c) in src_ident.char_indices() {
@@ -191,19 +221,20 @@ fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
     SrcPos::new_pos(src, start).error(InvalidIdent)
 }
 
-/// An iterator of `Token`s and their position in some source code
+/// An iterator over the `Token`s, and their positions, of some source code
 #[derive(Debug)]
 struct Tokens<'src> {
     src: &'src str,
     pos: usize,
 }
-impl<'src> From<&'src str> for Tokens<'src> {
-    fn from(src: &'src str) -> Tokens {
+impl<'src> Tokens<'src> {
+    /// Construct a new iterator over the `Token`s of `src`
+    fn new(src: &'src str) -> Self {
         Tokens { src: src, pos: 0 }
     }
 }
 impl<'src> Iterator for Tokens<'src> {
-	type Item = (Token<'src>, SrcPos<'src>);
+    type Item = (Token<'src>, SrcPos<'src>);
 
     fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
         let pos = self.pos;
@@ -225,6 +256,8 @@ impl<'src> Iterator for Tokens<'src> {
                 '\'' => (Token::Quote, 1),
                 '(' => (Token::LParen, 1),
                 ')' => (Token::RParen, 1),
+                '[' => (Token::LBracket, 1),
+                ']' => (Token::RBracket, 1),
                 '"' => tokenize_str_lit(self.src, i),
                 'r' if self.src[i + 1..].starts_with(|c: char| c == '"' || c == '#') => {
                     tokenize_raw_str_lit(self.src, i)
@@ -241,110 +274,150 @@ impl<'src> Iterator for Tokens<'src> {
     }
 }
 
-/// A tree of lists, identifiers, and literals
+/// A tree of syntax items (Concrete Syntax Tree),
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenTree<'src> {
-    List(Vec<TokenTreeMeta<'src>>),
-    Ident(&'src str),
-    Num(&'src str),
-    Str(Cow<'src, str>),
+pub enum CST<'src> {
+    /// An S-Expression.
+    SExpr(Vec<CST<'src>>, SrcPos<'src>),
+    /// A non-expression list of syntax items surrounded by square brackets.
+    List(Vec<CST<'src>>, SrcPos<'src>),
+    /// An identifier.
+    Ident(&'src str, SrcPos<'src>),
+    /// A numeric literal.
+    Num(&'src str, SrcPos<'src>),
+    /// A string literal.
+    Str(Cow<'src, str>, SrcPos<'src>),
 }
-impl<'src> TokenTree<'src> {
-    pub fn get_ident(&self) -> Option<&str> {
+impl<'src> CST<'src> {
+    /// Returns whether this node is a `SExpr`
+    pub fn is_sexpr(&self) -> bool {
+        if let CST::SExpr(_, _) = *self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_ellipsis(&self) -> bool {
         match *self {
-            TokenTree::Ident(ident) => Some(ident),
-            _ => None,
-        }
-    }
-}
-
-/// A `TokenTree` with meta-data
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenTreeMeta<'src> {
-    pub tt: TokenTree<'src>,
-    pub pos: SrcPos<'src>,
-}
-impl<'src> TokenTreeMeta<'src> {
-    /// Construct a new `TokenTreeMeta` from a `TokenTree` and a source position
-    pub fn new(tt: TokenTree<'src>, pos: SrcPos<'src>) -> Self {
-        TokenTreeMeta { tt: tt, pos: pos }
-    }
-
-    pub fn new_list(tts: Vec<TokenTreeMeta<'src>>, pos: SrcPos<'src>) -> Self {
-        TokenTreeMeta {
-            tt: TokenTree::List(tts),
-            pos: pos,
+            CST::Ident("...", _) => true,
+            _ => false,
         }
     }
 
-    pub fn list_len(&self) -> Option<usize> {
-        match self.tt {
-            TokenTree::List(ref list) => Some(list.len()),
-            _ => None,
+    pub fn pos(&self) -> &SrcPos<'src> {
+        match *self {
+            CST::SExpr(_, ref p) |
+            CST::List(_, ref p) |
+            CST::Ident(_, ref p) |
+            CST::Num(_, ref p) |
+            CST::Str(_, ref p) => p,
         }
     }
 
-    /// Construct a new `TokenTreeMeta` from a token with a position, and the tokens following
+    fn pos_mut(&mut self) -> &mut SrcPos<'src> {
+        match *self {
+            CST::SExpr(_, ref mut p) |
+            CST::List(_, ref mut p) |
+            CST::Ident(_, ref mut p) |
+            CST::Num(_, ref mut p) |
+            CST::Str(_, ref mut p) => p,
+        }
+    }
+
+    /// Construct a new syntax tree from a token with a position, and the tokens following
     fn from_token((token, mut pos): (Token<'src>, SrcPos<'src>), nexts: &mut Tokens<'src>) -> Self {
-        let tt = match token {
+        match token {
             Token::LParen => {
                 let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
                 pos.end = end;
-                TokenTree::List(list)
+                CST::SExpr(list, pos)
             }
-            Token::Ident(ident) => TokenTree::Ident(ident),
-            Token::Num(num) => TokenTree::Num(num),
-            Token::Str(s) => TokenTree::Str(s),
+            Token::LBracket => {
+                let (list, end) = tokens_to_trees_until(nexts,
+                                                        Some((pos.clone(), &Token::RBracket)));
+                pos.end = end;
+                CST::List(list, pos)
+            }
+            Token::Ident(ident) => CST::Ident(ident, pos),
+            Token::Num(num) => CST::Num(num, pos),
+            Token::Str(s) => CST::Str(s, pos),
             Token::Quote => {
-                TokenTree::List(vec![TokenTreeMeta::new(TokenTree::Ident("quote"), pos.clone()),
-                                     TokenTreeMeta::from_token(nexts.next().unwrap_or_else(|| {
-                                                                   pos.error(Unexpected("quote"))
-                                                               }),
-                                                               nexts)])
+                CST::SExpr(vec![CST::Ident("quote", pos.clone()),
+                                CST::from_token(nexts.next().unwrap_or_else(|| {
+                                                    pos.error(Unexpected("quote"))
+                                                }),
+                                                nexts)],
+                           pos)
             }
             _ => pos.error(Unexpected("token")),
-        };
-        TokenTreeMeta::new(tt, pos)
+        }
     }
 
+    /// Adds the position of a parent macro as an expansion site to this tree recursively
     pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
-        self.pos.add_expansion_site(exp);
+        self.pos_mut().add_expansion_site(exp);
 
-        if let TokenTree::List(ref mut list) = self.tt {
-            for li in list {
-                li.add_expansion_site(exp)
+        match *self {
+            CST::SExpr(ref mut v, ref mut pos) | CST::List(ref mut v, ref mut pos) => {
+                pos.add_expansion_site(exp);
+                for t in v {
+                    t.add_expansion_site(exp)
+                }
+            }
+            CST::Ident(_, ref mut pos) | CST::Num(_, ref mut pos) | CST::Str(_, ref mut pos) => {
+                pos.add_expansion_site(exp)
             }
         }
     }
 }
+impl<'src> fmt::Display for CST<'src> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            CST::Ident(s, _) | CST::Num(s, _) => write!(f, "{}", s),
+            CST::Str(ref s, _) => write!(f, "{}", s),
+            CST::SExpr(ref v, _) => {
+                write!(f,
+                       "({})",
+                       v.iter().map(|e| e.to_string()).intersperse(" ".into()).collect::<String>())
+            }
+            CST::List(ref v, _) => {
+                write!(f,
+                       "[{}]",
+                       v.iter().map(|e| e.to_string()).intersperse(" ".into()).collect::<String>())
+            }
+        }
+    }
+}
+
 
 /// Construct trees from `tokens` until a lone `delim` is encountered.
 ///
 /// Returns trees and index of closing delimiter if one was supplied.
 fn tokens_to_trees_until<'src>(tokens: &mut Tokens<'src>,
                                start_and_delim: Option<(SrcPos, &Token)>)
-                               -> (Vec<TokenTreeMeta<'src>>, Option<usize>) {
+                               -> (Vec<CST<'src>>, Option<usize>) {
     let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t)))
                                         .unwrap_or((None, None));
 
-    let mut tts = Vec::new();
+    let mut trees = Vec::new();
 
-    while let Some((token, t_pos)) = tokens.next() {
+    while let Some((token, token_pos)) = tokens.next() {
         if Some(&token) == delim {
-            return (tts, t_pos.end);
+            return (trees, token_pos.end);
         } else {
-            tts.push(TokenTreeMeta::from_token((token, t_pos), tokens))
+            trees.push(CST::from_token((token, token_pos), tokens))
         }
     }
     match start {
-        None => (tts, None),
+        None => (trees, None),
         Some(pos) => pos.error(UndelimItem),
     }
 }
 
-/// Represent some source code as `TokenTreeMeta`s
-pub fn token_trees_from_src(src: &str) -> Vec<TokenTreeMeta> {
-    tokens_to_trees_until(&mut Tokens::from(src), None).0
+/// Lex the source code as a Concrete Syntax Tree
+pub fn concrete_syntax_trees_from_src(src: &str) -> Vec<CST> {
+    tokens_to_trees_until(&mut Tokens::new(src), None).0
 }
 
 #[cfg(test)]

@@ -20,10 +20,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// FIXME: ArityMiss is not very descriptive. Customize message for each error case
+
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use super::SrcPos;
-use super::lex::{TokenTree, TokenTreeMeta};
+use super::lex::CST;
 use super::ast::*;
 use self::ParseErr::*;
 
@@ -46,55 +48,60 @@ impl Display for ParseErr {
     }
 }
 
+/// An object that parses `CST`s as different kinds of `Module` items
 struct Parser;
 
 impl<'src> Parser {
-    pub fn parse_type(ttm: &TokenTreeMeta<'src>) -> Type<'src> {
-        match ttm.tt {
-            TokenTree::List(ref construct) if !construct.is_empty() => {
-                match construct[0].tt {
-                    TokenTree::Ident(constructor) => {
+    /// Parse a `CST` as a `Type`
+    pub fn parse_type(tree: &CST<'src>) -> Type<'src> {
+        match *tree {
+            // Type construction. E.g. `(Vec Int32)`
+            CST::SExpr(ref construct, _) if !construct.is_empty() => {
+                match construct[0] {
+                    CST::Ident(constructor, _) => {
                         Type::Construct(constructor,
                                         construct[1..].iter().map(Self::parse_type).collect())
                     }
-                    _ => construct[0].pos.error(Invalid("type constructor")),
+                    _ => construct[0].pos().error(Invalid("type constructor")),
                 }
             }
-            TokenTree::List(_) => TYPE_NIL.clone(),
-            TokenTree::Ident("_") => Type::Unknown,
-            TokenTree::Ident(basic) => Type::Basic(basic),
-            TokenTree::Num(_) => ttm.pos.error(Mismatch("type", "numeric literal")),
-            TokenTree::Str(_) => ttm.pos.error(Mismatch("type", "string literal")),
+            CST::SExpr(_, ref pos) => pos.error("Empty type construction"),
+            CST::List(_, ref pos) => pos.error("Expected type, found syntax list (`[...]`)"),
+            CST::Ident("_", _) => Type::Unknown,
+            CST::Ident("Nil", _) => TYPE_NIL.clone(),
+            CST::Ident(basic, _) => Type::Basic(basic),
+            CST::Num(_, ref pos) => pos.error(Mismatch("type", "numeric literal")),
+            CST::Str(_, ref pos) => pos.error(Mismatch("type", "string literal")),
         }
     }
 
-    fn parse_binding(ttm: &TokenTreeMeta<'src>) -> Ident<'src> {
-        match ttm.tt {
-            TokenTree::Ident(ident) => Ident::new(ident, ttm.pos.clone()),
-            _ => ttm.pos.error(Invalid("binding")),
+    /// Parse a `CST` as an `Ident` (identifier)
+    fn parse_ident(cst: &CST<'src>) -> Ident<'src> {
+        match *cst {
+            CST::Ident(ident, ref pos) => Ident::new(ident, pos.clone()),
+            _ => cst.pos().error(Invalid("binding")),
         }
     }
 
-    /// Parse a path
-    fn parse_path(ttm: &TokenTreeMeta<'src>) -> Path<'src> {
-        match ttm.tt {
-            TokenTree::Ident(s) => Path::from_str(s, ttm.pos.clone()),
-            _ => ttm.pos.error(Expected("path")),
+    /// Parse a `CST` as a `Path`
+    fn parse_path(cst: &CST<'src>) -> Path<'src> {
+        match *cst {
+            CST::Ident(s, ref pos) => Path::from_str(s, pos.clone()),
+            _ => cst.pos().error(Expected("path")),
         }
     }
 
-    /// # Rust equivalent
-    ///
-    /// `path\to\item` => `path::to::item`
-    /// `(path\to\module sub\item1 item2)` == `path::to::module{ sub::item1, item2 }``
-    /// `(lvl1::lvl2 (lvl2a lvl3a lvl3b) lvl2b)` == `use lvl1::lvl2::{ lvl2a::{ lvl3a, lvl3b}, lvl2b }`
-    fn parse_compound_path(ttm: &TokenTreeMeta<'src>) -> Vec<Path<'src>> {
-        match ttm.tt {
-            TokenTree::List(ref compound) => {
+    /// Parse a `CST` as a tree of `Path`s, returning a vec of the canonicalized form
+    /// of the path in each leaf.
+    /// E.g. `(a\b (c w x) y z)` corresponds to the canonicalized paths
+    /// `a\b\c\w`, `a\b\c\x`, `a\b\y`, `a\b\z`
+    fn parse_paths_tree(cst: &CST<'src>) -> Vec<Path<'src>> {
+        match *cst {
+            CST::SExpr(ref compound, ref pos) => {
                 if let Some((chead, tail)) = compound.split_first() {
                     let path_head = Self::parse_path(chead);
                     tail.iter()
-                        .map(Self::parse_compound_path)
+                        .map(Self::parse_paths_tree)
                         .flat_map(|v| v)
                         .map(|sub| {
                             path_head.clone()
@@ -103,54 +110,62 @@ impl<'src> Parser {
                         })
                         .collect()
                 } else {
-                    ttm.pos.error("Empty path compound")
+                    pos.error("Empty path compound")
                 }
             }
-            TokenTree::Ident(ident) => vec![Path::from_str(ident, ttm.pos.clone())],
-            TokenTree::Num(_) | TokenTree::Str(_) => ttm.pos.error(Expected("path")),
+            CST::Ident(ident, ref pos) => vec![Path::from_str(ident, pos.clone())],
+            CST::Num(_, ref pos) => pos.error("Expected path, found numeric literal"),
+            CST::Str(_, ref pos) => pos.error("Expected path, found string literal"),
+            CST::List(_, ref pos) => pos.error("Expected path, found syntax list"),
         }
     }
 
-    fn parse_use(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Use<'src> {
-        Use {
-            paths: tts.iter().map(Self::parse_compound_path).flat_map(|paths| paths).collect(),
-            pos: pos,
-        }
+    /// Parse a list of `CST`s as a list of trees of paths to `Use`
+    fn parse_use(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Vec<Use<'src>> {
+        csts.iter()
+            .map(Self::parse_paths_tree)
+            .flat_map(|paths| paths)
+            .map(|path| {
+                Use {
+                    path: path,
+                    pos: pos.clone(),
+                }
+            })
+            .collect()
     }
 
-    fn parse_const_def(tts: &[TokenTreeMeta<'src>],
-                       pos: SrcPos<'src>)
-                       -> (Ident<'src>, ConstDef<'src>) {
-        if tts.len() != 2 {
-            pos.error(ArityMis(2, tts.len()))
-        } else {
-            match tts[0].tt {
-                TokenTree::Ident(name) => {
-                    (Ident::new(name, tts[0].pos.clone()),
+    /// Parse a list of `CST` as the parts of a constant definition
+    fn parse_const_def(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>, ConstDef<'src>) {
+        if let (Some(ident_cst), Some(body_cst)) = (csts.get(0), csts.get(1)) {
+            match *ident_cst {
+                CST::Ident(name, ref id_pos) => {
+                    (Ident::new(name, id_pos.clone()),
                      ConstDef {
-                        body: Self::parse_expr(&tts[1]),
+                        body: Self::parse_expr(&body_cst),
                         pos: pos,
                     })
                 }
-                _ => tts[0].pos.error(Expected("identifier")),
+                _ => ident_cst.pos().error(Expected("identifier")),
             }
+        } else {
+            pos.error(ArityMis(2, csts.len()))
         }
     }
 
-    fn parse_sexpr(proc_ttm: &TokenTreeMeta<'src>,
-                   args_tts: &[TokenTreeMeta<'src>],
-                   pos: SrcPos<'src>)
-                   -> Call<'src> {
+    /// Parse a first `CST` and some following `CST`s as a procedure and some arguments, i.e. a call
+    fn parse_sexpr(proc_cst: &CST<'src>, args_csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
         Call {
-            proced: Self::parse_expr(proc_ttm),
-            args: args_tts.iter().map(Self::parse_expr).collect(),
+            proced: Self::parse_expr(proc_cst),
+            args: args_csts.iter().map(Self::parse_expr).collect(),
             pos: pos,
         }
     }
 
-    /// Parse a `Block` from tokens. Returns `None` if there are no expressions in the block.
-    fn parse_block(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Option<Block<'src>> {
-        let (uses, const_defs, extern_funcs, exprs) = Parser::parse_items(tts);
+    /// Parse a list of `CST`s as a `Block`.
+    /// Returns `None` if there are no expressions in the block.
+    fn parse_block(csts: &[CST<'src>], pos: SrcPos<'src>) -> Option<Block<'src>> {
+        let (uses, const_defs, extern_funcs, exprs) = Parser::parse_items(csts);
+
         if exprs.is_empty() {
             None
         } else {
@@ -164,256 +179,263 @@ impl<'src> Parser {
         }
     }
 
-    fn parse_if(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> If<'src> {
-        if tts.len() != 3 {
-            pos.error(ArityMis(3, tts.len()))
-        }
-        If {
-            predicate: Self::parse_expr(&tts[0]),
-            consequent: Self::parse_expr(&tts[1]),
-            alternative: Self::parse_expr(&tts[2]),
-            pos: pos,
+    /// Parse a list of `CST`s as parts of an `If` conditional
+    fn parse_if(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
+        if csts.len() != 3 {
+            pos.error(ArityMis(3, csts.len()))
+        } else {
+            If {
+                predicate: Self::parse_expr(&csts[0]),
+                consequent: Self::parse_expr(&csts[1]),
+                alternative: Self::parse_expr(&csts[2]),
+                pos: pos,
+            }
         }
     }
 
-    fn parse_lambda(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
-        if tts.len() != 2 {
-            pos.error(ArityMis(2, tts.len()))
+    /// Parse a list of `CST`s as the parts of a `Lambda`
+    fn parse_lambda(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
+        if csts.len() != 2 {
+            pos.error(ArityMis(2, csts.len()))
         }
-        match tts[0].tt {
-            TokenTree::List(ref param_tts) => {
+        match csts[0] {
+            CST::List(ref params_csts, _) => {
                 Lambda {
-                    params: param_tts.iter()
-                                     .map(|param_tt| {
-                                         Param::new(Self::parse_binding(param_tt), Type::Unknown)
-                                     })
-                                     .collect(),
-                    body: Self::parse_expr(&tts[1]),
+                    params: params_csts.iter()
+                                       .map(|param_cst| {
+                                           Param::new(Self::parse_ident(param_cst), Type::Unknown)
+                                       })
+                                       .collect(),
+                    body: Self::parse_expr(&csts[1]),
                     pos: pos,
                 }
             }
-            _ => tts[0].pos.error(Expected("list")),
+            _ => csts[0].pos().error(Expected("list")),
         }
     }
 
-    fn parse_var_def(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> VarDef<'src> {
-        if tts.len() != 2 {
-            pos.error(ArityMis(2, tts.len()))
+    /// Parse a list of `CST`s as the parts of a `VarDef`
+    fn parse_var_def(csts: &[CST<'src>], pos: SrcPos<'src>) -> VarDef<'src> {
+        if csts.len() != 2 {
+            pos.error(ArityMis(2, csts.len()))
         }
-        match tts[0].tt {
-            TokenTree::Ident(binding) => {
+        match csts[0] {
+            CST::Ident(binding, ref binding_pos) => {
                 VarDef {
-                    binding: Ident::new(binding, tts[0].pos.clone()),
+                    binding: Ident::new(binding, binding_pos.clone()),
                     mutable: false,
-                    body: Self::parse_expr(&tts[1]),
+                    body: Self::parse_expr(&csts[1]),
                     typ: Type::Unknown,
                     pos: pos,
                 }
             }
-            _ => tts[0].pos.error(Expected("list")),
+            _ => csts[0].pos().error(Expected("list")),
         }
     }
 
-    fn parse_assign(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Assign<'src> {
-        if tts.len() != 2 {
-            pos.error(ArityMis(2, tts.len()))
+    /// Parse a list of `CST`s as the parts of an `Assign`
+    fn parse_assign(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
+        if csts.len() != 2 {
+            pos.error(ArityMis(2, csts.len()))
         }
         Assign {
-            lhs: Self::parse_expr(&tts[0]),
-            rhs: Self::parse_expr(&tts[1]),
+            lhs: Self::parse_expr(&csts[0]),
+            rhs: Self::parse_expr(&csts[1]),
             typ: Type::Unknown,
             pos: pos,
         }
     }
 
-    fn parse_deref(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Deref<'src> {
-        if tts.len() != 1 {
-            pos.error(ArityMis(1, tts.len()))
+    /// Parse a list of `CST`s as the parts of a `Deref`
+    fn parse_deref(csts: &[CST<'src>], pos: SrcPos<'src>) -> Deref<'src> {
+        if csts.len() != 1 {
+            pos.error(ArityMis(1, csts.len()))
         }
         Deref {
-            r: Self::parse_expr(&tts[0]),
+            r: Self::parse_expr(&csts[0]),
             pos: pos,
         }
     }
 
-    fn parse_transmute(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> Transmute<'src> {
-        if tts.len() != 1 {
-            pos.error(ArityMis(1, tts.len()))
+    /// Parse a `CST` as an expression to `Transmute`
+    fn parse_transmute(csts: &[CST<'src>], pos: SrcPos<'src>) -> Transmute<'src> {
+        if csts.len() != 1 {
+            pos.error(ArityMis(1, csts.len()))
         }
         Transmute {
-            arg: Self::parse_expr(&tts[0]),
+            arg: Self::parse_expr(&csts[0]),
             typ: Type::Unknown,
             pos: pos,
         }
     }
 
-    fn parse_type_ascript(tts: &[TokenTreeMeta<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
-        if tts.len() != 2 {
-            pos.error(ArityMis(2, tts.len()))
+    /// Parse a list of `CST`s as a `TypeAscript`
+    fn parse_type_ascript(csts: &[CST<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
+        if csts.len() != 2 {
+            pos.error(ArityMis(2, csts.len()))
         }
         TypeAscript {
-            typ: Self::parse_type(&tts[0]),
-            expr: Self::parse_expr(&tts[1]),
+            typ: Self::parse_type(&csts[0]),
+            expr: Self::parse_expr(&csts[1]),
             pos: pos,
         }
     }
 
-    fn parse_quoted_expr(ttm: &TokenTreeMeta<'src>) -> Expr<'src> {
-        match ttm.tt {
-            TokenTree::List(ref list) => {
+    /// Parse a `CST` as an `Expr`
+    fn parse_quoted_expr(cst: &CST<'src>) -> Expr<'src> {
+        match *cst {
+            CST::SExpr(ref list, ref pos) => {
                 Expr::Call(Box::new(Call {
                     proced: Expr::Binding(Binding {
-                        path: Path::from_str("list", ttm.pos.clone()),
+                        path: Path::from_str("list", pos.clone()),
                         typ: Type::Unknown,
                     }),
                     args: list.iter()
                               .map(|li| Self::parse_quoted_expr(li))
                               .collect(),
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 }))
             }
-            TokenTree::Ident(ident) => {
+            CST::List(ref list, ref pos) => pos.error("Expected expression, found syntax list"),
+            CST::Ident(ident, ref pos) => {
                 Expr::Symbol(Symbol {
-                    ident: Ident::new(ident, ttm.pos.clone()),
+                    ident: Ident::new(ident, pos.clone()),
                     typ: Type::Unknown,
                 })
             }
-            TokenTree::Num(num) => {
+            CST::Num(num, ref pos) => {
                 Expr::NumLit(NumLit {
                     lit: num,
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
-            TokenTree::Str(ref s) => {
+            CST::Str(ref s, ref pos) => {
                 Expr::StrLit(StrLit {
                     lit: s.clone(),
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
         }
     }
 
-    pub fn parse_expr(ttm: &TokenTreeMeta<'src>) -> Expr<'src> {
-        match ttm.tt {
-            TokenTree::List(ref sexpr) => {
+    /// Parse a `CST` as an `Expr`
+    pub fn parse_expr(cst: &CST<'src>) -> Expr<'src> {
+        match *cst {
+            CST::SExpr(ref sexpr, ref pos) => {
                 if let Some((head, tail)) = sexpr.split_first() {
-                    match head.tt {
-                        TokenTree::Ident("quote") => {
+                    match *head {
+                        CST::Ident("quote", _) => {
                             if let Some(to_quote) = tail.first() {
                                 Self::parse_quoted_expr(to_quote)
                             } else {
-                                ttm.pos.error(ArityMis(1, sexpr.len()))
+                                pos.error(ArityMis(1, sexpr.len()))
                             }
                         }
-                        TokenTree::Ident("if") => {
-                            Expr::If(Box::new(Self::parse_if(tail, ttm.pos.clone())))
+                        CST::Ident("if", _) => {
+                            Expr::If(Box::new(Self::parse_if(tail, pos.clone())))
                         }
-                        TokenTree::Ident("lambda") => {
-                            Expr::Lambda(Box::new(Self::parse_lambda(tail, ttm.pos.clone())))
+                        CST::Ident("lambda", _) => {
+                            Expr::Lambda(Box::new(Self::parse_lambda(tail, pos.clone())))
                         }
-                        TokenTree::Ident("block") => {
-                            Self::parse_block(tail, ttm.pos.clone())
+                        CST::Ident("block", _) => {
+                            Self::parse_block(tail, pos.clone())
                                 .map(|block| Expr::Block(Box::new(block)))
                                 .unwrap_or(Expr::Nil(Nil {
                                     typ: Type::Unknown,
-                                    pos: ttm.pos.clone(),
+                                    pos: pos.clone(),
                                 }))
                         }
-                        TokenTree::Ident("def-var") => {
-                            Expr::VarDef(Box::new(Self::parse_var_def(tail, ttm.pos.clone())))
+                        CST::Ident("def-var", _) => {
+                            Expr::VarDef(Box::new(Self::parse_var_def(tail, pos.clone())))
                         }
-                        TokenTree::Ident("def-var-mut") => {
+                        CST::Ident("def-var-mut", _) => {
                             Expr::VarDef(Box::new(VarDef {
                                 mutable: true,
-                                ..Self::parse_var_def(tail, ttm.pos.clone())
+                                ..Self::parse_var_def(tail, pos.clone())
                             }))
                         }
-                        TokenTree::Ident("set") => {
-                            Expr::Assign(Box::new(Self::parse_assign(tail, ttm.pos.clone())))
+                        CST::Ident("set", _) => {
+                            Expr::Assign(Box::new(Self::parse_assign(tail, pos.clone())))
                         }
-                        TokenTree::Ident("deref") => {
-                            Expr::Deref(Box::new(Self::parse_deref(tail, ttm.pos.clone())))
+                        CST::Ident("deref", _) => {
+                            Expr::Deref(Box::new(Self::parse_deref(tail, pos.clone())))
                         }
-                        TokenTree::Ident("transmute") => {
-                            Expr::Transmute(Box::new(Self::parse_transmute(tail, ttm.pos.clone())))
+                        CST::Ident("transmute", _) => {
+                            Expr::Transmute(Box::new(Self::parse_transmute(tail, pos.clone())))
                         }
-                        TokenTree::Ident(":") => {
-                            Expr::TypeAscript(Box::new(Self::parse_type_ascript(tail,
-                                                                                ttm.pos.clone())))
+                        CST::Ident(":", _) => {
+                            Expr::TypeAscript(Box::new(Self::parse_type_ascript(tail, pos.clone())))
                         }
-                        _ => {
-                            Expr::Call(Box::new(Self::parse_sexpr(&sexpr[0],
-                                                                  tail,
-                                                                  ttm.pos.clone())))
-                        }
+                        _ => Expr::Call(Box::new(Self::parse_sexpr(&sexpr[0], tail, pos.clone()))),
                     }
                 } else {
                     Expr::Nil(Nil {
                         typ: Type::Unknown,
-                        pos: ttm.pos.clone(),
+                        pos: pos.clone(),
                     })
                 }
             }
-            TokenTree::Ident("true") => {
+            CST::List(_, ref pos) => pos.error("Expected expression, found syntax list"),
+            CST::Ident("true", ref pos) => {
                 Expr::Bool(Bool {
                     val: true,
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
-            TokenTree::Ident("false") => {
+            CST::Ident("false", ref pos) => {
                 Expr::Bool(Bool {
                     val: false,
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
-            TokenTree::Ident(ident) => {
+            CST::Ident(ident, ref pos) => {
                 Expr::Binding(Binding {
-                    path: Path::from_str(ident, ttm.pos.clone()),
+                    path: Path::from_str(ident, pos.clone()),
                     typ: Type::Unknown,
                 })
             }
-            TokenTree::Num(num) => {
+            CST::Num(num, ref pos) => {
                 Expr::NumLit(NumLit {
                     lit: num,
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
-            TokenTree::Str(ref s) => {
+            CST::Str(ref s, ref pos) => {
                 Expr::StrLit(StrLit {
                     lit: s.clone(),
                     typ: Type::Unknown,
-                    pos: ttm.pos.clone(),
+                    pos: pos.clone(),
                 })
             }
         }
     }
 
-    fn parse_extern_const(tts: &[TokenTreeMeta<'src>],
-                          pos: &SrcPos<'src>)
-                          -> (Ident<'src>, Type<'src>) {
-        if tts.len() != 2 {
+    /// Parse a list of `CST`s as an external constant declaration
+    fn parse_extern_const(csts: &[CST<'src>], pos: &SrcPos<'src>) -> (Ident<'src>, Type<'src>) {
+        if csts.len() != 2 {
             pos.error("Invalid external constant declaration. Expected identifier and type")
         } else {
-            match tts[0].tt {
-                TokenTree::Ident(name) => {
-                    let typ = Self::parse_type(&tts[1]);
+            match csts[0] {
+                CST::Ident(name, ref id_pos) => {
+                    let typ = Self::parse_type(&csts[1]);
+
                     if !typ.is_fully_known() {
-                        tts[1].pos.error("Type of external constant must be fully specified")
+                        csts[1].pos().error("Type of external constant must be fully specified")
                     }
-                    (Ident::new(name, tts[0].pos.clone()), typ)
+                    (Ident::new(name, id_pos.clone()), typ)
                 }
-                _ => tts[0].pos.error(Expected("identifier")),
+                _ => csts[0].pos().error(Expected("identifier")),
             }
         }
     }
 
-    /// Parse TokenTree:s as a list of items
-    fn parse_items(tts: &[TokenTreeMeta<'src>])
+    /// Parse a list of `CST`s as a list of items
+    fn parse_items(csts: &[CST<'src>])
                    -> (Vec<Use<'src>>,
                        HashMap<Ident<'src>, ConstDef<'src>>,
                        HashMap<Ident<'src>, Type<'src>>,
@@ -422,48 +444,46 @@ impl<'src> Parser {
         let (mut const_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
         let mut exprs = Vec::new();
 
-        for ttm in tts {
-            match ttm.tt {
-                TokenTree::List(ref sexpr) if !sexpr.is_empty() => {
-                    match sexpr[0].tt {
-                        TokenTree::Ident("use") => {
-                            uses.push(Self::parse_use(&sexpr[1..], ttm.pos.clone()))
-                        }
-                        TokenTree::Ident("def-const") => {
-                            let (id, def) = Self::parse_const_def(&sexpr[1..], ttm.pos.clone());
+        for cst in csts {
+            match *cst {
+                CST::SExpr(ref sexpr, ref pos) if !sexpr.is_empty() => {
+                    match sexpr[0] {
+                        CST::Ident("use", _) => uses.extend(Self::parse_use(&sexpr[1..], pos)),
+                        CST::Ident("def-const", _) => {
+                            let (id, def) = Self::parse_const_def(&sexpr[1..], pos.clone());
                             let id_s = id.s;
 
                             if const_defs.insert(id, def).is_some() {
-                                ttm.pos.error(format!("Duplicate constant definition `{}`", id_s))
+                                pos.error(format!("Duplicate constant definition `{}`", id_s))
                             }
                         }
-                        TokenTree::Ident("extern-proc") => {
-                            let (id, typ) = Self::parse_extern_const(&sexpr[1..], &ttm.pos);
+                        CST::Ident("extern-proc", _) => {
+                            let (id, typ) = Self::parse_extern_const(&sexpr[1..], pos);
                             let id_s = id.s;
 
                             if extern_funcs.insert(id, typ).is_some() {
-                                ttm.pos
-                                   .error(format!("Duplicate external constant declaration `{}`",
+                                pos.error(format!("Duplicate external constant declaration `{}`",
                                                   id_s))
                             }
                         }
-                        _ => exprs.push(Self::parse_expr(ttm)),
+                        _ => exprs.push(Self::parse_expr(cst)),
                     }
                 }
-                _ => exprs.push(Self::parse_expr(ttm)),
+                _ => exprs.push(Self::parse_expr(cst)),
             }
         }
 
         (uses, const_defs, extern_funcs, exprs)
     }
 
-    fn parse_ast(tts: &[TokenTreeMeta<'src>]) -> AST<'src> {
-        let (uses, const_defs, extern_funcs, exprs) = Self::parse_items(tts);
+    /// Parse a list of `CST`s as the items of a `Module`
+    fn parse_ast(csts: &[CST<'src>]) -> Module<'src> {
+        let (uses, const_defs, extern_funcs, exprs) = Self::parse_items(csts);
 
         for expr in exprs {
             expr.pos().error("Expression at top level");
         }
-        AST {
+        Module {
             uses: uses,
             const_defs: const_defs,
             extern_funcs: extern_funcs,
@@ -471,6 +491,6 @@ impl<'src> Parser {
     }
 }
 
-pub fn parse<'src>(tts: &[TokenTreeMeta<'src>]) -> AST<'src> {
-    Parser::parse_ast(tts)
+pub fn parse<'src>(csts: &[CST<'src>]) -> Module<'src> {
+    Parser::parse_ast(csts)
 }

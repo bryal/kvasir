@@ -62,6 +62,15 @@ impl<'src> SrcPos<'src> {
         }
     }
 
+    fn to(&self, end: &SrcPos<'src>) -> SrcPos<'src> {
+        SrcPos {
+            src: self.src,
+            start: self.start,
+            end: Some(end.end.unwrap_or(end.start)),
+            in_expansion: None,
+        }
+    }
+
     pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
         if self.in_expansion.is_some() {
             // if let Some(ref mut self_exp) = self.in_expansion {

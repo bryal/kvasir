@@ -67,7 +67,7 @@ struct Inferer<'src> {
     extern_funcs: ScopeStack<Ident<'src>, Type<'src>>,
 }
 impl<'src> Inferer<'src> {
-    fn new(ast: &mut AST<'src>) -> Self {
+    fn new(ast: &mut Module<'src>) -> Self {
         let mut const_defs = ScopeStack::new();
         const_defs.push(replace(&mut ast.const_defs, HashMap::new())
                             .into_iter()
@@ -536,7 +536,7 @@ impl<'src> Inferer<'src> {
     }
 }
 
-pub fn infer_types(ast: &mut AST) {
+pub fn infer_types(ast: &mut Module) {
     let mut inferer = Inferer::new(ast);
 
     let mut main = replace(inferer.const_defs

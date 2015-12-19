@@ -13,3 +13,4 @@ lazy_static = "*"
 term = "*"
 llvm-alt = { path = "../llvm-rs" }
 llvm-sys = "*"
+itertools = "*"

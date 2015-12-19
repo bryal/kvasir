@@ -24,13 +24,13 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 use llvm::Context;
-use lib::front::ast::AST;
+use lib::front::ast::Module;
 use {Emission, FileName};
 use self::llvm::*;
 
 mod llvm;
 
-pub fn compile(ast: &AST,
+pub fn compile(ast: &Module,
                out_file_name: FileName,
                emission: Emission,
                link_libs: &[String],
