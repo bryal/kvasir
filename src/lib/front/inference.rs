@@ -104,10 +104,6 @@ impl<'src> Inferer<'src> {
         (const_defs, extern_funcs)
     }
 
-    fn get_var_type(&self, id: &str) -> Option<&Type<'src>> {
-        self.vars.iter().rev().find(|&&(ref b, _)| b == id).map(|&(_, ref t)| t)
-    }
-
     fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
         self.vars.iter_mut().rev().find(|&&mut (ref b, _)| b == id).map(|&mut (_, ref mut t)| t)
     }

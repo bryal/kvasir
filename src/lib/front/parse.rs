@@ -275,8 +275,8 @@ impl<'src> Parser {
             pos.error(ArityMis(2, csts.len()))
         }
         TypeAscript {
-            typ: Self::parse_type(&csts[0]),
-            expr: Self::parse_expr(&csts[1]),
+            typ: Self::parse_type(&csts[1]),
+            expr: Self::parse_expr(&csts[0]),
             pos: pos,
         }
     }
@@ -296,7 +296,7 @@ impl<'src> Parser {
                     pos: pos.clone(),
                 }))
             }
-            CST::List(ref list, ref pos) => pos.error("Expected expression, found syntax list"),
+            CST::List(_, ref pos) => pos.error("Expected expression, found syntax list"),
             CST::Ident(ident, ref pos) => {
                 Expr::Symbol(Symbol {
                     ident: Ident::new(ident, pos.clone()),

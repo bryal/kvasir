@@ -35,6 +35,7 @@
 //       macro is defined.
 // TODO: Use visitor pattern. A `MacroExpander` can track recurse depth and provide useful errors
 // FIXME: Extending syntax variable maps is not correct. TODO: error or something on existing entry
+// TODO: Track recursion level and have a maximum recursion depth
 
 use std::collections::{HashMap, HashSet};
 use std::iter::once;
@@ -176,7 +177,7 @@ impl<'src> MacroPattern<'src> {
     /// Construct a new `MacroPattern` from a syntax tree
     fn parse(tree: &CST<'src>, literals: &HashSet<&'src str>) -> Self {
         match *tree {
-            CST::Ident(ident, ref pos) => MacroPattern::Ident(ident),
+            CST::Ident(ident, _) => MacroPattern::Ident(ident),
             CST::SExpr(ref v, ref pos) | CST::List(ref v, ref pos) => {
                 let patts = v.iter()
                              .map(|e| MacroPattern::parse(e, literals))

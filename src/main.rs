@@ -95,13 +95,15 @@
 // TODO: Optionally enabled used of `Coerce` trait to allow implicit coercion between
 //       'coerceable' type pairs. E.g. `Int32` to `UInt8`, or `
 // TODO: Add frontends for existing laanguages to easily port projects
+// TODO: Prioritize more specialized implementations of traits over more general implementations.
+//       E.g. `(impl Drop (Vec String))` comes before
+//            `(let-type T (impl Drop (Vec T)))` which comes before
+//            `(let-type [T Iter Extend Clone] (impl Drop T))` which comes before
+//            `(let-type T (impl Drop for T any T))`
 
-#![feature(
-	non_ascii_idents,
-	box_patterns,
-	drain,
-	fs_canonicalize,
-	slice_splits)]
+#![feature(non_ascii_idents, box_patterns)]
+
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -126,16 +128,21 @@ use lib::back::compile;
 
 mod lib;
 
+/// Enum of the different output formats of the compiler
 pub enum Emission {
-    LlvmIr,
+    /// Human readable LLVM assembly language code
+    LlvmAsm,
+    /// LLVM bitcode
     LlvmBc,
+    /// Linkable object code
     Obj,
+    /// An executable binary
     Bin,
 }
 impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
     fn from(s: S) -> Emission {
         match s.as_ref() {
-            "llvm-ir" => Emission::LlvmIr,
+            "llvm-ir" => Emission::LlvmAsm,
             "llvm-bc" => Emission::LlvmBc,
             "obj" => Emission::Obj,
             _ => panic!("Unknown emission type `{}`", s),
@@ -143,12 +150,16 @@ impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
     }
 }
 
+/// A filename that is either specified by the user or an inferred default
 #[derive(Clone)]
 pub enum FileName {
+    /// A user-specified filename. Will not be modified
     Some(PathBuf),
+    /// A default filename. The extension will change depending on the emission type
     Default(PathBuf),
 }
 impl FileName {
+    /// Get the filename as a `&Path`
     pub fn path(&self) -> &Path {
         match *self {
             FileName::Some(ref p) => p,
@@ -156,6 +167,7 @@ impl FileName {
         }
     }
 
+    /// Modifies the filename by applying a function to the contained `PathBuf`.
     pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
         match self {
             FileName::Some(p) => FileName::Some(f(p)),

@@ -30,6 +30,9 @@ use lib::front::ast::{self, Expr};
 use lib::collections::ScopeStack;
 use self::CodegenErr::*;
 
+/// Passed to LLVM C-API functions to indicate the name is unimportant
+static NULL_NAME: *const i8 = &0;
+
 enum CodegenErr {
     NumParseErr(String),
     ICE(String),
@@ -52,7 +55,7 @@ impl fmt::Display for CodegenErr {
 
 pub struct Env<'src: 'ast, 'ast, 'ctx> {
     funcs: ScopeStack<&'src str, &'ctx Function>,
-    consts: ScopeStack<&'src str, (&'ctx Value, &'ast Expr<'src>)>,
+    consts: ScopeStack<&'src str, (&'ctx GlobalVariable, &'ast Expr<'src>)>,
     vars: Vec<(&'src str, &'ctx Value)>,
 }
 impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
@@ -67,6 +70,58 @@ impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
     fn get_var(&self, id: &str) -> Option<&'ctx Value> {
         self.vars.iter().cloned().rev().find(|&(b, _)| b == id).map(|(_, t)| t)
     }
+}
+
+/// Get the block in which the builder is currently inserting code
+///
+/// # Fails
+/// Returns `None` if the builder has not been positioned yet
+fn get_insert_block(builder: &Builder) -> Option<&BasicBlock> {
+    unsafe {
+        let ptr = core::LLVMGetInsertBlock(builder.into());
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr.into())
+        }
+    }
+}
+
+/// Add a constant global to a module with the given type, name and value.
+fn add_global_constant<'ctx>(module: &'ctx Module,
+                             name: &str,
+                             val: &'ctx Value)
+                             -> &'ctx GlobalVariable {
+    let glob = module.add_global_variable(name, val);
+    glob.set_constant(true);
+    glob
+}
+
+/// Build a phi node which is used together with branching to select a value depending on
+/// the predecessor of the current block
+fn build_phi<'ctx>(builder: &'ctx Builder,
+                   ty: &'ctx Type,
+                   entries: &[(&'ctx Value, &'ctx BasicBlock)])
+                   -> &'ctx Value {
+    let phi_node = unsafe { core::LLVMBuildPhi(builder.into(), ty.into(), NULL_NAME) };
+
+    for &(val, preds) in entries {
+        unsafe { core::LLVMAddIncoming(phi_node, &mut val.into(), &mut preds.into(), 1) }
+    }
+    phi_node.into()
+}
+
+/// Build an instruction that casts an integer to a pointer.
+fn build_int_to_ptr<'ctx>(builder: &'ctx Builder,
+                          val: &'ctx Value,
+                          dest: &'ctx Type)
+                          -> &'ctx Value {
+    unsafe { core::LLVMBuildIntToPtr(builder.into(), val.into(), dest.into(), NULL_NAME).into() }
+}
+
+/// Build an instruction that casts a pointer to an integer.
+fn build_ptr_to_int<'ctx>(builder: &Builder, val: &'ctx Value, dest: &'ctx Type) -> &'ctx Value {
+    unsafe { core::LLVMBuildPtrToInt(builder.into(), val.into(), dest.into(), NULL_NAME).into() }
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
@@ -90,7 +145,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
-        self.builder.get_insert_block().and_then(|bb| bb.get_parent()).and_then(CastFrom::cast)
+        get_insert_block(&self.builder).and_then(|bb| bb.get_parent())
     }
 
     fn size_of(&self, typ: &Type) -> u64 {
@@ -119,7 +174,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             PType::Basic("Bool") => Type::get::<bool>(self.context),
             PType::Basic("Float32") => Type::get::<f32>(self.context),
             PType::Basic("Float64") => Type::get::<f64>(self.context),
-            PType::Basic("Nil") => Type::new_struct(&[], false),
+            PType::Basic("Nil") => Type::new_struct(self.context, &[], false),
             PType::Construct("Proc", _) => {
                 let (params, ret) = typ.get_proc_sig().unwrap();
                 Type::new_function(self.gen_type(ret),
@@ -170,7 +225,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn gen_str(&self, s: &ast::StrLit<'src>) -> &Value {
         let bytes = s.lit.compile(self.context);
 
-        let static_array = self.module.add_global_constant("str_lit", bytes);
+        let static_array = add_global_constant(&self.module, "str_lit", bytes);
 
         // A string literal is represented as a struct with a pointer to the byte array and the size
         // { i8* @lit.bytes, i64 /* machines ptr size */ 13 }
@@ -196,7 +251,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         // while static constants and variables are loaded into registers
         env.consts
            .get(ident)
-           .map(|&(ptr, _)| ptr)
+           .map(|&(ptr, _)| &***ptr)
            .or(env.get_var(ident))
            .map(|ptr| {
                let v = self.builder.build_load(ptr);
@@ -205,7 +260,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            })
            .or(env.funcs
                   .get(ident)
-                  .map(|&func| &**func))
+                  .map(|&func| &***func))
            .unwrap_or_else(|| bnd.path.pos.error(ICE("undefined binding at compile time".into())))
     }
 
@@ -310,7 +365,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(next_br);
 
-        self.builder.build_phi(self.gen_type(typ), &phi_nodes)
+        build_phi(&self.builder, self.gen_type(typ), &phi_nodes)
     }
 
     fn gen_tail_if(&'ctx self,
@@ -345,7 +400,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         if phi_nodes.is_empty() {
             None
         } else {
-            Some(self.builder.build_phi(self.gen_type(typ), &phi_nodes))
+            Some(build_phi(&self.builder, self.gen_type(typ), &phi_nodes))
         }
     }
 
@@ -425,19 +480,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             self.builder.build_bit_cast(ll_arg, ll_target_typ)
         } else if ll_arg_typ.is_pointer() &&
            (trans.typ == ast::Type::Basic("IntPtr") || trans.typ == ast::Type::Basic("UIntPtr")) {
-            self.builder.build_ptr_to_int(ll_arg, ll_target_typ)
+            build_ptr_to_int(&self.builder, ll_arg, ll_target_typ)
         } else if ll_arg_typ.is_pointer() {
-            let ptr_int = self.builder.build_ptr_to_int(ll_arg, Type::get::<usize>(self.context));
+            let ptr_int = build_ptr_to_int(&self.builder, ll_arg, Type::get::<usize>(self.context));
 
             self.builder.build_bit_cast(ptr_int, ll_target_typ)
         } else if ll_target_typ.is_pointer() &&
            (*trans.arg.get_type() == ast::Type::Basic("IntPtr") ||
             *trans.arg.get_type() == ast::Type::Basic("UIntPtr")) {
-            self.builder.build_int_to_ptr(ll_arg, ll_target_typ)
+            build_int_to_ptr(&self.builder, ll_arg, ll_target_typ)
         } else if ll_target_typ.is_pointer() {
             let ptr_int = self.builder.build_bit_cast(ll_arg, Type::get::<usize>(self.context));
 
-            self.builder.build_int_to_ptr(ptr_int, ll_target_typ)
+            build_int_to_ptr(&self.builder, ptr_int, ll_target_typ)
         } else {
             self.builder.build_bit_cast(ll_arg, ll_target_typ)
         }
@@ -561,12 +616,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    /// Generate a global constant
     fn gen_const(&'ctx self,
                  env: &mut Env<'src, 'ast, 'ctx>,
                  id: &str,
                  def: &'ast Expr<'src>)
-                 -> &Value {
-        self.module.add_global_constant(id, self.gen_const_expr(env, def))
+                 -> &GlobalVariable {
+        add_global_constant(&self.module, id, self.gen_const_expr(env, def))
     }
 
     fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &mut Function {
@@ -630,9 +686,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 _ => {
                     // temporarily set const definitions as undefined in order to have them all
                     // available while generating the definition for each one
-                    const_decls.insert(id,
-                                       (Value::new_undef(Type::get::<()>(self.context)),
-                                        &const_def.body));
+                    let undef_glob =
+                        CastFrom::cast(Value::new_undef(Type::get::<()>(self.context)))
+                            .unwrap_or_else(|| unreachable!{});
+                    const_decls.insert(id, (undef_glob, &const_def.body));
                     undef_consts.push(id);
                 }
             }

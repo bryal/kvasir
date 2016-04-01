@@ -100,6 +100,7 @@ impl<'src> Type<'src> {
         }
     }
 
+    /// Returns whether this is an integer type
     pub fn is_int(&self) -> bool {
         match *self {
             Type::Basic("Int8") |
@@ -116,6 +117,7 @@ impl<'src> Type<'src> {
         }
     }
 
+    /// Returns whether this is a pointer type
     pub fn is_ptr(&self) -> bool {
         match *self {
             Type::Construct("RawPtr", _) => true,
@@ -455,6 +457,7 @@ pub enum Expr<'src> {
     TypeAscript(Box<TypeAscript<'src>>),
 }
 impl<'src> Expr<'src> {
+    /// Returns whether this expression is a variable definition
     pub fn is_var_def(&self) -> bool {
         if let &Expr::VarDef(_) = self {
             true

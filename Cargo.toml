@@ -11,6 +11,6 @@ getopts = "*"
 bitflags = "*"
 lazy_static = "*"
 term = "*"
-llvm-alt = { path = "../llvm-rs" }
+llvm-alt = "*"
 llvm-sys = "*"
 itertools = "*"

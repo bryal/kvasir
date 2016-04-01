@@ -50,7 +50,7 @@ pub fn compile(ast: &Module,
     codegenerator.module.verify().unwrap_or_else(|e| panic!("Verifying module failed\n{}", e));
 
     match emission {
-        Emission::LlvmIr => {
+        Emission::LlvmAsm => {
             let mut ir_file = fs::File::create(out_file_name.clone().unwrap_or_with_ext("ll"))
                                   .unwrap_or_else(|e| {
                                       panic!("Failed to open file `{}`, {}", out_file_name, e)
@@ -71,18 +71,14 @@ pub fn compile(ast: &Module,
         Emission::Obj => {
             codegenerator.module
                          .compile(&out_file_name.clone().unwrap_or_with_ext("o"), 0)
-                         .expect("Failed to spawn compilation process")
-                         .wait()
-                         .expect("Compilation with llc failed");
+                         .unwrap();
         }
         Emission::Bin => {
             let obj_path = out_file_name.path().with_extension("o");
 
             codegenerator.module
                          .compile(&obj_path, 0)
-                         .expect("Failed to spawn compilation process")
-                         .wait()
-                         .expect("Compilation with llc failed");
+                         .unwrap();
 
             let mut clang = Command::new("clang");
             clang.arg(obj_path).args(&["-o", &out_file_name.path().to_string_lossy()]);
