@@ -1,17 +1,26 @@
+// TODO: Compiler plugins.
+//       Fucntions marked with a specific attribute are compiled before the rest of the program,
+//       and can be executed in a step right after parsing. The functions take the current
+//       compiler state as an argument, and can manipulate the AST as well as attributes and such
 
 use std::fmt::{self, Display, Debug};
 use std::cmp::min;
-use std::process::exit;
+use std::process;
 use std::iter::repeat;
-use term;
+use term::{self, color};
 
+pub mod attribute;
 pub mod lex;
 pub mod macro_;
 pub mod ast;
 pub mod parse;
 pub mod inference;
 
-// All results from terminal related actions are ignored
+/// Exit compilation
+fn exit() -> ! {
+    println!("\nError occured during compilation. Exiting\n");
+    process::exit(0)
+}
 
 /// A position or interval in a string of source code
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -56,8 +65,8 @@ impl<'src> SrcPos<'src> {
             // Not sure whether this should be an error
             // panic!("Internal Compiler Error: add_expansion_site: \
             //         Tried to add expansion site `{:?}` to pos `{:?}`",
-            // 	exp,
-            // 	self);
+            //        exp,
+            //        self);
             // self_exp.add_expansion_site(exp);
         } else {
             self.in_expansion = Some(Box::new(exp.clone()));
@@ -77,9 +86,10 @@ impl<'src> SrcPos<'src> {
             }
             line_start += line_len;
         }
-        panic!("Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): {}",
-               self,
-               self.src.len())
+        unreachable!("Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): \
+                      {}",
+                     self,
+                     self.src.len())
     }
 
     fn print_expansion(&self, t: &mut term::StdoutTerminal) {
@@ -91,13 +101,13 @@ impl<'src> SrcPos<'src> {
 
         print!("{}:{}: ", row, col);
 
-        t.fg(term::color::BRIGHT_MAGENTA).ok();
+        t.fg(color::BRIGHT_MAGENTA).ok();
         println!("In expansion");
         t.reset().ok();
 
         println!("{}: {}", row, line);
 
-        t.fg(term::color::BRIGHT_MAGENTA).ok();
+        t.fg(color::BRIGHT_MAGENTA).ok();
         println!("{}^{}",
                  repeat(' ')
                      .take(col + (row as f32).log10() as usize + 3)
@@ -109,8 +119,21 @@ impl<'src> SrcPos<'src> {
         t.reset().ok();
     }
 
-    /// Print an error together with information regarding position in source, and then exit.
-    pub fn error<E: Display>(&self, e: E) -> ! {
+    /// Prints a message along with a marked section of the source where the error occured
+    ///
+    /// # Examples
+    /// ```ignore
+    /// pos.message("Unexpected string", "Error", color::BRIGHT_RED)
+    /// ```
+    ///
+    /// The preceeding expression might, for a certain `pos` produce the following output
+    ///
+    /// ```text
+    /// 84:4: Error: Unexpected string
+    /// 84: let "foo" = 3
+    ///         ^~~~
+    /// ```
+    fn message<E: Display>(&self, kind: &str, color: color::Color, msg: E) {
         let (line, line_len, row, col) = self.line_len_row_col();
         let mut t = term::stdout().expect("Could not acquire access to stdout");
 
@@ -120,46 +143,14 @@ impl<'src> SrcPos<'src> {
 
         print!("{}:{}: ", row, col);
 
-        t.fg(term::color::BRIGHT_RED).ok();
-        print!("Error: ");
-        t.reset().ok();
-
-        println!("{}", e);
-        println!("{}: {}", row, line);
-
-        t.fg(term::color::BRIGHT_RED).ok();
-        println!("{}^{}",
-                 repeat(' ')
-                     .take(col + (row as f32).log10() as usize + 3)
-                     .collect::<String>(),
-                 repeat('~')
-                     .take(min(self.end.unwrap_or(self.start + 1) - self.start - 1,
-                               line_len - col))
-                     .collect::<String>());
-        t.reset().ok();
-
-        println!("\nError occured during compilation. Exiting\n");
-        exit(0)
-    }
-
-    pub fn warn<S: Display>(&self, msg: S) {
-        let (line, line_len, row, col) = self.line_len_row_col();
-        let mut t = term::stdout().expect("Could not acquire access to stdout");
-
-        if let Some(ref exp) = self.in_expansion {
-            exp.print_expansion(&mut *t);
-        }
-
-        print!("{}:{}: ", row, col);
-
-        t.fg(term::color::BRIGHT_YELLOW).ok();
-        print!("Warning: ");
+        t.fg(color).ok();
+        print!("{}: ", kind);
         t.reset().ok();
 
         println!("{}", msg);
         println!("{}: {}", row, line);
 
-        t.fg(term::color::BRIGHT_YELLOW).ok();
+        t.fg(color).ok();
         println!("{}^{}",
                  repeat(' ')
                      .take(col + (row as f32).log10() as usize + 3)
@@ -169,6 +160,46 @@ impl<'src> SrcPos<'src> {
                                line_len - col))
                      .collect::<String>());
         t.reset().ok();
+    }
+
+    /// Prints an error message along with a marked section of the source where the error occured
+    ///
+    /// # Examples
+    /// ```ignore
+    /// pos.multi_error("Unexpected string")
+    /// ```
+    ///
+    /// The preceeding expression might, for a certain `pos` produce the following output
+    ///
+    /// ```text
+    /// 84:4: Error: Unexpected string
+    /// 84: let "foo" = 3
+    ///         ^~~~
+    /// ```
+    pub fn error<E: Display>(&self, msg: E) -> ! {
+        self.message(msg, "Error", color::BRIGHT_RED);
+    }
+
+    /// Like `SrcPos::error`, but exits after message has been printed
+    pub fn error_exit<E: Display>(&self, msg: E) -> ! {
+        self.error(msg);
+
+        exit()
+    }
+
+    /// Like `SrcPos::error`, but text is yellow and kind is "Warning"
+    pub fn warn<S: Display>(&self, msg: S) {
+        self.message(msg, "Warning", color::BRIGHT_YELLOW);
+    }
+
+    /// Like `SrcPos::error`, but text is green and kind is "Note"
+    pub fn note<S: Display>(&self, msg: S) {
+        self.message(msg, "Note", color::BRIGHT_GREEN);
+    }
+
+    /// Like `SrcPos::error`, but text is cyan and kind is "Help"
+    pub fn help<S: Display>(&self, msg: S) {
+        self.message(msg, "Help", color::BRIGHT_CYAN);
     }
 }
 impl<'src> Debug for SrcPos<'src> {
@@ -183,7 +214,7 @@ impl<'src> Debug for SrcPos<'src> {
 pub fn error<E: Display>(e: E) -> ! {
     let mut t = term::stdout().expect("Could not acquire access to stdout");
 
-    t.fg(term::color::BRIGHT_RED).ok();
+    t.fg(color::BRIGHT_RED).ok();
     print!("Error: ");
     t.reset().ok();
 

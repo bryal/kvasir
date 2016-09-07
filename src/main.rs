@@ -78,6 +78,8 @@
 //            `(let-type T (impl Drop (Vec T)))` which comes before
 //            `(let-type [T Iter Extend Clone] (impl Drop T))` which comes before
 //            `(let-type T (impl Drop for T any T))`
+// TODO: Base macro system on pure functions that has syntax trees as input and output.
+//       This would require some kind of interpretation in order to execute code at compile time
 
 #![feature(non_ascii_idents, box_patterns)]
 

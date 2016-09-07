@@ -98,7 +98,7 @@ impl<'src> Inferer<'src> {
             nil.typ = type_nil.clone();
             type_nil
         } else {
-            nil.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+            nil.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
         }
     }
 
@@ -121,8 +121,8 @@ impl<'src> Inferer<'src> {
                 expected_ty.clone()
             }
             _ => {
-                lit.pos.error(format!("Type mismatch. Expected `{}`, found numeric literal",
-                                      expected_ty))
+                lit.pos.error_exit(format!("Type mismatch. Expected `{}`, found numeric literal",
+                                           expected_ty))
             }
         }
     }
@@ -132,7 +132,7 @@ impl<'src> Inferer<'src> {
             lit.typ = TYPE_BYTE_SLICE.clone();
             TYPE_BYTE_SLICE.clone()
         } else {
-            lit.pos.error(TypeMis(expected_ty, &TYPE_BYTE_SLICE))
+            lit.pos.error_exit(TypeMis(expected_ty, &TYPE_BYTE_SLICE))
         }
     }
 
@@ -141,7 +141,7 @@ impl<'src> Inferer<'src> {
             b.typ = TYPE_BOOL.clone();
             TYPE_BOOL.clone()
         } else {
-            b.pos.error(TypeMis(expected_ty, &TYPE_BOOL))
+            b.pos.error_exit(TypeMis(expected_ty, &TYPE_BOOL))
         }
     }
 
@@ -159,7 +159,7 @@ impl<'src> Inferer<'src> {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.path.pos.error(TypeMis(expected_ty, &extern_typ))
+                bnd.path.pos.error_exit(TypeMis(expected_ty, &extern_typ))
             }
         } else if let Some(height) = self.const_defs.get_height(ident) {
             // Binding is a constant. Do inference
@@ -191,10 +191,10 @@ impl<'src> Inferer<'src> {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.path.pos.error(TypeMis(expected_ty, var_ty))
+                bnd.path.pos.error_exit(TypeMis(expected_ty, var_ty))
             }
         } else {
-            bnd.path.pos.error(format!("Unresolved path `{}`", ident))
+            bnd.path.pos.error_exit(format!("Unresolved path `{}`", ident))
         }
     }
 
@@ -210,15 +210,15 @@ impl<'src> Inferer<'src> {
                     param_tys.iter().map(Cow::Borrowed).collect()
                 }
                 Some((param_tys, _)) => {
-                    call.pos.error(format!("Arity mismatch. Expected {}, found {}",
-                                           param_tys.len(),
-                                           call.args.len()))
+                    call.pos.error_exit(format!("Arity mismatch. Expected {}, found {}",
+                                                param_tys.len(),
+                                                call.args.len()))
                 }
                 None => {
                     call.proced
                         .pos()
-                        .error(TypeMis(&Type::new_proc(vec![Type::Unknown], Type::Unknown),
-                                       &proc_type))
+                        .error_exit(TypeMis(&Type::new_proc(vec![Type::Unknown], Type::Unknown),
+                                            &proc_type))
                 }
             }
         } else {
@@ -328,7 +328,7 @@ impl<'src> Inferer<'src> {
                 self.infer_if(cond, &inferred)
             }
         } else {
-            cond.pos.error(ArmsDiffer(&cons_typ, &alt_typ))
+            cond.pos.error_exit(ArmsDiffer(&cons_typ, &alt_typ))
         }
     }
 
@@ -336,7 +336,7 @@ impl<'src> Inferer<'src> {
         for (param, expected_param) in lam.params.iter_mut().zip(expected_params) {
             match param.typ.infer_by(expected_param) {
                 Some(inferred) => param.typ = inferred,
-                None => param.ident.pos.error(TypeMis(expected_param, &param.typ)),
+                None => param.ident.pos.error_exit(TypeMis(expected_param, &param.typ)),
             }
         }
     }
@@ -344,13 +344,13 @@ impl<'src> Inferer<'src> {
     fn infer_lambda(&mut self, lam: &mut Lambda<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         let (expected_params, expected_body) = match expected_ty.get_proc_sig() {
             Some((params, _)) if params.len() != lam.params.len() => {
-                lam.pos.error(TypeMis(expected_ty, &lam.get_type()))
+                lam.pos.error_exit(TypeMis(expected_ty, &lam.get_type()))
             }
             Some((params, body)) => (params.iter().collect(), body),
             None if *expected_ty == Type::Unknown => {
                 (vec![expected_ty; lam.params.len()], expected_ty)
             }
-            None => lam.pos.error(TypeMis(expected_ty, &lam.get_type())),
+            None => lam.pos.error_exit(TypeMis(expected_ty, &lam.get_type())),
         };
 
         // Own type is `Unknown` if no type has been inferred yet, or none was inferable
@@ -365,7 +365,7 @@ impl<'src> Inferer<'src> {
                 }
             } else {
                 // Own type and expected type are not compatible. Type mismatch
-                lam.pos.error(TypeMis(expected_ty, &lam_typ));
+                lam.pos.error_exit(TypeMis(expected_ty, &lam_typ));
             }
         }
 
@@ -395,7 +395,7 @@ impl<'src> Inferer<'src> {
             def.typ = inferred.clone();
             inferred
         } else {
-            def.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+            def.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
         }
     }
 
@@ -405,7 +405,7 @@ impl<'src> Inferer<'src> {
             self.infer_expr(&mut assign.lhs, &rhs_typ);
             inferred
         } else {
-            assign.pos.error(TypeMis(expected_ty, &TYPE_NIL))
+            assign.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
         }
     }
 
@@ -414,7 +414,7 @@ impl<'src> Inferer<'src> {
             symbol.typ = inferred.clone();
             inferred
         } else {
-            symbol.ident.pos.error(TypeMis(expected_ty, &TYPE_SYMBOL))
+            symbol.ident.pos.error_exit(TypeMis(expected_ty, &TYPE_SYMBOL))
         }
     }
 
@@ -441,7 +441,7 @@ impl<'src> Inferer<'src> {
 
             &trans.typ
         } else {
-            trans.pos.error(TypeMis(expected_ty, &trans.typ))
+            trans.pos.error_exit(TypeMis(expected_ty, &trans.typ))
         }
     }
 
@@ -452,7 +452,7 @@ impl<'src> Inferer<'src> {
         let (expected_ty2, inner_expr) = if let Expr::TypeAscript(ref mut ascr) = *expr {
             let expected_ty2 = expected_ty.infer_by(&ascr.typ)
                                           .unwrap_or_else(|| {
-                                              ascr.pos.error(TypeMis(expected_ty, &ascr.typ))
+                                              ascr.pos.error_exit(TypeMis(expected_ty, &ascr.typ))
                                           });
 
             (expected_ty2, &mut ascr.expr as *mut _)
@@ -483,7 +483,7 @@ impl<'src> Inferer<'src> {
                     expected_ty = Cow::Owned(inferred)
                 } else {
                     // Own type and expected type are not compatible. Type mismatch
-                    expr.pos().error(TypeMis(&expected_ty, &expr_typ));
+                    expr.pos().error_exit(TypeMis(&expected_ty, &expr_typ));
                 }
             }
         }

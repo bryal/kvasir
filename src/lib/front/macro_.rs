@@ -103,7 +103,7 @@ fn flatten<'src>(pattern: &CST<'src>,
         }
         None => {
             pattern.pos()
-                   .error("Can't flatten a pattern that contains no sequence syntax variables")
+                   .error_exit("Can't flatten a pattern that contains no sequence syntax variables")
         }
     }
 }
@@ -118,7 +118,7 @@ fn subst_syntax_vars<'src>(tree: &CST<'src>,
             if let CST::Ident("macro-quote", ref pos) = v[0] {
                 // It's an escape
                 if v.len() != 2 {
-                    pos.error(format!("Arity mismatch. Expected 1, found {}", v.len()));
+                    pos.error_exit(format!("Arity mismatch. Expected 1, found {}", v.len()));
                 }
                 v[1].clone()
             } else {
@@ -169,10 +169,10 @@ impl<'src> MacroPattern<'src> {
                     }
 
                 } else {
-                    pos.error("Ambiguous pattern")
+                    pos.error_exit("Ambiguous pattern")
                 }
             }
-            _ => tree.pos().error("Expected list or ident"),
+            _ => tree.pos().error_exit("Expected list or ident"),
         }
     }
 
@@ -512,11 +512,11 @@ impl<'src> Macro<'src> {
                 return expand_cst_macros(&template, macros);
             }
         }
-        pos.error(format!("No rule matched the argument CSTs `{}`, in macro invocation",
-                          args.iter()
-                              .map(|e| e.to_string())
-                              .intersperse(" ".into())
-                              .collect::<String>()))
+        pos.error_exit(format!("No rule matched the argument CSTs `{}`, in macro invocation",
+                               args.iter()
+                                   .map(|e| e.to_string())
+                                   .intersperse(" ".into())
+                                   .collect::<String>()))
     }
 }
 
@@ -528,12 +528,12 @@ fn parse_syntax_literals<'src>(cst: &CST<'src>) -> HashSet<&'src str> {
                 .map(|item| {
                     match *item {
                         CST::Ident(lit, _) => lit,
-                        _ => item.pos().error("Expected literal identifier"),
+                        _ => item.pos().error_exit("Expected literal identifier"),
                     }
                 })
                 .collect()
         }
-        _ => cst.pos().error("Expected list"),
+        _ => cst.pos().error_exit("Expected list"),
     }
 }
 
@@ -549,10 +549,10 @@ fn parse_syntax_rules<'src>(rules_parts: &[CST<'src>],
             if let (Some(pattern), Some(template)) = (rule.get(0), rule.get(1)) {
                 rules.push((MacroPattern::parse(pattern, literals), template.clone()))
             } else {
-                pos.error("Expected pattern and template")
+                pos.error_exit("Expected pattern and template")
             }
         } else {
-            rule_parts.pos().error("Expected list")
+            rule_parts.pos().error_exit("Expected list")
         }
     }
 
@@ -566,14 +566,14 @@ fn define_macro<'src>(parts: &[CST<'src>],
     let name = if let Some(name_tree) = parts.get(0) {
         match *name_tree {
             CST::Ident(name, _) => name,
-            _ => name_tree.pos().error("Expected identifier"),
+            _ => name_tree.pos().error_exit("Expected identifier"),
         }
     } else {
-        pos.error("Name missing in macro definition")
+        pos.error_exit("Name missing in macro definition")
     };
 
     let literals = parse_syntax_literals(parts.get(1).unwrap_or_else(|| {
-        pos.error("Literals list missing in macro definition")
+        pos.error_exit("Literals list missing in macro definition")
     }));
 
     let rules = parse_syntax_rules(&parts[2..], &literals);
@@ -584,7 +584,7 @@ fn define_macro<'src>(parts: &[CST<'src>],
                          rules: rules,
                      })
              .is_some() {
-        pos.error(format!("Duplicate definition of macro `{}`", name))
+        pos.error_exit(format!("Duplicate definition of macro `{}`", name))
     }
 }
 

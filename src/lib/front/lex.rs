@@ -95,17 +95,17 @@ fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
                     if let Some(u) = unescape_char(e) {
                         s.push(u)
                     } else {
-                        SrcPos::new_pos(src, start + 1 + j).error(UnknownEscape)
+                        SrcPos::new_pos(src, start + 1 + j).error_exit(UnknownEscape)
                     }
                 } else {
-                    SrcPos::new_pos(src, start + 1 + i).error(InvalidEscapeSeq)
+                    SrcPos::new_pos(src, start + 1 + i).error_exit(InvalidEscapeSeq)
                 }
             }
             '"' => return (Token::Str(Cow::Owned(s)), i + 2),
             _ => s.push(c),
         }
     }
-    SrcPos::new_pos(src, start).error(UntermStr)
+    SrcPos::new_pos(src, start).error_exit(UntermStr)
 }
 
 /// Tokenize the raw string literal in `src` at `start`.
@@ -117,10 +117,10 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
     if let Some(first_after_octos) = str_src[n_delim_octos..].chars().next() {
         if first_after_octos != '"' {
             SrcPos::new_pos(src, start + 1 + n_delim_octos)
-                .error(InvalidRawStrDelim(first_after_octos))
+                .error_exit(InvalidRawStrDelim(first_after_octos))
         }
     } else {
-        SrcPos::new_interval(src, start, start + 1 + n_delim_octos).error(UntermRawStr)
+        SrcPos::new_interval(src, start, start + 1 + n_delim_octos).error_exit(UntermRawStr)
     }
 
     let delim_octos = &str_src[..n_delim_octos];
@@ -134,7 +134,7 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
             return (Token::Str(Cow::Borrowed(&str_body_src[..i])), literal_len);
         }
     }
-    SrcPos::new_pos(src, start).error(UntermRawStr)
+    SrcPos::new_pos(src, start).error_exit(UntermRawStr)
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
@@ -164,7 +164,7 @@ fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
             prev_was_e = false;
         }
     }
-    SrcPos::new_pos(src, start).error(InvalidNum)
+    SrcPos::new_pos(src, start).error_exit(InvalidNum)
 }
 
 /// Whether `c` is a general delimiter, i.e. it delimits identifiers and numeric literals and such
@@ -196,7 +196,7 @@ fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
             break;
         }
     }
-    SrcPos::new_pos(src, start).error(InvalidIdent)
+    SrcPos::new_pos(src, start).error_exit(InvalidIdent)
 }
 
 /// An iterator over the `Token`s, and their positions, of some source code
@@ -242,7 +242,7 @@ impl<'src> Iterator for Tokens<'src> {
                 }
                 _ if c.is_numeric() => tokenize_num_lit(self.src, i),
                 _ if is_ident_char(c) => tokenize_ident(self.src, i),
-                _ => SrcPos::new_pos(self.src, i).error(Unexpected("character")),
+                _ => SrcPos::new_pos(self.src, i).error_exit(Unexpected("character")),
             };
 
             self.pos = i + len;
@@ -323,12 +323,12 @@ impl<'src> CST<'src> {
             Token::Quote => {
                 CST::SExpr(vec![CST::Ident("quote", pos.clone()),
                                 CST::from_token(nexts.next().unwrap_or_else(|| {
-                                                    pos.error(Unexpected("quote"))
+                                                    pos.error_exit(Unexpected("quote"))
                                                 }),
                                                 nexts)],
                            pos)
             }
-            _ => pos.error(Unexpected("token")),
+            _ => pos.error_exit(Unexpected("token")),
         }
     }
 
@@ -389,7 +389,7 @@ fn tokens_to_trees_until<'src>(tokens: &mut Tokens<'src>,
     }
     match start {
         None => (trees, None),
-        Some(pos) => pos.error(UndelimItem),
+        Some(pos) => pos.error_exit(UndelimItem),
     }
 }
 

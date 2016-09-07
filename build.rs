@@ -1,3 +1,3 @@
 fn main() {
-	println!("cargo:rustc-link-lib=dylib=ffi");
+    println!("cargo:rustc-link-lib=dylib=ffi");
 }

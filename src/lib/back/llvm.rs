@@ -33,14 +33,14 @@ impl fmt::Display for CodegenErr {
 
 pub struct Env<'src: 'ast, 'ast, 'ctx> {
     funcs: ScopeStack<&'src str, &'ctx Function>,
-    consts: ScopeStack<&'src str, (&'ctx GlobalVariable, &'ast Expr<'src>)>,
+    statics: ScopeStack<&'src str, (&'ctx GlobalVariable, &'ast Expr<'src>)>,
     vars: Vec<(&'src str, &'ctx Value)>,
 }
 impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
     pub fn new() -> Self {
         Env {
             funcs: ScopeStack::new(),
-            consts: ScopeStack::new(),
+            statics: ScopeStack::new(),
             vars: Vec::new(),
         }
     }
@@ -65,11 +65,11 @@ fn get_insert_block(builder: &Builder) -> Option<&BasicBlock> {
     }
 }
 
-/// Add a constant global to a module with the given type, name and value.
-fn add_global_constant<'ctx>(module: &'ctx Module,
-                             name: &str,
-                             val: &'ctx Value)
-                             -> &'ctx GlobalVariable {
+/// Add a static (global variable) to a module with the given type, name and value.
+fn add_constant_static<'ctx>(module: &'ctx Module,
+                                   name: &str,
+                                   val: &'ctx Value)
+                                   -> &'ctx GlobalVariable {
     let glob = module.add_global_variable(name, val);
     glob.set_constant(true);
     glob
@@ -170,7 +170,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     {
         lit.parse::<I>()
            .map(|n| n.compile(self.context))
-           .unwrap_or_else(|_| pos.error(CodegenErr::num_parse_err(typ)))
+           .unwrap_or_else(|_| pos.error_exit(CodegenErr::num_parse_err(typ)))
     }
 
     fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
@@ -188,7 +188,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Basic("Bool") => CodeGenerator::parse_gen_lit::<bool>,
             ast::Type::Basic("Float32") => CodeGenerator::parse_gen_lit::<f32>,
             ast::Type::Basic("Float64") => CodeGenerator::parse_gen_lit::<f64>,
-            _ => num.pos.error(ICE("type of numeric literal is not numeric".into())),
+            _ => num.pos.error_exit(ICE("type of numeric literal is not numeric".into())),
         };
         parser(self, &num.lit, &num.typ, &num.pos)
     }
@@ -203,7 +203,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn gen_str(&self, s: &ast::StrLit<'src>) -> &Value {
         let bytes = s.lit.compile(self.context);
 
-        let static_array = add_global_constant(&self.module, "str_lit", bytes);
+        let static_array = add_constant_static(&self.module, "str_lit", bytes);
 
         // A string literal is represented as a struct with a pointer to the byte array and the size
         // { i8* @lit.bytes, i64 /* machines ptr size */ 13 }
@@ -226,8 +226,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let ident = bnd.path.as_ident().expect("path was not ident");
 
         // Function pointers are returned as-is,
-        // while static constants and variables are loaded into registers
-        env.consts
+        // while statics and variables are loaded into registers
+        env.statics
            .get(ident)
            .map(|&(ptr, _)| &***ptr)
            .or(env.get_var(ident))
@@ -239,7 +239,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            .or(env.funcs
                   .get(ident)
                   .map(|&func| &***func))
-           .unwrap_or_else(|| bnd.path.pos.error(ICE("undefined binding at compile time".into())))
+           .unwrap_or_else(|| {
+               bnd.path.pos.error_exit(ICE("undefined binding at compile time".into()))
+           })
     }
 
     /// Generates IR code for a procedure call. If the call is in a tail position and the call
@@ -253,9 +255,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                                     .unwrap_or_else(|| {
                                         call.proced
                                             .pos()
-                                            .error(ICE("expression in procedure pos is not a \
-                                                        function"
-                                                           .into()))
+                                            .error_exit(ICE("expression in procedure pos is not \
+                                                             a function"
+                                                                .into()))
                                     });
 
         let mut args = Vec::new();
@@ -280,7 +282,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                               -> T
         where F: Fn(&'ctx Self, &mut Env<'src, 'ast, 'ctx>, &'ast Expr<'src>) -> T
     {
-        self.gen_const_defs(env, &block.const_defs);
+        self.gen_static_defs(env, &block.static_defs);
 
         let old_n_vars = env.vars.len();
 
@@ -294,7 +296,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         env.vars.truncate(old_n_vars);
         env.funcs.pop();
-        env.consts.pop();
+        env.statics.pop();
 
         r
     }
@@ -412,10 +414,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 bnd.path
                    .as_ident()
                    .and_then(|id| env.get_var(id))
-                   .unwrap_or_else(|| expr.pos().error("Invalid assignee expression"))
+                   .unwrap_or_else(|| expr.pos().error_exit("Invalid assignee expression"))
             }
             Expr::Deref(ref deref) => self.gen_expr(env, &deref.r),
-            _ => expr.pos().error("Invalid assignee expression"),
+            _ => expr.pos().error_exit("Invalid assignee expression"),
         }
     }
 
@@ -444,12 +446,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let (arg_size, target_size) = (self.size_of(ll_arg_typ), self.size_of(ll_target_typ));
 
         if arg_size != target_size {
-            trans.pos.error(format!("Transmute to type of different size: {} ({} bytes) to {} \
-                                     ({} bytes)",
-                                    trans.arg.get_type(),
-                                    arg_size,
-                                    trans.typ,
-                                    target_size))
+            trans.pos.error_exit(format!("Transmute to type of different size: {} ({} bytes) to \
+                                          {} ({} bytes)",
+                                         trans.arg.get_type(),
+                                         arg_size,
+                                         trans.typ,
+                                         target_size))
         }
 
         if ll_arg_typ == ll_target_typ {
@@ -504,7 +506,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    /// Generate llvm code for an expression and return its llvm Value.
+    /// Generate LLVM IR for an expression and return its llvm Value.
     fn gen_tail_expr(&'ctx self,
                      env: &mut Env<'src, 'ast, 'ctx>,
                      expr: &'ast Expr<'src>)
@@ -520,17 +522,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    /// Generate LLVM IR for a binding to a constant
     fn gen_eval_const_binding(&'ctx self,
                               env: &mut Env<'src, 'ast, 'ctx>,
                               bnd: &ast::Binding<'src>)
                               -> &Value {
         let ident = bnd.path.as_ident().expect("path was not ident");
 
-        env.consts
+        env.statics
            .get(ident)
            .cloned()
            .map(|(_, e)| self.gen_const_expr(env, e))
-           .unwrap_or_else(|| bnd.path.pos.error("binding does not point to constant"))
+           .unwrap_or_else(|| bnd.path.pos.error_exit("binding does not point to constant"))
     }
 
 
@@ -572,9 +575,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan)
             }
             Expr::Binding(ref bnd) => {
-                bnd.path.pos.error("Binding does not point to a constant function")
+                bnd.path.pos.error_exit("Binding does not point to a constant function")
             }
-            _ => call.pos.error("Non-constant function in constant expression"),
+            _ => call.pos.error_exit("Non-constant function in constant expression"),
         }
     }
 
@@ -590,17 +593,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Bool(ref b) => self.gen_bool(b),
             Expr::Binding(ref bnd) => self.gen_eval_const_binding(env, bnd),
             Expr::Call(ref call) => self.gen_const_call(env, call),
-            _ => expr.pos().error("Expression cannot be used in a constant expression"),
+            _ => expr.pos().error_exit("Expression cannot be used in a constant expression"),
         }
     }
 
-    /// Generate a global constant
-    fn gen_const(&'ctx self,
-                 env: &mut Env<'src, 'ast, 'ctx>,
-                 id: &str,
-                 def: &'ast Expr<'src>)
-                 -> &GlobalVariable {
-        add_global_constant(&self.module, id, self.gen_const_expr(env, def))
+    /// Generate a static
+    fn gen_static(&'ctx self,
+                  env: &mut Env<'src, 'ast, 'ctx>,
+                  id: &str,
+                  def: &'ast Expr<'src>)
+                  -> &GlobalVariable {
+        Add_constant_static(&self.module, id, self.gen_const_expr(env, def))
     }
 
     fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &mut Function {
@@ -647,40 +650,40 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         env.funcs.push(func_decls);
     }
 
-    pub fn gen_const_defs(&'ctx self,
-                          env: &mut Env<'src, 'ast, 'ctx>,
-                          const_defs: &'ast HashMap<ast::Ident<'src>, ast::ConstDef<'src>>) {
-        let (mut func_decls, mut const_decls) = (HashMap::new(), HashMap::new());
+    pub fn gen_static_defs(&'ctx self,
+                           env: &mut Env<'src, 'ast, 'ctx>,
+                           static_defs: &'ast HashMap<ast::Ident<'src>, ast::ConstDef<'src>>) {
+        let (mut func_decls, mut static_decls) = (HashMap::new(), HashMap::new());
         // function declarations that are to be defined
-        let (mut undef_funcs, mut undef_consts) = (Vec::new(), Vec::new());
+        let (mut undef_funcs, mut undef_statics) = (Vec::new(), Vec::new());
 
-        for (id, const_def) in const_defs.iter().map(|(id, const_def)| (id.s, const_def)) {
-            match const_def.body {
+        for (id, static_def) in static_defs.iter().map(|(id, static_def)| (id.s, static_def)) {
+            match static_def.body {
                 Expr::Lambda(ref lam) => {
                     let func: &_ = self.gen_func_decl(id, &lam.get_type());
                     func_decls.insert(id, func);
                     undef_funcs.push((func, lam));
                 }
                 _ => {
-                    // temporarily set const definitions as undefined in order to have them all
+                    // temporarily set static definitions as undefined in order to have them all
                     // available while generating the definition for each one
                     let undef_glob =
                         CastFrom::cast(Value::new_undef(Type::get::<()>(self.context)))
                             .unwrap_or_else(|| unreachable!{});
-                    const_decls.insert(id, (undef_glob, &const_def.body));
-                    undef_consts.push(id);
+                    static_decls.insert(id, (undef_glob, &static_def.body));
+                    undef_statics.push(id);
                 }
             }
         }
 
-        env.consts.push(const_decls);
+        env.statics.push(static_decls);
 
-        for id in undef_consts {
-            let def = env.consts.get(id).unwrap().1;
-            let const_val = self.gen_const(env, id, def);
-            let undef = &mut env.consts.get_mut(id).unwrap().0;
+        for id in undef_statics {
+            let def = env.statics.get(id).unwrap().1;
+            let static_val = self.gen_static(env, id, def);
+            let undef = &mut env.statics.get_mut(id).unwrap().0;
 
-            *undef = const_val;
+            *undef = static_val;
         }
 
         env.funcs.push(func_decls);
