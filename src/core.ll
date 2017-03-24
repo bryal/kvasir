@@ -376,7 +376,7 @@ entry:
 
 define double @neg-float64(double) {
 entry:
-  %1 = fsub double 0, %0
+  %1 = fsub double 0.0, %0
   ret double %1
 }
 
@@ -444,7 +444,7 @@ entry:
 
 define float @neg-float32(float) {
 entry:
-  %1 = fsub float 0, %0
+  %1 = fsub float 0.0, %0
   ret float %1
 }
 

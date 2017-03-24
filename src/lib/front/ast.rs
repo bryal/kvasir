@@ -1,10 +1,8 @@
-use std::fmt;
-use std::collections::{HashMap, HashSet};
-use std::hash;
+use super::SrcPos;
 use std::borrow::{self, Cow};
-use super::lex::CST;
-use super::{SrcPos, attribute};
-use super::attribute::Attribute;
+use std::collections::HashMap;
+use std::fmt;
+use std::hash;
 
 lazy_static!{
     pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
@@ -66,9 +64,7 @@ impl<'src> Type<'src> {
             (_, _) if self == by => Some(self.clone()),
             (_, &Type::Unknown) => Some(self.clone()),
             (&Type::Unknown, _) => Some(by.clone()),
-            (&Type::Construct(ref s1, ref as1),
-             &Type::Construct(ref s2, ref as2))
-                if s1 == s2 => {
+            (&Type::Construct(ref s1, ref as1), &Type::Construct(ref s2, ref as2)) if s1 == s2 => {
                 as1.iter()
                    .zip(as2.iter())
                    .map(|(a1, a2)| a1.infer_by(a2))
@@ -76,31 +72,6 @@ impl<'src> Type<'src> {
                    .map(|args| Type::Construct(s1.clone(), args))
             }
             (_, _) => None,
-        }
-    }
-
-    /// Returns whether this is an integer type
-    pub fn is_int(&self) -> bool {
-        match *self {
-            Type::Basic("Int8") |
-            Type::Basic("Int16") |
-            Type::Basic("Int32") |
-            Type::Basic("Int64") |
-            Type::Basic("IntPtr") |
-            Type::Basic("UInt8") |
-            Type::Basic("UInt16") |
-            Type::Basic("UInt32") |
-            Type::Basic("UInt64") |
-            Type::Basic("UIntPtr") => true,
-            _ => false,
-        }
-    }
-
-    /// Returns whether this is a pointer type
-    pub fn is_ptr(&self) -> bool {
-        match *self {
-            Type::Construct("RawPtr", _) => true,
-            _ => false,
         }
     }
 }
@@ -187,11 +158,7 @@ impl<'src> Path<'src> {
 
     pub fn to_string(&self) -> String {
         format!("{}{}{}",
-                if self.is_absolute() {
-                    "\\"
-                } else {
-                    ""
-                },
+                if self.is_absolute() { "\\" } else { "" },
                 self.parts[0],
                 self.parts[1..].iter().fold(String::new(), |acc, p| acc + "\\" + p))
     }
@@ -210,12 +177,10 @@ impl<'src> Path<'src> {
 
         Path {
             parts: path_str.split('\\')
-                           .map(|part| {
-                               if part == "" {
-                                   pos.error_exit("Invalid path")
-                               } else {
-                                   part
-                               }
+                           .map(|part| if part == "" {
+                               pos.error_exit("Invalid path")
+                           } else {
+                               part
                            })
                            .collect(),
             is_absolute: is_absolute,
@@ -229,24 +194,22 @@ impl<'src> PartialEq<str> for Path<'src> {
     }
 }
 
+// TODO: Make recursive, like how it's represented in source
 #[derive(Clone, Debug)]
 pub struct Use<'src> {
     pub path: Path<'src>,
-    attrs: Vec<Attribute<'src>>,
     pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
 pub struct StaticDef<'src> {
     pub body: Expr<'src>,
-    attrs: Vec<Attribute<'src>>,
     pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExternProcDecl<'src> {
     pub typ: Type<'src>,
-    attrs: Vec<Attribute<'src>>,
     pub pos: SrcPos<'src>,
 }
 
@@ -316,7 +279,7 @@ impl<'src> Call<'src> {
 pub struct Block<'src> {
     pub uses: Vec<Use<'src>>,
     pub static_defs: HashMap<Ident<'src>, StaticDef<'src>>,
-    pub extern_funcs: HashMap<Ident<'src>, Type<'src>>,
+    pub extern_funcs: HashMap<Ident<'src>, ExternProcDecl<'src>>,
     pub exprs: Vec<Expr<'src>>,
     pub pos: SrcPos<'src>,
 }
@@ -348,10 +311,7 @@ pub struct Param<'src> {
 }
 impl<'src> Param<'src> {
     pub fn new(ident: Ident<'src>, typ: Type<'src>) -> Param<'src> {
-        Param {
-            ident: ident,
-            typ: typ,
-        }
+        Param { ident: ident, typ: typ }
     }
 }
 
@@ -445,15 +405,6 @@ pub enum Expr<'src> {
     TypeAscript(Box<TypeAscript<'src>>),
 }
 impl<'src> Expr<'src> {
-    /// Returns whether this expression is a variable definition
-    pub fn is_var_def(&self) -> bool {
-        if let &Expr::VarDef(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn pos(&self) -> &SrcPos<'src> {
         match *self {
             Expr::Nil(ref n) => &n.pos,
@@ -497,55 +448,17 @@ impl<'src> Expr<'src> {
     }
 }
 
-/// Enumeration of the different kinds of items
-#[derive(Clone, Copy)]
-enum ItemKind {
-    Use,
-    StaticDef,
-    ExternProcDecl,
-    Expr,
-}
-
-impl ItemKind {
-    fn string_plural(self) -> &'static str {
-        match self {
-            ItemKind::Use => "use statements",
-            ItemKind::StaticDef => "static definitions",
-            ItemKind::ExternProcDecl => "external procedure declarations",
-            ItemKind::Expr => "expressions",
-        }
-    }
-}
-
 /// Represents an item, i.e. a use-statement or a definition or some such
-enum Item<'src> {
+pub enum Item<'src> {
     Use(Use<'src>),
     StaticDef(Ident<'src>, StaticDef<'src>),
     ExternProcDecl(Ident<'src>, ExternProcDecl<'src>),
     Expr(Expr<'src>),
 }
 
-impl<'src> Item<'src> {
-    /// Add an attribute to this item
-    fn add_attributes(&mut self, attrs: &[CST<'src>]) {
-        for attr in attrs {
-            attr.add_to(self)
-        }
-    }
-
-    fn kind(&self) -> ItemKind {
-        match *self {
-            Item::Use(_) => ItemKind::Use,
-            Item::StaticDef(_, _) => ItemKind::StaticDef,
-            Item::ExternProcDecl(_, _) => ItemKind::ExternProcDecl,
-            Item::Expr(_) => ItemKind::Expr,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Module<'src> {
     pub uses: Vec<Use<'src>>,
     pub static_defs: HashMap<Ident<'src>, StaticDef<'src>>,
-    pub extern_funcs: HashMap<Ident<'src>, Type<'src>>,
+    pub extern_funcs: HashMap<Ident<'src>, ExternProcDecl<'src>>,
 }

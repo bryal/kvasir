@@ -4,13 +4,11 @@ version = "0.2.0"
 authors = ["bryal <96.bryal@gmail.com>"]
 repository = "https://github.com/bryal/kvasir-lang"
 license = "GPLv3"
-build = "build.rs"
 
 [dependencies]
 getopts = "*"
 bitflags = "*"
 lazy_static = "*"
 term = "*"
-llvm-alt = "*"
-llvm-sys = "*"
+llvm-alt = { git = "https://github.com/TomBebb/llvm-rs", rev = "1aeff08637e22949c2e1f11eb29145473448ce89" }
 itertools = "*"

@@ -605,9 +605,9 @@ fn expand_cst_macros<'src>(cst: &CST<'src>,
                     }
                     CST::Ident(name, _) if macros.contains_key(name) => {
                         // The s-expression is a macro invocation
-                        let macro_rules = macros[name].clone();
+                        let rules = macros[name].clone();
 
-                        macro_rules.apply_to(tail, pos, macros)
+                        rules.apply_to(tail, pos, macros)
                     }
                     _ => {
                         Some(CST::SExpr(sexpr.iter()

@@ -1,15 +1,13 @@
-use std::{fmt, mem};
-use std::str::FromStr;
-use std::collections::HashMap;
-use llvm::*;
-use llvm_sys::core;
+
+use lib::collections::ScopeStack;
 use lib::front::SrcPos;
 use lib::front::ast::{self, Expr};
-use lib::collections::ScopeStack;
+use llvm::*;
 use self::CodegenErr::*;
-
-/// Passed to LLVM C-API functions to indicate the name is unimportant
-static NULL_NAME: *const i8 = &0;
+use std::{fmt, mem};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::str::FromStr;
 
 enum CodegenErr {
     NumParseErr(String),
@@ -50,80 +48,34 @@ impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
     }
 }
 
-/// Get the block in which the builder is currently inserting code
-///
-/// # Fails
-/// Returns `None` if the builder has not been positioned yet
-fn get_insert_block(builder: &Builder) -> Option<&BasicBlock> {
-    unsafe {
-        let ptr = core::LLVMGetInsertBlock(builder.into());
-        if ptr.is_null() {
-            None
-        } else {
-            Some(ptr.into())
-        }
-    }
-}
-
 /// Add a static (global variable) to a module with the given type, name and value.
 fn add_constant_static<'ctx>(module: &'ctx Module,
-                                   name: &str,
-                                   val: &'ctx Value)
-                                   -> &'ctx GlobalVariable {
+                             name: &str,
+                             val: &'ctx Value)
+                             -> &'ctx GlobalVariable {
     let glob = module.add_global_variable(name, val);
     glob.set_constant(true);
     glob
 }
 
-/// Build a phi node which is used together with branching to select a value depending on
-/// the predecessor of the current block
-fn build_phi<'ctx>(builder: &'ctx Builder,
-                   ty: &'ctx Type,
-                   entries: &[(&'ctx Value, &'ctx BasicBlock)])
-                   -> &'ctx Value {
-    let phi_node = unsafe { core::LLVMBuildPhi(builder.into(), ty.into(), NULL_NAME) };
-
-    for &(val, preds) in entries {
-        unsafe { core::LLVMAddIncoming(phi_node, &mut val.into(), &mut preds.into(), 1) }
-    }
-    phi_node.into()
-}
-
-/// Build an instruction that casts an integer to a pointer.
-fn build_int_to_ptr<'ctx>(builder: &'ctx Builder,
-                          val: &'ctx Value,
-                          dest: &'ctx Type)
-                          -> &'ctx Value {
-    unsafe { core::LLVMBuildIntToPtr(builder.into(), val.into(), dest.into(), NULL_NAME).into() }
-}
-
-/// Build an instruction that casts a pointer to an integer.
-fn build_ptr_to_int<'ctx>(builder: &Builder, val: &'ctx Value, dest: &'ctx Type) -> &'ctx Value {
-    unsafe { core::LLVMBuildPtrToInt(builder.into(), val.into(), dest.into(), NULL_NAME).into() }
-}
-
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
-    pub module: CSemiBox<'ctx, Module>,
+    pub module: &'ctx Module,
     target_data: CBox<TargetData>,
-    builder: CSemiBox<'ctx, Builder>,
+    builder: &'ctx Builder,
+    /// The function currently being built
+    building_func: RefCell<Option<&'ctx Function>>,
 }
 impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
-    pub fn new(context: &'ctx Context) -> Self {
-        let module = Module::new("main", context);
-        let td = TargetData::new(module.get_target());
-
+    pub fn new(context: &'ctx Context, builder: &'ctx Builder, module: &'ctx Module) -> Self {
         CodeGenerator {
             context: context,
             module: module,
-            target_data: td,
-            builder: Builder::new(context),
+            target_data: TargetData::new(module.get_target()),
+            builder: builder,
+            building_func: RefCell::new(None),
         }
-    }
-
-    fn current_func<'builder>(&'builder self) -> Option<&'builder Function> {
-        get_insert_block(&self.builder).and_then(|bb| bb.get_parent())
     }
 
     fn size_of(&self, typ: &Type) -> u64 {
@@ -134,7 +86,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         Value::new_struct(self.context, &[], false)
     }
 
-    fn gen_type(&self, typ: &ast::Type<'src>) -> &'ctx Type {
+    fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
         use lib::front::ast::Type as PType;
 
         match *typ {
@@ -152,15 +104,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             PType::Basic("Bool") => Type::get::<bool>(self.context),
             PType::Basic("Float32") => Type::get::<f32>(self.context),
             PType::Basic("Float64") => Type::get::<f64>(self.context),
-            PType::Basic("Nil") => Type::new_struct(self.context, &[], false),
+            PType::Basic("Nil") => StructType::new(self.context, &[], false),
             PType::Construct("Proc", _) => {
                 let (params, ret) = typ.get_proc_sig().unwrap();
-                Type::new_function(self.gen_type(ret),
-                                   &params.iter()
-                                          .map(|param| self.gen_type(param))
-                                          .collect::<Vec<_>>())
+                FunctionType::new(self.gen_type(ret),
+                                  &params.iter()
+                                         .map(|param| self.gen_type(param))
+                                         .collect::<Vec<_>>())
             }
-            PType::Construct("RawPtr", ref args) => Type::new_pointer(self.gen_type(&args[0])),
+            PType::Construct("RawPtr", ref args) => PointerType::new(self.gen_type(&args[0])),
             _ => panic!("Type `{}` is not yet implemented", typ),
         }
     }
@@ -194,13 +146,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Gets an array, `[N x TYPE]`, as a pointer to the first element, `TYPE*`
-    fn get_array_as_ptr(&self, array_ptr: &Value) -> &Value {
+    fn get_array_as_ptr(&self, array_ptr: &'ctx Value) -> &'ctx Value {
         // First, deref ptr to array (index first element of ptr, like pointer indexing in C).
         // Second, get address of first element in array == address of array start
         self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
     }
 
-    fn gen_str(&self, s: &ast::StrLit<'src>) -> &Value {
+    fn gen_str(&self, s: &'ast ast::StrLit<'src>) -> &'ctx Value {
         let bytes = s.lit.compile(self.context);
 
         let static_array = add_constant_static(&self.module, "str_lit", bytes);
@@ -213,7 +165,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                           false)
     }
 
-    fn gen_bool(&self, b: &ast::Bool<'src>) -> &Value {
+    fn gen_bool(&self, b: &'ast ast::Bool<'src>) -> &'ctx Value {
         if b.typ == ast::Type::Basic("Bool") {
             b.val.compile(self.context)
         } else {
@@ -222,7 +174,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate IR for a binding used as an r-value
-    fn gen_r_binding(&self, env: &mut Env<'src, 'ast, 'ctx>, bnd: &ast::Binding<'src>) -> &Value {
+    fn gen_r_binding(&self,
+                     env: &mut Env<'src, 'ast, 'ctx>,
+                     bnd: &'ast ast::Binding<'src>)
+                     -> &'ctx Value {
         let ident = bnd.path.as_ident().expect("path was not ident");
 
         // Function pointers are returned as-is,
@@ -247,18 +202,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Generates IR code for a procedure call. If the call is in a tail position and the call
     /// is a recursive call to the caller itself, make a tail call and return `Nothing`.
     /// Otherwise, make a normal call and return the result.
-    fn gen_call(&'ctx self,
+    fn gen_call(&self,
                 env: &mut Env<'src, 'ast, 'ctx>,
                 call: &'ast ast::Call<'src>)
-                -> &Value {
-        let proced: &Function = CastFrom::cast(self.gen_expr(env, &call.proced))
-                                    .unwrap_or_else(|| {
-                                        call.proced
-                                            .pos()
-                                            .error_exit(ICE("expression in procedure pos is not \
-                                                             a function"
-                                                                .into()))
-                                    });
+                -> &'ctx Value {
+        let proced = Function::from_super(self.gen_expr(env, &call.proced)).unwrap_or_else(|| {
+            call.proced
+                .pos()
+                .error_exit(ICE("expression in procedure pos is not a function".into()))
+        });
 
         let mut args = Vec::new();
         for arg in &call.args {
@@ -268,19 +220,29 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.build_call(proced, &args)
     }
 
-    fn gen_tail_call(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>) {
-        let call = self.gen_call(env, call);
-        unsafe { core::LLVMSetTailCall(call.into(), 1) };
+    fn gen_tail_call(&self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>) {
+        let proced = Function::from_super(self.gen_expr(env, &call.proced)).unwrap_or_else(|| {
+            call.proced
+                .pos()
+                .error_exit(ICE("expression in procedure pos is not a function".into()))
+        });
+
+        let mut args = Vec::new();
+        for arg in &call.args {
+            args.push(self.gen_expr(env, arg))
+        }
+
+        let call = self.builder.build_call(proced, &args);
 
         self.builder.build_ret(call);
     }
 
-    fn gen_handle_block<T, F>(&'ctx self,
+    fn gen_handle_block<T, F>(&self,
                               env: &mut Env<'src, 'ast, 'ctx>,
                               block: &'ast ast::Block<'src>,
                               handler: F)
                               -> T
-        where F: Fn(&'ctx Self, &mut Env<'src, 'ast, 'ctx>, &'ast Expr<'src>) -> T
+        where F: FnOnce(&Self, &mut Env<'src, 'ast, 'ctx>, &'ast Expr<'src>) -> T
     {
         self.gen_static_defs(env, &block.static_defs);
 
@@ -301,32 +263,32 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         r
     }
 
-    fn gen_block(&'ctx self,
+    fn gen_block(&self,
                  env: &mut Env<'src, 'ast, 'ctx>,
                  block: &'ast ast::Block<'src>)
-                 -> &Value {
+                 -> &'ctx Value {
         self.gen_handle_block(env, block, Self::gen_expr)
     }
 
-    fn gen_tail_block(&'ctx self,
+    fn gen_tail_block(&self,
                       env: &mut Env<'src, 'ast, 'ctx>,
                       block: &'ast ast::Block<'src>)
-                      -> Option<&Value> {
+                      -> Option<&'ctx Value> {
         self.gen_handle_block(env, block, Self::gen_tail_expr)
     }
 
-    fn gen_if(&'ctx self,
+    fn gen_if(&self,
               env: &mut Env<'src, 'ast, 'ctx>,
               cond: &'ast ast::If<'src>,
               typ: &ast::Type<'src>)
-              -> &Value {
-        let parent_func = self.current_func().unwrap();
+              -> &'ctx Value {
+        let parent_func = self.building_func.borrow().unwrap();
 
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
         let next_br = parent_func.append("cond_next");
 
-        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, Some(else_br));
+        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
 
         let mut phi_nodes = vec![];
 
@@ -345,49 +307,56 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(next_br);
 
-        build_phi(&self.builder, self.gen_type(typ), &phi_nodes)
+        self.builder.build_phi(self.gen_type(typ), &phi_nodes)
     }
 
-    fn gen_tail_if(&'ctx self,
+    fn gen_tail_if(&self,
                    env: &mut Env<'src, 'ast, 'ctx>,
                    cond: &'ast ast::If<'src>,
                    typ: &ast::Type<'src>)
-                   -> Option<&Value> {
-        let parent_func = self.current_func().unwrap();
+                   -> Option<&'ctx Value> {
+        let parent_func = self.building_func.borrow().unwrap();
 
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
-        let next_br = parent_func.append("cond_next");
 
-        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, Some(else_br));
+        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
 
         let mut phi_nodes = vec![];
 
         self.builder.position_at_end(then_br);
 
+        let mut next_br = None;
+
         if let Some(then_val) = self.gen_tail_expr(env, &cond.consequent) {
             phi_nodes.push((then_val, then_br));
-            self.builder.build_br(next_br);
+
+            next_br = Some(parent_func.append("cond_next"));
+            self.builder.build_br(next_br.unwrap());
         }
 
         self.builder.position_at_end(else_br);
         if let Some(else_val) = self.gen_tail_expr(env, &cond.alternative) {
             phi_nodes.push((else_val, else_br));
-            self.builder.build_br(next_br);
+
+            if next_br.is_none() {
+                next_br = Some(parent_func.append("cond_next"));
+            }
+            self.builder.build_br(next_br.unwrap());
         }
 
-        self.builder.position_at_end(next_br);
-        if phi_nodes.is_empty() {
-            None
+        if let Some(next_br) = next_br {
+            self.builder.position_at_end(next_br);
+            Some(self.builder.build_phi(self.gen_type(typ), &phi_nodes))
         } else {
-            Some(build_phi(&self.builder, self.gen_type(typ), &phi_nodes))
+            None
         }
     }
 
-    fn gen_lambda(&'ctx self,
+    fn gen_lambda(&self,
                   env: &mut Env<'src, 'ast, 'ctx>,
                   lam: &'ast ast::Lambda<'src>)
-                  -> &Value {
+                  -> &'ctx Value {
         let anon = self.gen_func_decl("lambda", &lam.get_type());
 
         self.build_func_def(env, anon, lam);
@@ -395,8 +364,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         anon
     }
 
-    fn gen_var_def(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast ast::VarDef<'src>) {
-        let var = self.builder.build_alloca(self.gen_type(&def.body.get_type()));
+    fn gen_var_def<'a>(&self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast ast::VarDef<'src>) {
+        let typ: &'ctx Type = self.gen_type(&def.body.get_type());
+        let var: &'ctx Value = self.builder.build_alloca(typ);
 
         var.set_name(def.binding.s);
 
@@ -405,10 +375,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         env.vars.push((def.binding.s, var));
     }
 
-    fn gen_lvalue(&'ctx self,
-                  env: &mut Env<'src, 'ast, 'ctx>,
-                  expr: &'ast Expr<'src>)
-                  -> &'ctx Value {
+    fn gen_lvalue(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
             Expr::Binding(ref bnd) => {
                 bnd.path
@@ -421,23 +388,23 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    fn gen_assign(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast ast::Assign<'src>) {
+    fn gen_assign(&self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast ast::Assign<'src>) {
         let var = self.gen_lvalue(env, &assign.lhs);
 
         self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
     }
 
-    fn gen_deref(&'ctx self,
+    fn gen_deref(&self,
                  env: &mut Env<'src, 'ast, 'ctx>,
                  deref: &'ast ast::Deref<'src>)
-                 -> &Value {
+                 -> &'ctx Value {
         self.builder.build_load(self.gen_expr(env, &deref.r))
     }
 
-    fn gen_transmute(&'ctx self,
+    fn gen_transmute(&self,
                      env: &mut Env<'src, 'ast, 'ctx>,
                      trans: &'ast ast::Transmute<'src>)
-                     -> &Value {
+                     -> &'ctx Value {
         let ll_arg = self.gen_expr(env, &trans.arg);
 
         let ll_arg_typ = ll_arg.get_type();
@@ -459,27 +426,28 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         } else if ll_arg_typ.is_pointer() && ll_target_typ.is_pointer() {
             self.builder.build_bit_cast(ll_arg, ll_target_typ)
         } else if ll_arg_typ.is_pointer() &&
-           (trans.typ == ast::Type::Basic("IntPtr") || trans.typ == ast::Type::Basic("UIntPtr")) {
-            build_ptr_to_int(&self.builder, ll_arg, ll_target_typ)
+                  (trans.typ == ast::Type::Basic("IntPtr") ||
+                   trans.typ == ast::Type::Basic("UIntPtr")) {
+            self.builder.build_ptr_to_int(ll_arg, ll_target_typ)
         } else if ll_arg_typ.is_pointer() {
-            let ptr_int = build_ptr_to_int(&self.builder, ll_arg, Type::get::<usize>(self.context));
+            let ptr_int = self.builder.build_ptr_to_int(ll_arg, Type::get::<usize>(self.context));
 
             self.builder.build_bit_cast(ptr_int, ll_target_typ)
         } else if ll_target_typ.is_pointer() &&
-           (*trans.arg.get_type() == ast::Type::Basic("IntPtr") ||
-            *trans.arg.get_type() == ast::Type::Basic("UIntPtr")) {
-            build_int_to_ptr(&self.builder, ll_arg, ll_target_typ)
+                  (*trans.arg.get_type() == ast::Type::Basic("IntPtr") ||
+                   *trans.arg.get_type() == ast::Type::Basic("UIntPtr")) {
+            self.builder.build_int_to_ptr(ll_arg, ll_target_typ)
         } else if ll_target_typ.is_pointer() {
             let ptr_int = self.builder.build_bit_cast(ll_arg, Type::get::<usize>(self.context));
 
-            build_int_to_ptr(&self.builder, ptr_int, ll_target_typ)
+            self.builder.build_int_to_ptr(ptr_int, ll_target_typ)
         } else {
             self.builder.build_bit_cast(ll_arg, ll_target_typ)
         }
     }
 
     /// Generate llvm code for an expression and return its llvm Value.
-    fn gen_expr(&'ctx self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &Value {
+    fn gen_expr(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
             Expr::Nil(_) => self.gen_nil(),
             Expr::NumLit(ref n) => self.gen_num(n),
@@ -507,10 +475,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate LLVM IR for an expression and return its llvm Value.
-    fn gen_tail_expr(&'ctx self,
+    fn gen_tail_expr(&self,
                      env: &mut Env<'src, 'ast, 'ctx>,
                      expr: &'ast Expr<'src>)
-                     -> Option<&Value> {
+                     -> Option<&'ctx Value> {
         match *expr {
             Expr::Call(ref call) => {
                 self.gen_tail_call(env, call);
@@ -523,10 +491,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate LLVM IR for a binding to a constant
-    fn gen_eval_const_binding(&'ctx self,
+    fn gen_eval_const_binding(&self,
                               env: &mut Env<'src, 'ast, 'ctx>,
                               bnd: &ast::Binding<'src>)
-                              -> &Value {
+                              -> &'ctx Value {
         let ident = bnd.path.as_ident().expect("path was not ident");
 
         env.statics
@@ -537,10 +505,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
 
-    fn gen_const_call(&'ctx self,
+    fn gen_const_call(&self,
                       env: &mut Env<'src, 'ast, 'ctx>,
                       call: &'ast ast::Call<'src>)
-                      -> &Value {
+                      -> &'ctx Value {
         let args = call.args
                        .iter()
                        .map(|arg| self.gen_const_expr(env, arg))
@@ -581,10 +549,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    fn gen_const_expr(&'ctx self,
+    fn gen_const_expr(&self,
                       env: &mut Env<'src, 'ast, 'ctx>,
                       expr: &'ast Expr<'src>)
-                      -> &Value {
+                      -> &'ctx Value {
         // TODO: add internal eval over ExprMetas
         match *expr {
             Expr::Nil(_) => self.gen_nil(),
@@ -598,22 +566,23 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate a static
-    fn gen_static(&'ctx self,
+    fn gen_static(&self,
                   env: &mut Env<'src, 'ast, 'ctx>,
                   id: &str,
                   def: &'ast Expr<'src>)
-                  -> &GlobalVariable {
-        Add_constant_static(&self.module, id, self.gen_const_expr(env, def))
+                  -> &'ctx GlobalVariable {
+        add_constant_static(&self.module, id, self.gen_const_expr(env, def))
     }
 
-    fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &mut Function {
+    fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
         self.module.add_function(id, self.gen_type(typ))
     }
 
-    fn build_func_def(&'ctx self,
+    fn build_func_def(&self,
                       env: &mut Env<'src, 'ast, 'ctx>,
                       func: &'ctx Function,
                       def_lam: &'ast ast::Lambda<'src>) {
+        *self.building_func.borrow_mut() = Some(func);
         let entry = func.append("entry");
 
         self.builder.position_at_end(entry);
@@ -636,23 +605,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
 
         env.vars = old_vars;
+        *self.building_func.borrow_mut() = None;
     }
 
-    pub fn gen_extern_decls(&'ctx self,
+    pub fn gen_extern_decls(&self,
                             env: &mut Env<'src, 'ast, 'ctx>,
-                            extern_funcs: &HashMap<ast::Ident<'src>, ast::Type<'src>>) {
+                            extern_funcs: &HashMap<ast::Ident<'src>, ast::ExternProcDecl<'src>>) {
         let mut func_decls = HashMap::new();
 
-        for (id, typ) in extern_funcs.iter().map(|(id, typ)| (id.s, typ)) {
+        for (id, typ) in extern_funcs.iter().map(|(id, decl)| (id.s, &decl.typ)) {
             func_decls.insert(id, self.gen_func_decl(id, typ) as &_);
         }
 
         env.funcs.push(func_decls);
     }
 
-    pub fn gen_static_defs(&'ctx self,
+    pub fn gen_static_defs(&self,
                            env: &mut Env<'src, 'ast, 'ctx>,
-                           static_defs: &'ast HashMap<ast::Ident<'src>, ast::ConstDef<'src>>) {
+                           static_defs: &'ast HashMap<ast::Ident<'src>, ast::StaticDef<'src>>) {
         let (mut func_decls, mut static_decls) = (HashMap::new(), HashMap::new());
         // function declarations that are to be defined
         let (mut undef_funcs, mut undef_statics) = (Vec::new(), Vec::new());
@@ -667,9 +637,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 _ => {
                     // temporarily set static definitions as undefined in order to have them all
                     // available while generating the definition for each one
-                    let undef_glob =
-                        CastFrom::cast(Value::new_undef(Type::get::<()>(self.context)))
-                            .unwrap_or_else(|| unreachable!{});
+                    let v = Value::new_undef(Type::get::<()>(self.context));
+                    let undef_glob = GlobalValue::from_super(v)
+                        .and_then(|gv| GlobalVariable::from_super(gv))
+                        .unwrap_or_else(|| unreachable!{});
                     static_decls.insert(id, (undef_glob, &static_def.body));
                     undef_statics.push(id);
                 }

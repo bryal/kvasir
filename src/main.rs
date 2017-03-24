@@ -25,7 +25,8 @@
 //! f_foo :: ∀__Polya . __Polya → __Polya
 //!
 //! ; Define a function of inferred constrained type.
-//! ; add : Num → Num → Num ⇒ α : Num, β : Num in add α β ⇒ λ1.λβ.add 1 β : Num → Num → Num
+//! ; add : Num → Num → Num
+//! ; ⇒ α : Num, β : Num in add α β ⇒ λ1.λβ.add 1 β : Num → Num → Num
 //! > (def-func (inc n) (+ 1 n))
 //! inc :: Num → Num
 //!
@@ -40,7 +41,8 @@
 // TODO: Higher Kinded Types. Like Functor which would provide map for a generic container
 // TODO: Formally prove that all type inference is correct using
 //       [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
-//       [Good explanation](http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
+//       [Good explanation]
+// (http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
 // TODO: Make symbols interned. Maybe at compile time, build a table of all symbols and substitute
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
@@ -53,11 +55,13 @@
 //       =>
 //           (list (Syntax\String "foo") (Syntax\Symbol 'bar) (Syntax\Number 42))
 // TODO: Allocation should be handled through third-party function, like jemalloc, libc malloc
-// TODO: Specify allocator with cfg flag. This allows for linking with libs using different allocators
+// TODO: Specify allocator with cfg flag. This allows for linking with libs
+//       using different allocators
 // TODO: Slice representation? Pointer to len and data is probably easiest.
 //       Slice of `T`s with len N: `| len: usize | data: N * sizeof(T) |`
 // TODO: `extern` declarations for linking in C functions
-// TODO: Interface for AST through which multiple lexer/parsers can be implemented for the language.
+// TODO: Interface for AST through which multiple lexer/parsers can be implemented
+//       for the language.
 //       Similar to how racker supports multiple source languages
 //       Also serves as a way to save keywords and such, e.g. core types, as associated constants
 // TODO: Make use of different brackets to discriminate between expressions and items/syntax sugar
@@ -88,23 +92,21 @@
 #[macro_use]
 extern crate lazy_static;
 extern crate getopts;
-#[macro_use]
 extern crate bitflags;
 extern crate term;
 extern crate llvm;
-extern crate llvm_sys;
 extern crate itertools;
 
-use std::{env, fmt};
-use std::io::Read;
-use std::fs::{File, canonicalize};
-use std::path::{Path, PathBuf};
 use getopts::Options;
 use lib::{concrete_syntax_trees_from_src, expand_macros};
-use lib::front::parse::parse;
-use lib::front::inference::infer_types;
-use lib::middle::clean_ast;
 use lib::back::compile;
+use lib::front::inference::infer_types;
+use lib::front::parse::parse;
+use lib::middle::clean_ast;
+use std::{env, fmt};
+use std::fs::{File, canonicalize};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 mod lib;
 
@@ -214,15 +216,15 @@ fn main() {
                                .map(|p| FileName::Some(PathBuf::from(p)))
                                .unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
                                .map(|filename| {
-                                   let parent = match filename.parent() {
-                                       None => "./".as_ref(),
-                                       Some(p) if p == Path::new("") => "./".as_ref(),
-                                       Some(p) => p,
-                                   };
-                                   canonicalize(parent)
-                                       .expect("Failed to canonicalize output filename")
-                                       .join(filename.file_name().expect("No filename supplied"))
-                               });
+        let parent = match filename.parent() {
+            None => "./".as_ref(),
+            Some(p) if p == Path::new("") => "./".as_ref(),
+            Some(p) => p,
+        };
+        canonicalize(parent)
+            .expect("Failed to canonicalize output filename")
+            .join(filename.file_name().expect("No filename supplied"))
+    });
 
     let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
 
@@ -235,15 +237,14 @@ fn main() {
                  .to_string_lossy());
 
     let mut src_code = String::with_capacity(4_000);
-    let src_file = File::open(&inp_file_name)
-                       .expect(&format!("Failed to open file `{}`", inp_file_name.display()))
-                       .read_to_string(&mut src_code)
-                       .expect(&format!("Reading contents of `{}` failed",
-                                        inp_file_name.display()));
+    File::open(&inp_file_name)
+        .expect(&format!("Failed to open file `{}`", inp_file_name.display()))
+        .read_to_string(&mut src_code)
+        .expect(&format!("Reading contents of `{}` failed", inp_file_name.display()));
 
     let csts = concrete_syntax_trees_from_src(&src_code);
 
-    // println!("TOKEN TREE{:#?}", token_tree);
+    // println!("TOKEN TREE{:#?}", csts);
 
     let expanded_macros = expand_macros(&csts);
 
@@ -256,7 +257,7 @@ fn main() {
     // println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
     infer_types(&mut ast);
-    println!("AST INFERED:\n{:#?}\n", ast);
+    // println!("AST INFERED:\n{:#?}\n", ast);
 
     compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

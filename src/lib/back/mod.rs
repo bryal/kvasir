@@ -1,38 +1,38 @@
+
+use {Emission, FileName};
+use lib::front::ast;
+use llvm::{Context, Builder, Module};
+use self::llvm::*;
 use std::fs;
 use std::io::Write;
 use std::process::Command;
-use llvm::Context;
-use lib::front::ast::Module;
-use {Emission, FileName};
-use self::llvm::*;
 
 mod llvm;
 
-pub fn compile(ast: &Module,
+pub fn compile(ast: &ast::Module,
                out_file_name: FileName,
                emission: Emission,
                link_libs: &[String],
                lib_paths: &[String]) {
     let context = Context::new();
-
-    let codegenerator = CodeGenerator::new(&context);
+    let builder = Builder::new(&context);
+    let module = Module::new("main", &context);
+    let codegenerator = CodeGenerator::new(&context, &builder, &module);
 
     let mut env = Env::new();
 
     codegenerator.gen_extern_decls(&mut env, &ast.extern_funcs);
 
-    codegenerator.gen_const_defs(&mut env, &ast.const_defs);
+    codegenerator.gen_static_defs(&mut env, &ast.static_defs);
 
-    println!("module: {:?}", codegenerator.module);
+    //    println!("module: {:?}", codegenerator.module);
 
     codegenerator.module.verify().unwrap_or_else(|e| panic!("Verifying module failed\n{}", e));
 
     match emission {
         Emission::LlvmAsm => {
             let mut ir_file = fs::File::create(out_file_name.clone().unwrap_or_with_ext("ll"))
-                                  .unwrap_or_else(|e| {
-                                      panic!("Failed to open file `{}`, {}", out_file_name, e)
-                                  });
+                .unwrap_or_else(|e| panic!("Failed to open file `{}`, {}", out_file_name, e));
 
             write!(ir_file, "{:?}", codegenerator.module)
                 .unwrap_or_else(|e| panic!("Failed to write IR to `{}`, {}", out_file_name, e))

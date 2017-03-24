@@ -3,13 +3,12 @@
 //       and can be executed in a step right after parsing. The functions take the current
 //       compiler state as an argument, and can manipulate the AST as well as attributes and such
 
-use std::fmt::{self, Display, Debug};
 use std::cmp::min;
-use std::process;
+use std::fmt::{self, Display, Debug};
 use std::iter::repeat;
+use std::process;
 use term::{self, color};
 
-pub mod attribute;
 pub mod lex;
 pub mod macro_;
 pub mod ast;
@@ -133,7 +132,7 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    fn message<E: Display>(&self, kind: &str, color: color::Color, msg: E) {
+    fn message<E: Display>(&self, msg: E, kind: &str, color: color::Color) {
         let (line, line_len, row, col) = self.line_len_row_col();
         let mut t = term::stdout().expect("Could not acquire access to stdout");
 
@@ -176,7 +175,7 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    pub fn error<E: Display>(&self, msg: E) -> ! {
+    pub fn error<E: Display>(&self, msg: E) {
         self.message(msg, "Error", color::BRIGHT_RED);
     }
 
@@ -221,5 +220,5 @@ pub fn error<E: Display>(e: E) -> ! {
     println!("{}", e);
 
     println!("\nError occured during compilation. Exiting\n");
-    exit(0)
+    exit()
 }

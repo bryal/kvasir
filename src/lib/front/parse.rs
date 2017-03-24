@@ -31,26 +31,6 @@ impl Display for ParseErr {
     }
 }
 
-/// An object that parses syntax level CSTs to produce semantic level ASTs
-struct Parser {
-    attr_parsers: HashMap<&'src str, (&Fn(SrcPos<'src>) -> Attribute<'src>,
-                                      &Fn(&[CST<'src>], SrcPos<'src>) -> Attribute<'src>)>,
-}
-
-impl Parser {
-    fn new() -> Self {
-        let mut attr_parsers = vec![("stable",
-                                     (|pos| Attribute::Stability(Stability::default_stable(), pos),
-                                      )];
-
-        let mut parser = Parse { attr_parsers: HashMap::with_capacity(attr_parsers) };
-
-        for (key, ps) in attr_parsers {
-            parser.attr_parsers.insert(key, ps)
-        }
-        parser
-    }
-}
 /// Parse a `CST` as a `Type`
 pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
     match *tree {
@@ -477,150 +457,12 @@ macro_rules! attribute_struct_parser {
     }
 }
 
-/// Parse a list of `CST`s as the body of a `Stability::Stable` attribute
-attribute_struct_parser!{
-    "stable";
-    parse_attr_stable -> self::attribute::Stability<'src>;
-    self::attribute::Stability::Stable { feature: None, since: None };
-    [(feature, "feature"), (since, "since")]
-}
-
-/// Parse a list of `CST`s as the body of a `Stability::Unstable` attribute
-attribute_struct_parser!{
-    "unstable";
-    parse_attr_unstable -> self::attribute::Stability<'src>;
-    self::attribute::Stability::Unstable { feature: None, reason: None, url: None };
-    [(feature, "feature"), (reason, "reason"), (url, "url")]
-}
-
-/// Parse a list of `CST`s as the body of a `Stability::Deprecated` attribute
-attribute_struct_parser!{
-    "deprecated";
-    parse_attr_deprecated -> self::attribute::Stability<'src>;
-    self::attribute::Stability::Deprecated { since: None, url: None };
-    [(since, "since"), (reason, "reason"), (url, "url")]
-}
-
-/// Parse a list of `CST`s as the body of a `Doc` attribute
-fn parse_attr_doc<'src>(csts: &[CST<'src>]) -> Vec<Cow<'src, str>> {
-    csts.iter()
-        .map(|cst| {
-            if let CST::Str(ref s, ref pos) = *cst {
-                s.clone()
-            } else {
-                cst.pos().error_exit("Invalid `doc` attribute. Expected string")
-            }
-        })
-        .collect()
-}
-
-/// Parse a list of `CST`s as the body of a `Custom` attribute
-fn parse_attr_custom<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> CST<'src> {
-    if csts.len() == 1 {
-        csts[0].clone()
-    } else if csts.is_empty() {
-        pos.error_exit("Invalid `custom` attribute. Expected sub-attribute")
-    } else {
-        csts[1].pos().error_exit("Invalid `custom attribute`. Only expected one sub-attribute")
-    }
-}
-
-/// Parse a syntax tree as an `Attribute`
-fn parse_attribute<'src>(cst: &CST<'src>) -> Attribute<'src> {
-    use super::attribute::*;
-
-    match *cst {
-        CST::Ident(name, ref pos) => {
-            match name {
-                "stable" => {
-                    Attribute::new(AttributeE::Stability(Stability::Stable {
-                                       feature: None,
-                                       since: None,
-                                   }),
-                                   pos.clone())
-                }
-                "unstable" => {
-                    Attribute::new(AttributeE::Stability(Stability::Unstable {
-                                       feature: None,
-                                       reason: None,
-                                       url: None,
-                                   }),
-                                   pos.clone())
-                }
-                "deprecated" => {
-                    Attribute::new(AttributeE::Stability(Stability::Deprecated {
-                                       since: None,
-                                       reason: None,
-                                       url: None,
-                                   }),
-                                   pos.clone())
-                }
-                _ => pos.error_exit("This attribute is unknown to the compiler"),
-            }
-        }
-        CST::SExpr(ref sexpr, ref pos) if sexpr.is_empty() => {
-            pos.error_exit("Unexpected end of attribute s-expression. Expected attribute name")
-        }
-        CST::SExpr(ref sexpr, ref pos) => {
-            if let CST::Ident(name, ref name_pos) = sexpr[0] {
-                match name {
-                    "stable" => {
-                        Attribute::new(AttributeE::Stability(parse_attr_stable(&sexpr[1..]),
-                                                             pos.clone()))
-                    }
-                    "unstable" => {
-                        Attribute::new(AttributeE::Stability(parse_attr_unstable(&sexpr[1..]),
-                                                             pos.clone()))
-                    }
-                    "deprecated" => {
-                        Attribute::new(AttributeE::Stability(parse_attr_deprecated(&sexpr[1..]),
-                                                             pos.clone()))
-                    }
-                    "doc" => {
-                        Attribute::new(AttributeE::Doc(parse_attr_doc(&sexpr[1..]), pos.clone()))
-                    }
-                    "custom" => {
-                        Attribute::new(AttributeE::Custom(parse_attr_custom(&sexpr[1..]),
-                                                          pos.clone()))
-                    }
-                    _ => pos.error_exit("This attribute is unknown to the compiler"),
-                }
-            } else {
-                sexpr[0].pos().error("Invalid attribute. Expected attribute name")
-            }
-        }
-    }
-}
-
-/// Parse a list of `CST`s as the contents of an `attr` special form
-fn parse_attr_form<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Vec<Item<'src>> {
-    let mut attrs = Vec::new();
-    let no_attrs_err = "Unexpected end of `attr` special form. Expected list of attributes";
-
-    match *csts.get(0).unwrap_or_else(|| pos.error_exit(no_attrs_err)) {
-        CST::List(ref attr_csts, _) => attrs = attr_csts.iter().map(parse_attribute).collect(),
-        ref cst => cst.pos().error_exit("Invalid `attr` special form. Expected list of attributes"),
-    }
-
-    let mut items = Vec::with_capacity(csts.len() - 1);
-
-    for mut item in csts[1..].iter().flat_map(parse_item) {
-        item.add_attributes(&attrs);
-        items.push(item)
-    }
-
-    items
-}
-
 /// Parse a `CST` as an item. Some items are actually compount items,
 /// so a single item tree may expand to multiple items.
 fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
     match *cst {
         CST::SExpr(ref sexpr, ref pos) if !sexpr.is_empty() => {
             match sexpr[0] {
-                CST::Ident("attr", _) => {
-                    parse_attr_form(&sexpr[1..], uses, static_defs, extern_funcs, exprs)
-                }
                 CST::Ident("use", _) => {
                     parse_use(&sexpr[1..], pos).into_iter().map(Item::Use).collect()
                 }
@@ -635,7 +477,7 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
                 _ => vec![Item::Expr(parse_expr(cst))],
             }
         }
-        _ => Item::Expr(parse_expr(cst)),
+        _ => vec![Item::Expr(parse_expr(cst))],
     }
 }
 
@@ -643,42 +485,33 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
 fn parse_items<'src>(csts: &[CST<'src>])
                      -> (Vec<Use<'src>>,
                          HashMap<Ident<'src>, StaticDef<'src>>,
-                         HashMap<Ident<'src>, Type<'src>>,
+                         HashMap<Ident<'src>, ExternProcDecl<'src>>,
                          Vec<Expr<'src>>) {
-    let mut uses = Vec::new();
-    let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
-    let mut exprs = Vec::new();
+        let mut uses = Vec::new();
+        let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
+        let mut exprs = Vec::new();
 
-    let add_item = |item| {
-        match item {
-            Item::Use(u) => uses.extend(u),
-            Item::StaticDef(id, def) => {
-                let id_s = id.s;
-                if let Some(def) = static_defs.insert(id, def) {
-                    def.pos.error_exit(format!("Duplicate static definition `{}`", id_s))
+        for item in csts.iter().flat_map(parse_item) {
+            match item {
+                Item::Use(u) => uses.push(u),
+                Item::StaticDef(id, def) => {
+                    let id_s = id.s;
+                    if let Some(def) = static_defs.insert(id, def) {
+                        def.pos.error_exit(format!("Duplicate static definition `{}`", id_s))
+                    }
                 }
-            }
-            Item::ExternProcDecl(id, decl) => {
-                let id_s = id.s;
-                if let Some(decl) = extern_funcs.insert(id, decl) {
-                    decl.pos
-                        .error_exit(format!("Duplicate external procedure declaration `{}`", id_s))
+                Item::ExternProcDecl(id, decl) => {
+                    let id_s = id.s;
+                    if let Some(decl) = extern_funcs.insert(id, decl) {
+                        decl.pos
+                            .error_exit(format!("Duplicate external procedure declaration `{}`", id_s))
+                    }
                 }
-            }
-            Item::Expr(expr) => exprs.push(expr),
-            Item::Items(items) => {
-                for item in items {
-                    add_item(item)
-                }
+                Item::Expr(expr) => exprs.push(expr),
             }
         }
-    };
 
-    for item in csts.iter().flat_map(parse_items) {
-        add_item(item)
-    }
-
-    (uses, static_defs, extern_funcs, exprs)
+        (uses, static_defs, extern_funcs, exprs)
 }
 
 /// Parse a list of `CST`s as the items of a `Module`

@@ -6,13 +6,13 @@
 //       `foo.infer_types(...)
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
+use self::InferenceErr::*;
+use lib::collections::ScopeStack;
+use lib::front::ast::*;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::mem::{replace, swap};
-use std::collections::HashMap;
-use std::borrow::Cow;
-use lib::front::ast::*;
-use lib::collections::ScopeStack;
-use self::InferenceErr::*;
 
 enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
@@ -41,55 +41,54 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 
 struct Inferer<'src> {
     vars: Vec<(Ident<'src>, Type<'src>)>,
-    const_defs: ScopeStack<Ident<'src>, Option<ConstDef<'src>>>,
-    extern_funcs: ScopeStack<Ident<'src>, Type<'src>>,
+    static_defs: ScopeStack<Ident<'src>, Option<StaticDef<'src>>>,
+    extern_funcs: ScopeStack<Ident<'src>, ExternProcDecl<'src>>,
 }
 impl<'src> Inferer<'src> {
     fn new(ast: &mut Module<'src>) -> Self {
-        let mut const_defs = ScopeStack::new();
-        const_defs.push(replace(&mut ast.const_defs, HashMap::new())
-                            .into_iter()
-                            .map(|(k, v)| (k, Some(v)))
-                            .collect());
+        let mut static_defs = ScopeStack::new();
+        static_defs.push(replace(&mut ast.static_defs, HashMap::new())
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect());
 
         let mut extern_funcs = ScopeStack::new();
         extern_funcs.push(replace(&mut ast.extern_funcs, HashMap::new()));
 
         Inferer {
             vars: Vec::new(),
-            const_defs: const_defs,
+            static_defs: static_defs,
             extern_funcs: extern_funcs,
         }
     }
 
-    fn into_inner(mut self)
-                  -> (HashMap<Ident<'src>, ConstDef<'src>>,
-                      HashMap<Ident<'src>, Type<'src>>) {
-        let const_defs = self.const_defs
-                             .pop()
-                             .expect("ICE: Inferer::into_inner: const_defs.pop() failed")
-                             .into_iter()
-                             .map(|(k, v)| {
-                                 (k,
-                                  v.expect("ICE: Inferer::into_inner: None when unmapping const \
-                                            def"))
-                             })
-                             .collect();
+    fn into_inner
+        (mut self)
+         -> (HashMap<Ident<'src>, StaticDef<'src>>, HashMap<Ident<'src>, ExternProcDecl<'src>>) {
+        let static_defs =
+            self.static_defs
+                .pop()
+                .expect("ICE: Inferer::into_inner: static_defs.pop() failed")
+                .into_iter()
+                .map(|(k, v)| {
+                    (k, v.expect("ICE: Inferer::into_inner: None when unmapping const def"))
+                })
+                .collect();
         let extern_funcs = self.extern_funcs
                                .pop()
                                .expect("ICE: Inferer::into_inner: extern_funcs.pop() failed");
 
-        (const_defs, extern_funcs)
+        (static_defs, extern_funcs)
     }
 
     fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
         self.vars.iter_mut().rev().find(|&&mut (ref b, _)| b == id).map(|&mut (_, ref mut t)| t)
     }
 
-    fn infer_const_def(&mut self,
-                       def: &mut ConstDef<'src>,
-                       expected_ty: &Type<'src>)
-                       -> Type<'src> {
+    fn infer_static_def(&mut self,
+                        def: &mut StaticDef<'src>,
+                        expected_ty: &Type<'src>)
+                        -> Type<'src> {
         self.infer_expr(&mut def.body, expected_ty)
     }
 
@@ -154,26 +153,26 @@ impl<'src> Inferer<'src> {
             // Don't infer types for external items,
             // just check compatibility with expected_ty
 
-            let extern_typ = self.extern_funcs.get_at_height(ident, height).unwrap();
+            let extern_typ = &self.extern_funcs.get_at_height(ident, height).unwrap().typ;
             if let Some(inferred) = extern_typ.infer_by(expected_ty) {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
                 bnd.path.pos.error_exit(TypeMis(expected_ty, &extern_typ))
             }
-        } else if let Some(height) = self.const_defs.get_height(ident) {
+        } else if let Some(height) = self.static_defs.get_height(ident) {
             // Binding is a constant. Do inference
 
-            let maybe_def = replace(self.const_defs.get_at_height_mut(ident, height).unwrap(),
+            let maybe_def = replace(self.static_defs.get_at_height_mut(ident, height).unwrap(),
                                     None);
 
             if let Some(mut def) = maybe_def {
                 let old_vars = replace(&mut self.vars, Vec::new());
 
-                let inferred = self.infer_const_def(&mut def, expected_ty);
+                let inferred = self.infer_static_def(&mut def, expected_ty);
 
                 self.vars = old_vars;
-                self.const_defs.update(ident, Some(def));
+                self.static_defs.update(ident, Some(def));
                 bnd.typ = inferred.clone();
 
                 inferred
@@ -264,10 +263,10 @@ impl<'src> Inferer<'src> {
             return TYPE_NIL.clone();
         };
 
-        self.const_defs.push(replace(&mut block.const_defs, HashMap::new())
-                                 .into_iter()
-                                 .map(|(k, v)| (k, Some(v)))
-                                 .collect());
+        self.static_defs.push(replace(&mut block.static_defs, HashMap::new())
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect());
 
         let old_vars_len = self.vars.len();
 
@@ -275,8 +274,7 @@ impl<'src> Inferer<'src> {
         for expr in init.iter_mut() {
             if let Expr::VarDef(ref mut var_def) = *expr {
                 self.infer_var_def(var_def, &Type::Unknown);
-                self.vars.push((var_def.binding.clone(),
-                                var_def.body.get_type().into_owned()));
+                self.vars.push((var_def.binding.clone(), var_def.body.get_type().into_owned()));
             } else {
                 self.infer_expr(expr, &Type::Unknown);
             }
@@ -303,14 +301,13 @@ impl<'src> Inferer<'src> {
 
         self.vars.truncate(old_vars_len);
 
-        block.const_defs = self.const_defs
-                               .pop()
-                               .expect("ICE: ScopeStack was empty when replacing Block const defs")
-                               .into_iter()
-                               .map(|(k, v)| {
-                                   (k, v.expect("ICE: None when unmapping block const def"))
-                               })
-                               .collect();
+        block.static_defs =
+            self.static_defs
+                .pop()
+                .expect("ICE: ScopeStack was empty when replacing Block const defs")
+                .into_iter()
+                .map(|(k, v)| (k, v.expect("ICE: None when unmapping block const def")))
+                .collect();
 
         last_typ
     }
@@ -322,11 +319,10 @@ impl<'src> Inferer<'src> {
         let alt_typ = self.infer_expr(&mut cond.alternative, expected_typ);
 
         if let Some(inferred) = cons_typ.infer_by(&alt_typ) {
-            if cons_typ == inferred && alt_typ == inferred {
-                inferred
-            } else {
-                self.infer_if(cond, &inferred)
-            }
+            let cons_typ = self.infer_expr(&mut cond.consequent, &inferred);
+            let alt_typ = self.infer_expr(&mut cond.alternative, &inferred);
+
+            if cons_typ == inferred && alt_typ == inferred { inferred } else { Type::Unknown }
         } else {
             cond.pos.error_exit(ArmsDiffer(&cons_typ, &alt_typ))
         }
@@ -450,10 +446,9 @@ impl<'src> Inferer<'src> {
                           expected_ty: &Type<'src>)
                           -> Type<'src> {
         let (expected_ty2, inner_expr) = if let Expr::TypeAscript(ref mut ascr) = *expr {
-            let expected_ty2 = expected_ty.infer_by(&ascr.typ)
-                                          .unwrap_or_else(|| {
-                                              ascr.pos.error_exit(TypeMis(expected_ty, &ascr.typ))
-                                          });
+            let expected_ty2 =
+                expected_ty.infer_by(&ascr.typ)
+                           .unwrap_or_else(|| ascr.pos.error_exit(TypeMis(expected_ty, &ascr.typ)));
 
             (expected_ty2, &mut ascr.expr as *mut _)
         } else {
@@ -513,18 +508,18 @@ impl<'src> Inferer<'src> {
 pub fn infer_types(ast: &mut Module) {
     let mut inferer = Inferer::new(ast);
 
-    let mut main = replace(inferer.const_defs
+    let mut main = replace(inferer.static_defs
                                   .get_mut("main")
                                   .expect("ICE: In infer_ast: No main def"),
                            None)
                        .unwrap();
 
-    inferer.infer_const_def(&mut main, &Type::new_proc(vec![], Type::Basic("Int64")));
+    inferer.infer_static_def(&mut main, &Type::new_proc(vec![], Type::Basic("Int64")));
 
-    inferer.const_defs.update("main", Some(main));
+    inferer.static_defs.update("main", Some(main));
 
-    let (const_defs, extern_funcs) = inferer.into_inner();
+    let (static_defs, extern_funcs) = inferer.into_inner();
 
-    ast.const_defs = const_defs;
+    ast.static_defs = static_defs;
     ast.extern_funcs = extern_funcs;
 }

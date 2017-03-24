@@ -1,10 +1,10 @@
 // TODO: Verify that all types are known
 
+use lib::ScopeStack;
+use lib::error;
+use lib::front::ast::*;
 use std::collections::HashMap;
 use std::mem::replace;
-use lib::error;
-use lib::ScopeStack;
-use lib::front::ast::*;
 
 #[derive(Debug)]
 enum Usage {
@@ -24,30 +24,32 @@ impl Usage {
 }
 
 struct Cleaner<'src> {
-    const_defs: ScopeStack<Ident<'src>, Option<(ConstDef<'src>, Usage)>>,
+    static_defs: ScopeStack<Ident<'src>, Option<(StaticDef<'src>, Usage)>>,
 }
 impl<'src> Cleaner<'src> {
     fn new() -> Cleaner<'src> {
-        Cleaner { const_defs: ScopeStack::new() }
+        Cleaner { static_defs: ScopeStack::new() }
     }
 
     fn clean_path(&mut self, path: &Path<'src>) {
-        if let Some((id, height)) = path.as_ident()
-                                        .and_then(|id| {
-                                            self.const_defs
-                                                .get_height(id)
-                                                .map(|height| (id, height))
-                                        }) {
-            let maybe_def = replace(self.const_defs.get_at_height_mut(id, height).unwrap(), None);
+        if let Some((id, height)) =
+            path.as_ident()
+                .and_then(|id| {
+                    self.static_defs
+                        .get_height(id)
+                        .map(|height| (id, height))
+                }) {
+            let maybe_def = replace(self.static_defs.get_at_height_mut(id, height).unwrap(),
+                                    None);
 
             if let Some((mut def, mut usage)) = maybe_def {
                 if usage.is_unused() {
                     usage = Usage::Used;
 
-                    self.clean_const_def(&mut def);
+                    self.clean_static_def(&mut def);
                 }
 
-                self.const_defs.update(id, Some((def, usage)));
+                self.static_defs.update(id, Some((def, usage)));
             }
         }
     }
@@ -61,31 +63,30 @@ impl<'src> Cleaner<'src> {
     }
 
     fn clean_block(&mut self, block: &mut Block<'src>) {
-        self.const_defs.push(replace(&mut block.const_defs, HashMap::new())
-                                 .into_iter()
-                                 .map(|(k, def)| (k, Some((def, Usage::Unused))))
-                                 .collect());
+        self.static_defs.push(replace(&mut block.static_defs, HashMap::new())
+            .into_iter()
+            .map(|(k, def)| (k, Some((def, Usage::Unused))))
+            .collect());
 
         for expr in &mut block.exprs {
             self.clean_expr(expr);
         }
 
-        block.const_defs = self.const_defs
-                               .pop()
-                               .expect("ICE: clean_block: ScopeStack was empty when replacing \
-                                        Block const defs")
-                               .into_iter()
-                               .filter_map(|(key, maybe_def)| {
-                                   match maybe_def.expect("ICE: clean_block: None when \
-                                                           unmapping block const def") {
-                                       (def, Usage::Used) => Some((key, def)),
-                                       (_, Usage::Unused) => {
-                                           key.pos.warn(format!("Unused constant `{}`", key));
-                                           None
-                                       }
-                                   }
-                               })
-                               .collect();
+        block.static_defs = self.static_defs
+                                .pop()
+                                .expect("ICE: clean_block: ScopeStack was empty when replacing \
+                                         Block const defs")
+                                .into_iter()
+                                .filter_map(|(key, maybe_def)| {
+            match maybe_def.expect("ICE: clean_block: None when unmapping block const def") {
+                (def, Usage::Used) => Some((key, def)),
+                (_, Usage::Unused) => {
+                    key.pos.warn(format!("Unused constant `{}`", key));
+                    None
+                }
+            }
+        })
+                                .collect();
     }
 
     fn clean_if(&mut self, cond: &mut If<'src>) {
@@ -125,7 +126,7 @@ impl<'src> Cleaner<'src> {
         }
     }
 
-    fn clean_const_def(&mut self, def: &mut ConstDef<'src>) {
+    fn clean_static_def(&mut self, def: &mut StaticDef<'src>) {
         self.clean_expr(&mut def.body)
     }
 }
@@ -133,37 +134,37 @@ impl<'src> Cleaner<'src> {
 pub fn clean_ast(ast: &mut Module) {
     let mut cleaner = Cleaner::new();
 
-    cleaner.const_defs.push(replace(&mut ast.const_defs, HashMap::new())
-                                .into_iter()
-                                .map(|(k, def)| (k, Some((def, Usage::Unused))))
-                                .collect());
+    cleaner.static_defs.push(replace(&mut ast.static_defs, HashMap::new())
+        .into_iter()
+        .map(|(k, def)| (k, Some((def, Usage::Unused))))
+        .collect());
 
-    let main = replace(cleaner.const_defs
+    let main = replace(cleaner.static_defs
                               .get_mut("main")
                               .unwrap_or_else(|| error("No `main` procedure found")),
                        None);
 
     let (mut main_def, _) = main.unwrap();
 
-    cleaner.clean_const_def(&mut main_def);
+    cleaner.clean_static_def(&mut main_def);
 
-    cleaner.const_defs.update("main", Some((main_def, Usage::Used)));
+    cleaner.static_defs.update("main", Some((main_def, Usage::Used)));
 
-    ast.const_defs = cleaner.const_defs
-                            .pop()
-                            .expect("ICE: clean_ast: ScopeStack was empty when replacing AST \
-                                     const defs")
-                            .into_iter()
-                            .filter_map(|(key, maybe_def)| {
-                                match maybe_def.expect(&format!("ICE: clean_ast: `{}` was None \
-                                                                 when unmapping AST const def",
-                                                                key)) {
-                                    (def, Usage::Used) => Some((key, def)),
-                                    (_, Usage::Unused) => {
-                                        key.pos.warn(format!("Unused constant `{}`", key));
-                                        None
-                                    }
-                                }
-                            })
-                            .collect();
+    ast.static_defs = cleaner.static_defs
+                             .pop()
+                             .expect("ICE: clean_ast: ScopeStack was empty when replacing AST \
+                                      const defs")
+                             .into_iter()
+                             .filter_map(|(key, maybe_def)| {
+        match maybe_def.expect(&format!("ICE: clean_ast: `{}` was None when unmapping AST \
+                                         const def",
+                                        key)) {
+            (def, Usage::Used) => Some((key, def)),
+            (_, Usage::Unused) => {
+                key.pos.warn(format!("Unused constant `{}`", key));
+                None
+            }
+        }
+    })
+                             .collect();
 }
