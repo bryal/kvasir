@@ -10,7 +10,6 @@ use std::process;
 use term::{self, color};
 
 pub mod lex;
-pub mod macro_;
 pub mod ast;
 pub mod parse;
 pub mod inference;
@@ -46,29 +45,6 @@ impl<'src> SrcPos<'src> {
             start: start,
             end: Some(end),
             in_expansion: None,
-        }
-    }
-
-    fn to(&self, end: &SrcPos<'src>) -> SrcPos<'src> {
-        SrcPos {
-            src: self.src,
-            start: self.start,
-            end: Some(end.end.unwrap_or(end.start)),
-            in_expansion: None,
-        }
-    }
-
-    pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
-        if self.in_expansion.is_some() {
-            // if let Some(ref mut self_exp) = self.in_expansion {
-            // Not sure whether this should be an error
-            // panic!("Internal Compiler Error: add_expansion_site: \
-            //         Tried to add expansion site `{:?}` to pos `{:?}`",
-            //        exp,
-            //        self);
-            // self_exp.add_expansion_site(exp);
-        } else {
-            self.in_expansion = Some(Box::new(exp.clone()));
         }
     }
 

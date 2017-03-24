@@ -98,8 +98,8 @@ extern crate llvm;
 extern crate itertools;
 
 use getopts::Options;
-use lib::{concrete_syntax_trees_from_src, expand_macros};
 use lib::back::compile;
+use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
 use lib::front::parse::parse;
 use lib::middle::clean_ast;
@@ -246,11 +246,7 @@ fn main() {
 
     // println!("TOKEN TREE{:#?}", csts);
 
-    let expanded_macros = expand_macros(&csts);
-
-    // println!("MACRO EXPANDED: {:#?}", expanded_macros);
-
-    let mut ast = parse(&expanded_macros);
+    let mut ast = parse(&csts);
     // println!("AST PARSED:\n{:#?}\n", ast);
 
     clean_ast(&mut ast);

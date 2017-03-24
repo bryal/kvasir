@@ -4,11 +4,11 @@
 // TODO: Use visitor pattern with a Tokenizer, wherein additional information can be stored,
 //       such as file name.
 
-use std::fmt;
-use std::borrow::Cow;
 use itertools::Itertools;
-use super::SrcPos;
 use self::LexErr::*;
+use std::borrow::Cow;
+use std::fmt;
+use super::SrcPos;
 
 /// Common errors for various lexing actions
 enum LexErr {
@@ -217,8 +217,8 @@ impl<'src> Iterator for Tokens<'src> {
     fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
         let pos = self.pos;
         let mut chars = self.src[pos..]
-                            .char_indices()
-                            .map(|(n, c)| (pos + n, c));
+            .char_indices()
+            .map(|(n, c)| (pos + n, c));
 
         while let Some((i, c)) = chars.next() {
             let (token, len) = match c {
@@ -267,22 +267,6 @@ pub enum CST<'src> {
     Str(Cow<'src, str>, SrcPos<'src>),
 }
 impl<'src> CST<'src> {
-    /// Returns whether this node is a `SExpr`
-    pub fn is_sexpr(&self) -> bool {
-        if let CST::SExpr(_, _) = *self {
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn is_ellipsis(&self) -> bool {
-        match *self {
-            CST::Ident("...", _) => true,
-            _ => false,
-        }
-    }
-
     pub fn pos(&self) -> &SrcPos<'src> {
         match *self {
             CST::SExpr(_, ref p) |
@@ -290,16 +274,6 @@ impl<'src> CST<'src> {
             CST::Ident(_, ref p) |
             CST::Num(_, ref p) |
             CST::Str(_, ref p) => p,
-        }
-    }
-
-    fn pos_mut(&mut self) -> &mut SrcPos<'src> {
-        match *self {
-            CST::SExpr(_, ref mut p) |
-            CST::List(_, ref mut p) |
-            CST::Ident(_, ref mut p) |
-            CST::Num(_, ref mut p) |
-            CST::Str(_, ref mut p) => p,
         }
     }
 
@@ -329,23 +303,6 @@ impl<'src> CST<'src> {
                            pos)
             }
             _ => pos.error_exit(Unexpected("token")),
-        }
-    }
-
-    /// Adds the position of a parent macro as an expansion site to this tree recursively
-    pub fn add_expansion_site(&mut self, exp: &SrcPos<'src>) {
-        self.pos_mut().add_expansion_site(exp);
-
-        match *self {
-            CST::SExpr(ref mut v, ref mut pos) | CST::List(ref mut v, ref mut pos) => {
-                pos.add_expansion_site(exp);
-                for t in v {
-                    t.add_expansion_site(exp)
-                }
-            }
-            CST::Ident(_, ref mut pos) | CST::Num(_, ref mut pos) | CST::Str(_, ref mut pos) => {
-                pos.add_expansion_site(exp)
-            }
         }
     }
 }
