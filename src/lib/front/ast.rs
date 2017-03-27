@@ -1,5 +1,5 @@
 use super::SrcPos;
-use std::borrow::{self, Cow};
+use std::borrow;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash;
@@ -45,7 +45,7 @@ impl<'src> Type<'src> {
     }
 
     /// If the type is a procedure type signature, extract the parameter types and the return type.
-    pub fn get_proc_sig<'t>(&'t self) -> Option<(&'t [Type<'src>], &'t Type<'src>)> {
+    pub fn get_proc_sig(&self) -> Option<(&[Type<'src>], &Type<'src>)> {
         match *self {
             Type::Construct("Proc", ref ts) => {
                 Some(ts.split_last()
@@ -135,7 +135,6 @@ pub struct ExternProcDecl<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Nil<'src> {
-    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
@@ -162,7 +161,6 @@ pub struct Binding<'src> {
 #[derive(Clone, Debug)]
 pub struct Bool<'src> {
     pub val: bool,
-    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
@@ -170,29 +168,8 @@ pub struct Bool<'src> {
 pub struct Call<'src> {
     pub proced: Expr<'src>,
     pub args: Vec<Expr<'src>>,
+    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-impl<'src> Call<'src> {
-    pub fn get_type(&self) -> Cow<Type<'src>> {
-        let proc_typ = self.proced.get_type();
-
-        if proc_typ.is_unknown() {
-            Cow::Borrowed(&TYPE_UNKNOWN)
-        } else {
-            let maybe_body = match self.proced.get_type() {
-                Cow::Borrowed(typ) => {
-                    typ.get_proc_sig()
-                       .map(|(_, body)| Cow::Borrowed(body))
-                }
-                Cow::Owned(typ) => {
-                    typ.get_proc_sig()
-                       .map(|(_, body)| Cow::Owned(body.clone()))
-                }
-            };
-
-            maybe_body.expect("ICE: Call::get_type: get_proc_sig returned None")
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -200,12 +177,8 @@ pub struct Block<'src> {
     pub static_defs: HashMap<&'src str, StaticDef<'src>>,
     pub extern_funcs: HashMap<&'src str, ExternProcDecl<'src>>,
     pub exprs: Vec<Expr<'src>>,
+    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-impl<'src> Block<'src> {
-    fn get_type(&self) -> Cow<Type<'src>> {
-        self.exprs.last().unwrap().get_type()
-    }
 }
 
 /// if-then-else expression
@@ -214,12 +187,8 @@ pub struct If<'src> {
     pub predicate: Expr<'src>,
     pub consequent: Expr<'src>,
     pub alternative: Expr<'src>,
+    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-impl<'src> If<'src> {
-    fn get_type(&self) -> Cow<Type<'src>> {
-        self.consequent.get_type()
-    }
 }
 
 // A parameter for a function/lambda/procedure
@@ -238,13 +207,8 @@ impl<'src> Param<'src> {
 pub struct Lambda<'src> {
     pub params: Vec<Param<'src>>,
     pub body: Expr<'src>,
+    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-impl<'src> Lambda<'src> {
-    pub fn get_type(&self) -> Type<'src> {
-        Type::new_proc(self.params.iter().map(|p| p.typ.clone()).collect(),
-                       self.body.get_type().into_owned())
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -313,23 +277,23 @@ impl<'src> Expr<'src> {
         }
     }
 
-    pub fn get_type(&self) -> Cow<Type<'src>> {
+    pub fn get_type(&self) -> &Type<'src> {
         match *self {
-            Expr::Nil(ref n) => Cow::Borrowed(&n.typ),
-            Expr::NumLit(ref l) => Cow::Borrowed(&l.typ),
-            Expr::StrLit(ref l) => Cow::Borrowed(&l.typ),
-            Expr::Bool(ref b) => Cow::Borrowed(&b.typ),
-            Expr::Binding(ref bnd) => Cow::Borrowed(&bnd.typ),
-            Expr::Call(ref call) => call.get_type(),
-            Expr::Block(ref block) => block.get_type(),
-            Expr::If(ref cond) => cond.get_type(),
-            Expr::Lambda(ref lam) => Cow::Owned(lam.get_type()),
-            Expr::VarDef(ref def) => Cow::Borrowed(&def.typ),
-            Expr::Assign(ref assign) => Cow::Borrowed(&assign.typ),
-            Expr::Transmute(ref trans) => Cow::Borrowed(&trans.typ),
+            Expr::Nil(_) => &TYPE_NIL,
+            Expr::NumLit(ref l) => &l.typ,
+            Expr::StrLit(ref l) => &l.typ,
+            Expr::Bool(_) => &TYPE_BOOL,
+            Expr::Binding(ref bnd) => &bnd.typ,
+            Expr::Call(ref call) => &call.typ,
+            Expr::Block(ref block) => &block.typ,
+            Expr::If(ref cond) => &cond.typ,
+            Expr::Lambda(ref lam) => &lam.typ,
+            Expr::VarDef(ref def) => &def.typ,
+            Expr::Assign(ref assign) => &assign.typ,
+            Expr::Transmute(ref trans) => &trans.typ,
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Unknown` to imply that inference is needed
-            Expr::TypeAscript(_) => Cow::Borrowed(&TYPE_UNKNOWN),
+            Expr::TypeAscript(_) => &TYPE_UNKNOWN,
         }
     }
 }

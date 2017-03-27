@@ -94,7 +94,6 @@ impl<'src> Inferer<'src> {
 
     fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         if let Some(type_nil) = expected_ty.infer_by(&TYPE_NIL) {
-            nil.typ = type_nil.clone();
             type_nil
         } else {
             nil.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
@@ -137,7 +136,6 @@ impl<'src> Inferer<'src> {
 
     fn infer_bool(&mut self, b: &mut Bool<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         if expected_ty.infer_by(&TYPE_BOOL).is_some() {
-            b.typ = TYPE_BOOL.clone();
             TYPE_BOOL.clone()
         } else {
             b.pos.error_exit(TypeMis(expected_ty, &TYPE_BOOL))
@@ -199,13 +197,13 @@ impl<'src> Inferer<'src> {
     fn infer_call_arg_types(&mut self, call: &mut Call<'src>) {
         let proc_type = call.proced.get_type();
 
-        let expected_types: Vec<Cow<Type>> = if proc_type.is_partially_known() {
+        let expected_types: Vec<&Type> = if proc_type.is_partially_known() {
             // The type of the procedure is not unknown.
             // If it's a valid procedure type, use it for inference
 
             match proc_type.get_proc_sig() {
                 Some((param_tys, _)) if param_tys.len() == call.args.len() => {
-                    param_tys.iter().map(Cow::Borrowed).collect()
+                    param_tys.iter().collect()
                 }
                 Some((param_tys, _)) => {
                     call.pos.error_exit(format!("Arity mismatch. Expected {}, found {}",
@@ -231,16 +229,16 @@ impl<'src> Inferer<'src> {
     fn infer_call<'call>(&mut self,
                          call: &'call mut Call<'src>,
                          expected_ty: &Type<'src>)
-                         -> Cow<'call, Type<'src>> {
+                         -> &'call Type<'src> {
         self.infer_call_arg_types(call);
 
         let expected_proc_type = Type::new_proc(call.args
                                                     .iter()
-                                                    .map(|arg| arg.get_type().into_owned())
+                                                    .map(|arg| arg.get_type().clone())
                                                     .collect(),
                                                 expected_ty.clone());
 
-        let old_proc_typ = call.proced.get_type().into_owned();
+        let old_proc_typ = call.proced.get_type().clone();
 
         let proc_typ = self.infer_expr(&mut call.proced, &expected_proc_type);
 
@@ -252,7 +250,13 @@ impl<'src> Inferer<'src> {
             self.infer_call_arg_types(call);
         }
 
-        call.get_type()
+        call.typ = call.proced
+                       .get_type()
+                       .get_proc_sig()
+                       .map(|(_, ret_typ)| ret_typ.clone())
+                       .unwrap_or(Type::Unknown);
+
+        &call.typ
     }
 
     fn infer_block(&mut self, block: &mut Block<'src>, expected_ty: &Type<'src>) -> Type<'src> {
@@ -273,7 +277,7 @@ impl<'src> Inferer<'src> {
         for expr in init.iter_mut() {
             if let Expr::VarDef(ref mut var_def) = *expr {
                 self.infer_var_def(var_def, &Type::Unknown);
-                self.vars.push((var_def.binding.s, var_def.body.get_type().into_owned()));
+                self.vars.push((var_def.binding.s, var_def.body.get_type().clone()));
             } else {
                 self.infer_expr(expr, &Type::Unknown);
             }
@@ -336,31 +340,32 @@ impl<'src> Inferer<'src> {
         }
     }
 
-    fn infer_lambda(&mut self, lam: &mut Lambda<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+    fn infer_lambda<'l>(&mut self,
+                        lam: &'l mut Lambda<'src>,
+                        expected_ty: &Type<'src>)
+                        -> &'l Type<'src> {
         let (expected_params, expected_body) = match expected_ty.get_proc_sig() {
             Some((params, _)) if params.len() != lam.params.len() => {
-                lam.pos.error_exit(TypeMis(expected_ty, &lam.get_type()))
+                lam.pos.error_exit(TypeMis(expected_ty, &lam.typ))
             }
             Some((params, body)) => (params.iter().collect(), body),
             None if *expected_ty == Type::Unknown => {
                 (vec![expected_ty; lam.params.len()], expected_ty)
             }
-            None => lam.pos.error_exit(TypeMis(expected_ty, &lam.get_type())),
+            None => lam.pos.error_exit(TypeMis(expected_ty, &lam.typ)),
         };
 
         // Own type is `Unknown` if no type has been inferred yet, or none was inferable
 
-        let lam_typ = lam.get_type();
-
-        if lam_typ.is_partially_known() {
-            if let Some(inferred) = expected_ty.infer_by(&lam_typ) {
-                if lam_typ == inferred {
+        if lam.typ.is_partially_known() {
+            if let Some(inferred) = expected_ty.infer_by(&lam.typ) {
+                if lam.typ == inferred {
                     // Own type can't be inferred further by `expected_ty`
-                    return lam_typ;
+                    return &lam.typ;
                 }
             } else {
                 // Own type and expected type are not compatible. Type mismatch
-                lam.pos.error_exit(TypeMis(expected_ty, &lam_typ));
+                lam.pos.error_exit(TypeMis(expected_ty, &lam.typ));
             }
         }
 
@@ -381,7 +386,9 @@ impl<'src> Inferer<'src> {
             *param = found;
         }
 
-        lam.get_type()
+        lam.typ = Type::new_proc(lam.params.iter().map(|p| p.typ.clone()).collect(),
+                                 lam.body.get_type().clone());
+        &lam.typ
     }
 
     fn infer_var_def(&mut self, def: &mut VarDef<'src>, expected_ty: &Type<'src>) -> Type<'src> {
@@ -451,7 +458,7 @@ impl<'src> Inferer<'src> {
                 if let Some(inferred) = expected_ty.infer_by(&expr_typ) {
                     if *expr_typ == inferred {
                         // Own type can't be inferred further by `expected_ty`
-                        return expr_typ.into_owned();
+                        return expr_typ.clone();
                     }
                     expected_ty = Cow::Owned(inferred)
                 } else {
@@ -471,10 +478,10 @@ impl<'src> Inferer<'src> {
             Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_ty),
             Expr::Bool(ref mut b) => self.infer_bool(b, &expected_ty),
             Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_ty),
-            Expr::Call(ref mut call) => self.infer_call(call, &expected_ty).into_owned(),
+            Expr::Call(ref mut call) => self.infer_call(call, &expected_ty).clone(),
             Expr::Block(ref mut block) => self.infer_block(block, &expected_ty),
             Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
-            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
+            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty).clone(),
             Expr::Transmute(ref mut trans) => self.infer_transmute(trans, &expected_ty).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
         }

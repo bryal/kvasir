@@ -83,6 +83,7 @@ fn parse_sexpr<'src>(proc_cst: &CST<'src>,
     Call {
         proced: parse_expr(proc_cst),
         args: args_csts.iter().map(parse_expr).collect(),
+        typ: Type::Unknown,
         pos: pos,
     }
 }
@@ -99,6 +100,7 @@ fn parse_block<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Option<Block<'src
             static_defs: static_defs,
             extern_funcs: extern_funcs,
             exprs: exprs,
+            typ: Type::Unknown,
             pos: pos,
         })
     }
@@ -113,6 +115,7 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
             predicate: parse_expr(&csts[0]),
             consequent: parse_expr(&csts[1]),
             alternative: parse_expr(&csts[2]),
+            typ: Type::Unknown,
             pos: pos,
         }
     }
@@ -132,6 +135,7 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
                                    })
                                    .collect(),
                 body: parse_expr(&csts[1]),
+                typ: Type::Unknown,
                 pos: pos,
             }
         }
@@ -207,7 +211,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("begin", _) => {
                         parse_block(tail, pos.clone())
                             .map(|block| Expr::Block(Box::new(block)))
-                            .unwrap_or(Expr::Nil(Nil { typ: Type::Unknown, pos: pos.clone() }))
+                            .unwrap_or(Expr::Nil(Nil { pos: pos.clone() }))
                     }
                     CST::Ident("def-var", _) => {
                         Expr::VarDef(Box::new(parse_var_def(tail, pos.clone())))
@@ -222,22 +226,14 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     _ => Expr::Call(Box::new(parse_sexpr(&sexpr[0], tail, pos.clone()))),
                 }
             } else {
-                Expr::Nil(Nil { typ: Type::Unknown, pos: pos.clone() })
+                Expr::Nil(Nil { pos: pos.clone() })
             }
         }
         CST::Ident("true", ref pos) => {
-            Expr::Bool(Bool {
-                val: true,
-                typ: Type::Unknown,
-                pos: pos.clone(),
-            })
+            Expr::Bool(Bool { val: true, pos: pos.clone() })
         }
         CST::Ident("false", ref pos) => {
-            Expr::Bool(Bool {
-                val: false,
-                typ: Type::Unknown,
-                pos: pos.clone(),
-            })
+            Expr::Bool(Bool { val: false, pos: pos.clone() })
         }
         CST::Ident(ident, ref pos) => {
             Expr::Binding(Binding {

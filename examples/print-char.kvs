@@ -23,4 +23,5 @@
 
 (define main
   (lambda ()
-    (print-n-to-0 9)))
+    (begin
+      (print-n-to-0 9))))

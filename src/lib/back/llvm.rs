@@ -165,11 +165,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     fn gen_bool(&self, b: &'ast ast::Bool<'src>) -> &'ctx Value {
-        if b.typ == ast::Type::Basic("Bool") {
-            b.val.compile(self.context)
-        } else {
-            unimplemented!()
-        }
+        b.val.compile(self.context)
     }
 
     /// Generate IR for a binding used as an r-value
@@ -354,7 +350,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                   env: &mut Env<'src, 'ast, 'ctx>,
                   lam: &'ast ast::Lambda<'src>)
                   -> &'ctx Value {
-        let anon = self.gen_func_decl("lambda", &lam.get_type());
+        let anon = self.gen_func_decl("lambda", &lam.typ);
 
         self.build_func_def(env, anon, lam);
 
@@ -613,7 +609,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         for (&id, static_def) in static_defs.iter() {
             match static_def.body {
                 Expr::Lambda(ref lam) => {
-                    let func: &_ = self.gen_func_decl(id, &lam.get_type());
+                    let func: &_ = self.gen_func_decl(id, &lam.typ);
                     func_decls.insert(id, func);
                     undef_funcs.push((func, lam));
                 }
