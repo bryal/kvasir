@@ -185,16 +185,3 @@ impl<'src> Debug for SrcPos<'src> {
         }
     }
 }
-
-pub fn error<E: Display>(e: E) -> ! {
-    let mut t = term::stdout().expect("Could not acquire access to stdout");
-
-    t.fg(color::BRIGHT_RED).ok();
-    print!("Error: ");
-    t.reset().ok();
-
-    println!("{}", e);
-
-    println!("\nError occured during compilation. Exiting\n");
-    exit()
-}

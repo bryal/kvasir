@@ -40,9 +40,9 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 }
 
 struct Inferer<'src> {
-    vars: Vec<(Ident<'src>, Type<'src>)>,
-    static_defs: ScopeStack<Ident<'src>, Option<StaticDef<'src>>>,
-    extern_funcs: ScopeStack<Ident<'src>, ExternProcDecl<'src>>,
+    vars: Vec<(&'src str, Type<'src>)>,
+    static_defs: ScopeStack<&'src str, Option<StaticDef<'src>>>,
+    extern_funcs: ScopeStack<&'src str, ExternProcDecl<'src>>,
 }
 impl<'src> Inferer<'src> {
     fn new(ast: &mut Module<'src>) -> Self {
@@ -64,7 +64,7 @@ impl<'src> Inferer<'src> {
 
     fn into_inner
         (mut self)
-         -> (HashMap<Ident<'src>, StaticDef<'src>>, HashMap<Ident<'src>, ExternProcDecl<'src>>) {
+         -> (HashMap<&'src str, StaticDef<'src>>, HashMap<&'src str, ExternProcDecl<'src>>) {
         let static_defs =
             self.static_defs
                 .pop()
@@ -82,7 +82,7 @@ impl<'src> Inferer<'src> {
     }
 
     fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
-        self.vars.iter_mut().rev().find(|&&mut (ref b, _)| b == id).map(|&mut (_, ref mut t)| t)
+        self.vars.iter_mut().rev().find(|&&mut (b, _)| b == id).map(|&mut (_, ref mut t)| t)
     }
 
     fn infer_static_def(&mut self,
@@ -145,26 +145,25 @@ impl<'src> Inferer<'src> {
     }
 
     fn infer_binding(&mut self, bnd: &mut Binding<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        let ident = bnd.path.as_ident().unwrap_or_else(|| unimplemented!());
-
         // In order to not violate any borrowing rules, use get_height to check if entry exists
         // and to speed up upcoming lookup
-        if let Some(height) = self.extern_funcs.get_height(ident) {
+        if let Some(height) = self.extern_funcs.get_height(bnd.ident.s) {
             // Don't infer types for external items,
             // just check compatibility with expected_ty
 
-            let extern_typ = &self.extern_funcs.get_at_height(ident, height).unwrap().typ;
+            let extern_typ = &self.extern_funcs.get_at_height(bnd.ident.s, height).unwrap().typ;
             if let Some(inferred) = extern_typ.infer_by(expected_ty) {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.path.pos.error_exit(TypeMis(expected_ty, &extern_typ))
+                bnd.ident.pos.error_exit(TypeMis(expected_ty, &extern_typ))
             }
-        } else if let Some(height) = self.static_defs.get_height(ident) {
+        } else if let Some(height) = self.static_defs.get_height(bnd.ident.s) {
             // Binding is a constant. Do inference
 
-            let maybe_def = replace(self.static_defs.get_at_height_mut(ident, height).unwrap(),
-                                    None);
+            let maybe_def =
+                replace(self.static_defs.get_at_height_mut(bnd.ident.s, height).unwrap(),
+                        None);
 
             if let Some(mut def) = maybe_def {
                 let old_vars = replace(&mut self.vars, Vec::new());
@@ -172,7 +171,7 @@ impl<'src> Inferer<'src> {
                 let inferred = self.infer_static_def(&mut def, expected_ty);
 
                 self.vars = old_vars;
-                self.static_defs.update(ident, Some(def));
+                self.static_defs.update(bnd.ident.s, Some(def));
                 bnd.typ = inferred.clone();
 
                 inferred
@@ -182,7 +181,7 @@ impl<'src> Inferer<'src> {
 
                 Type::Unknown
             }
-        } else if let Some(var_ty) = self.get_var_type_mut(ident) {
+        } else if let Some(var_ty) = self.get_var_type_mut(bnd.ident.s) {
             // Binding is a variable
 
             if let Some(inferred) = var_ty.infer_by(expected_ty) {
@@ -190,10 +189,10 @@ impl<'src> Inferer<'src> {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.path.pos.error_exit(TypeMis(expected_ty, var_ty))
+                bnd.ident.pos.error_exit(TypeMis(expected_ty, var_ty))
             }
         } else {
-            bnd.path.pos.error_exit(format!("Unresolved path `{}`", ident))
+            bnd.ident.pos.error_exit(format!("Unresolved path `{}`", bnd.ident))
         }
     }
 
@@ -274,7 +273,7 @@ impl<'src> Inferer<'src> {
         for expr in init.iter_mut() {
             if let Expr::VarDef(ref mut var_def) = *expr {
                 self.infer_var_def(var_def, &Type::Unknown);
-                self.vars.push((var_def.binding.clone(), var_def.body.get_type().into_owned()));
+                self.vars.push((var_def.binding.s, var_def.body.get_type().into_owned()));
             } else {
                 self.infer_expr(expr, &Type::Unknown);
             }
@@ -369,7 +368,7 @@ impl<'src> Inferer<'src> {
 
         let (vars_len, n_params) = (self.vars.len(), lam.params.len());
 
-        self.vars.extend(lam.params.iter().cloned().map(|param| (param.ident, param.typ)));
+        self.vars.extend(lam.params.iter().cloned().map(|param| (param.ident.s, param.typ)));
 
         self.infer_expr(&mut lam.body, &expected_body);
 
@@ -402,27 +401,6 @@ impl<'src> Inferer<'src> {
             inferred
         } else {
             assign.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
-        }
-    }
-
-    fn infer_symbol(&mut self, symbol: &mut Symbol<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        if let Some(inferred) = expected_ty.infer_by(&TYPE_SYMBOL) {
-            symbol.typ = inferred.clone();
-            inferred
-        } else {
-            symbol.ident.pos.error_exit(TypeMis(expected_ty, &TYPE_SYMBOL))
-        }
-    }
-
-
-    fn infer_deref(&mut self, deref: &mut Deref<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        let expected_ref_typ = Type::Construct("RawPtr", vec![expected_ty.clone()]);
-
-        let ref_typ = self.infer_expr(&mut deref.r, &expected_ref_typ);
-
-        match ref_typ {
-            Type::Construct("RawPtr", mut args) => args.pop().unwrap_or_else(|| unreachable!()),
-            _ => unreachable!(),
         }
     }
 
@@ -497,8 +475,6 @@ impl<'src> Inferer<'src> {
             Expr::Block(ref mut block) => self.infer_block(block, &expected_ty),
             Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty),
-            Expr::Symbol(ref mut sym) => self.infer_symbol(sym, &expected_ty),
-            Expr::Deref(ref mut deref) => self.infer_deref(deref, &expected_ty),
             Expr::Transmute(ref mut trans) => self.infer_transmute(trans, &expected_ty).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
         }

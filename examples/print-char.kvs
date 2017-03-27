@@ -6,7 +6,7 @@
 (def-static print-n
   (lambda (n)
     (begin
-      (def-var-mut ascii-n 48)
+      (def-var ascii-n 48)
       (set ascii-n (add-int8 ascii-n n))
       (putchar ascii-n)
       (putchar 10)

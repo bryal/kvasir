@@ -60,51 +60,6 @@ fn parse_ident<'src>(cst: &CST<'src>) -> Ident<'src> {
     }
 }
 
-/// Parse a `CST` as a `Path`
-fn parse_path<'src>(cst: &CST<'src>) -> Path<'src> {
-    match *cst {
-        CST::Ident(s, ref pos) => Path::from_str(s, pos.clone()),
-        _ => cst.pos().error_exit(Expected("path")),
-    }
-}
-
-/// Parse a `CST` as a tree of `Path`s, returning a vec of the canonicalized form
-/// of the path in each leaf.
-/// E.g. `(a\b (c w x) y z)` corresponds to the canonicalized paths
-/// `a\b\c\w`, `a\b\c\x`, `a\b\y`, `a\b\z`
-fn parse_paths_tree<'src>(cst: &CST<'src>) -> Vec<Path<'src>> {
-    match *cst {
-        CST::SExpr(ref compound, ref pos) => {
-            if let Some((chead, tail)) = compound.split_first() {
-                let path_head = parse_path(chead);
-                tail.iter()
-                    .map(parse_paths_tree)
-                    .flat_map(|v| v)
-                    .map(|sub| {
-                        path_head.clone()
-                                 .concat(&sub)
-                                 .unwrap_or_else(|_| sub.pos.error_exit("Sub-path is absolute"))
-                    })
-                    .collect()
-            } else {
-                pos.error_exit("Empty path compound")
-            }
-        }
-        CST::Ident(ident, ref pos) => vec![Path::from_str(ident, pos.clone())],
-        CST::Num(_, ref pos) => pos.error_exit("Expected path, found numeric literal"),
-        CST::Str(_, ref pos) => pos.error_exit("Expected path, found string literal"),
-    }
-}
-
-/// Parse a list of `CST`s as a list of trees of paths to `Use`
-fn parse_use<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Vec<Use<'src>> {
-    csts.iter()
-        .map(parse_paths_tree)
-        .flat_map(|paths| paths)
-        .map(|path| Use { path: path, pos: pos.clone() })
-        .collect()
-}
-
 /// Parse a list of `CST` as the parts of the definition of a static
 fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>, StaticDef<'src>) {
     if let (Some(ident_cst), Some(body_cst)) = (csts.get(0), csts.get(1)) {
@@ -135,13 +90,12 @@ fn parse_sexpr<'src>(proc_cst: &CST<'src>,
 /// Parse a list of `CST`s as a `Block`.
 /// Returns `None` if there are no expressions in the block.
 fn parse_block<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Option<Block<'src>> {
-    let (uses, static_defs, extern_funcs, exprs) = parse_items(csts);
+    let (static_defs, extern_funcs, exprs) = parse_items(csts);
 
     if exprs.is_empty() {
         None
     } else {
         Some(Block {
-            uses: uses,
             static_defs: static_defs,
             extern_funcs: extern_funcs,
             exprs: exprs,
@@ -181,7 +135,7 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
                 pos: pos,
             }
         }
-        _ => csts[0].pos().error_exit(Expected("list")),
+        _ => csts[0].pos().error_exit(Expected("parameter list")),
     }
 }
 
@@ -194,13 +148,12 @@ fn parse_var_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> VarDef<'src> {
         CST::Ident(binding, ref binding_pos) => {
             VarDef {
                 binding: Ident::new(binding, binding_pos.clone()),
-                mutable: false,
                 body: parse_expr(&csts[1]),
                 typ: Type::Unknown,
                 pos: pos,
             }
         }
-        _ => csts[0].pos().error_exit(Expected("list")),
+        _ => csts[0].pos().error_exit(Expected("identifier")),
     }
 }
 
@@ -215,14 +168,6 @@ fn parse_assign<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
         typ: Type::Unknown,
         pos: pos,
     }
-}
-
-/// Parse a list of `CST`s as the parts of a `Deref`
-fn parse_deref<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Deref<'src> {
-    if csts.len() != 1 {
-        pos.error_exit(ArityMis(1, csts.len()))
-    }
-    Deref { r: parse_expr(&csts[0]), pos: pos }
 }
 
 /// Parse a `CST` as an expression to `Transmute`
@@ -250,56 +195,11 @@ fn parse_type_ascript<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> TypeAscrip
 }
 
 /// Parse a `CST` as an `Expr`
-fn parse_quoted_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
-    match *cst {
-        CST::SExpr(ref list, ref pos) => {
-            Expr::Call(Box::new(Call {
-                proced: Expr::Binding(Binding {
-                    path: Path::from_str("list", pos.clone()),
-                    typ: Type::Unknown,
-                }),
-                args: list.iter()
-                          .map(|li| parse_quoted_expr(li))
-                          .collect(),
-                pos: pos.clone(),
-            }))
-        }
-        CST::Ident(ident, ref pos) => {
-            Expr::Symbol(Symbol {
-                ident: Ident::new(ident, pos.clone()),
-                typ: Type::Unknown,
-            })
-        }
-        CST::Num(num, ref pos) => {
-            Expr::NumLit(NumLit {
-                lit: num,
-                typ: Type::Unknown,
-                pos: pos.clone(),
-            })
-        }
-        CST::Str(ref s, ref pos) => {
-            Expr::StrLit(StrLit {
-                lit: s.clone(),
-                typ: Type::Unknown,
-                pos: pos.clone(),
-            })
-        }
-    }
-}
-
-/// Parse a `CST` as an `Expr`
 pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
     match *cst {
         CST::SExpr(ref sexpr, ref pos) => {
             if let Some((head, tail)) = sexpr.split_first() {
                 match *head {
-                    CST::Ident("quote", _) => {
-                        if let Some(to_quote) = tail.first() {
-                            parse_quoted_expr(to_quote)
-                        } else {
-                            pos.error_exit(ArityMis(1, sexpr.len()))
-                        }
-                    }
                     CST::Ident("if", _) => Expr::If(Box::new(parse_if(tail, pos.clone()))),
                     CST::Ident("lambda", _) => {
                         Expr::Lambda(Box::new(parse_lambda(tail, pos.clone())))
@@ -312,14 +212,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("def-var", _) => {
                         Expr::VarDef(Box::new(parse_var_def(tail, pos.clone())))
                     }
-                    CST::Ident("def-var-mut", _) => {
-                        Expr::VarDef(Box::new(VarDef {
-                            mutable: true,
-                            ..parse_var_def(tail, pos.clone())
-                        }))
-                    }
                     CST::Ident("set", _) => Expr::Assign(Box::new(parse_assign(tail, pos.clone()))),
-                    CST::Ident("deref", _) => Expr::Deref(Box::new(parse_deref(tail, pos.clone()))),
                     CST::Ident("transmute", _) => {
                         Expr::Transmute(Box::new(parse_transmute(tail, pos.clone())))
                     }
@@ -348,7 +241,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
         }
         CST::Ident(ident, ref pos) => {
             Expr::Binding(Binding {
-                path: Path::from_str(ident, pos.clone()),
+                ident: Ident::new(ident, pos.clone()),
                 typ: Type::Unknown,
             })
         }
@@ -399,9 +292,6 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
     match *cst {
         CST::SExpr(ref sexpr, ref pos) if !sexpr.is_empty() => {
             match sexpr[0] {
-                CST::Ident("use", _) => {
-                    parse_use(&sexpr[1..], pos).into_iter().map(Item::Use).collect()
-                }
                 CST::Ident("def-static", _) => {
                     let (id, def) = parse_static_def(&sexpr[1..], pos.clone());
                     vec![Item::StaticDef(id, def)]
@@ -419,46 +309,40 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
 
 /// Parse a list of `CST`s as a list of items
 fn parse_items<'src>(csts: &[CST<'src>])
-                     -> (Vec<Use<'src>>,
-                         HashMap<Ident<'src>, StaticDef<'src>>,
-                         HashMap<Ident<'src>, ExternProcDecl<'src>>,
+                     -> (HashMap<&'src str, StaticDef<'src>>,
+                         HashMap<&'src str, ExternProcDecl<'src>>,
                          Vec<Expr<'src>>) {
-    let mut uses = Vec::new();
     let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
     let mut exprs = Vec::new();
 
     for item in csts.iter().flat_map(parse_item) {
         match item {
-            Item::Use(u) => uses.push(u),
             Item::StaticDef(id, def) => {
-                let id_s = id.s;
-                if let Some(def) = static_defs.insert(id, def) {
-                    def.pos.error_exit(format!("Duplicate static definition `{}`", id_s))
+                if let Some(def) = static_defs.insert(id.s, def) {
+                    def.pos.error_exit(format!("Duplicate static definition `{}`", id.s))
                 }
             }
             Item::ExternProcDecl(id, decl) => {
-                let id_s = id.s;
-                if let Some(decl) = extern_funcs.insert(id, decl) {
+                if let Some(decl) = extern_funcs.insert(id.s, decl) {
                     decl.pos
-                        .error_exit(format!("Duplicate external procedure declaration `{}`", id_s))
+                        .error_exit(format!("Duplicate external procedure declaration `{}`", id.s))
                 }
             }
             Item::Expr(expr) => exprs.push(expr),
         }
     }
 
-    (uses, static_defs, extern_funcs, exprs)
+    (static_defs, extern_funcs, exprs)
 }
 
 /// Parse a list of `CST`s as the items of a `Module`
 fn parse_module<'src>(csts: &[CST<'src>]) -> Module<'src> {
-    let (uses, static_defs, extern_funcs, exprs) = parse_items(csts);
+    let (static_defs, extern_funcs, exprs) = parse_items(csts);
 
     for expr in exprs {
         expr.pos().error_exit("Expression at top level");
     }
     Module {
-        uses: uses,
         static_defs: static_defs,
         extern_funcs: extern_funcs,
     }

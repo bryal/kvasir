@@ -1,9 +1,8 @@
-
+use self::CodegenErr::*;
 use lib::collections::ScopeStack;
 use lib::front::SrcPos;
 use lib::front::ast::{self, Expr};
 use llvm::*;
-use self::CodegenErr::*;
 use std::{fmt, mem};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -178,24 +177,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                      env: &mut Env<'src, 'ast, 'ctx>,
                      bnd: &'ast ast::Binding<'src>)
                      -> &'ctx Value {
-        let ident = bnd.path.as_ident().expect("path was not ident");
-
         // Function pointers are returned as-is,
         // while statics and variables are loaded into registers
         env.statics
-           .get(ident)
+           .get(bnd.ident.s)
            .map(|&(ptr, _)| &***ptr)
-           .or(env.get_var(ident))
+           .or(env.get_var(bnd.ident.s))
            .map(|ptr| {
                let v = self.builder.build_load(ptr);
-               v.set_name(&format!("{}_tmp", ident));
+               v.set_name(&format!("{}_tmp", bnd.ident.s));
                v
            })
            .or(env.funcs
-                  .get(ident)
+                  .get(bnd.ident.s)
                   .map(|&func| &***func))
            .unwrap_or_else(|| {
-               bnd.path.pos.error_exit(ICE("undefined binding at compile time".into()))
+               bnd.ident.pos.error_exit(ICE("undefined binding at compile time".into()))
            })
     }
 
@@ -378,12 +375,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn gen_lvalue(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
             Expr::Binding(ref bnd) => {
-                bnd.path
-                   .as_ident()
-                   .and_then(|id| env.get_var(id))
+                env.get_var(bnd.ident.s)
                    .unwrap_or_else(|| expr.pos().error_exit("Invalid assignee expression"))
             }
-            Expr::Deref(ref deref) => self.gen_expr(env, &deref.r),
             _ => expr.pos().error_exit("Invalid assignee expression"),
         }
     }
@@ -392,13 +386,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let var = self.gen_lvalue(env, &assign.lhs);
 
         self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
-    }
-
-    fn gen_deref(&self,
-                 env: &mut Env<'src, 'ast, 'ctx>,
-                 deref: &'ast ast::Deref<'src>)
-                 -> &'ctx Value {
-        self.builder.build_load(self.gen_expr(env, &deref.r))
     }
 
     fn gen_transmute(&self,
@@ -466,8 +453,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 self.gen_assign(env, assign);
                 self.gen_nil()
             }
-            Expr::Symbol(_) => unimplemented!(),
-            Expr::Deref(ref deref) => self.gen_deref(env, deref),
             Expr::Transmute(ref trans) => self.gen_transmute(env, trans),
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
@@ -495,13 +480,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                               env: &mut Env<'src, 'ast, 'ctx>,
                               bnd: &ast::Binding<'src>)
                               -> &'ctx Value {
-        let ident = bnd.path.as_ident().expect("path was not ident");
-
         env.statics
-           .get(ident)
+           .get(bnd.ident.s)
            .cloned()
            .map(|(_, e)| self.gen_const_expr(env, e))
-           .unwrap_or_else(|| bnd.path.pos.error_exit("binding does not point to constant"))
+           .unwrap_or_else(|| bnd.ident.pos.error_exit("binding does not point to constant"))
     }
 
 
@@ -515,35 +498,35 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                        .collect::<Vec<_>>();
 
         match call.proced {
-            Expr::Binding(ref bnd) if &bnd.path == "+" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "+" => {
                 self.builder.build_add(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "-" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "-" => {
                 self.builder.build_sub(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "*" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "*" => {
                 self.builder.build_mul(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "/" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "/" => {
                 self.builder.build_div(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "and" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "and" => {
                 self.builder.build_and(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "or" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "or" => {
                 self.builder.build_or(&args[0], &args[1])
             }
-            Expr::Binding(ref bnd) if &bnd.path == "=" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "=" => {
                 self.builder.build_cmp(&args[0], &args[1], Predicate::Equal)
             }
-            Expr::Binding(ref bnd) if &bnd.path == ">" => {
+            Expr::Binding(ref bnd) if &bnd.ident == ">" => {
                 self.builder.build_cmp(&args[0], &args[1], Predicate::GreaterThan)
             }
-            Expr::Binding(ref bnd) if &bnd.path == "<" => {
+            Expr::Binding(ref bnd) if &bnd.ident == "<" => {
                 self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan)
             }
             Expr::Binding(ref bnd) => {
-                bnd.path.pos.error_exit("Binding does not point to a constant function")
+                bnd.ident.pos.error_exit("Binding does not point to a constant function")
             }
             _ => call.pos.error_exit("Non-constant function in constant expression"),
         }
@@ -610,10 +593,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     pub fn gen_extern_decls(&self,
                             env: &mut Env<'src, 'ast, 'ctx>,
-                            extern_funcs: &HashMap<ast::Ident<'src>, ast::ExternProcDecl<'src>>) {
+                            extern_funcs: &HashMap<&'src str, ast::ExternProcDecl<'src>>) {
         let mut func_decls = HashMap::new();
 
-        for (id, typ) in extern_funcs.iter().map(|(id, decl)| (id.s, &decl.typ)) {
+        for (id, typ) in extern_funcs.iter().map(|(id, decl)| (*id, &decl.typ)) {
             func_decls.insert(id, self.gen_func_decl(id, typ) as &_);
         }
 
@@ -622,12 +605,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     pub fn gen_static_defs(&self,
                            env: &mut Env<'src, 'ast, 'ctx>,
-                           static_defs: &'ast HashMap<ast::Ident<'src>, ast::StaticDef<'src>>) {
+                           static_defs: &'ast HashMap<&'src str, ast::StaticDef<'src>>) {
         let (mut func_decls, mut static_decls) = (HashMap::new(), HashMap::new());
         // function declarations that are to be defined
         let (mut undef_funcs, mut undef_statics) = (Vec::new(), Vec::new());
 
-        for (id, static_def) in static_defs.iter().map(|(id, static_def)| (id.s, static_def)) {
+        for (&id, static_def) in static_defs.iter() {
             match static_def.body {
                 Expr::Lambda(ref lam) => {
                     let func: &_ = self.gen_func_decl(id, &lam.get_type());

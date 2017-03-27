@@ -102,7 +102,6 @@ use lib::back::compile;
 use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
 use lib::front::parse::parse;
-use lib::middle::clean_ast;
 use std::{env, fmt};
 use std::fs::{File, canonicalize};
 use std::io::Read;
@@ -248,9 +247,6 @@ fn main() {
 
     let mut ast = parse(&csts);
     // println!("AST PARSED:\n{:#?}\n", ast);
-
-    clean_ast(&mut ast);
-    // println!("AST REMOVED UNUSED:\n{:#?}\n", ast);
 
     infer_types(&mut ast);
     // println!("AST INFERED:\n{:#?}\n", ast);

@@ -8,7 +8,6 @@ lazy_static!{
     pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
     pub static ref TYPE_NIL: Type<'static> = Type::Basic("Nil");
     pub static ref TYPE_BOOL: Type<'static> = Type::Basic("Bool");
-    pub static ref TYPE_SYMBOL: Type<'static> = Type::Basic("Symbol");
     pub static ref TYPE_BYTE_SLICE: Type<'static> = Type::Construct("Slice",
                                                                     vec![Type::Basic("UInt8")]);
 }
@@ -122,85 +121,6 @@ impl<'src> fmt::Display for Ident<'src> {
     }
 }
 
-/// A path to an expression or item. Could be a path to a module in a use statement,
-/// of a path to a function or static in an expression.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Path<'src> {
-    parts: Vec<&'src str>,
-    is_absolute: bool,
-    pub pos: SrcPos<'src>,
-}
-impl<'src> Path<'src> {
-    pub fn is_absolute(&self) -> bool {
-        self.is_absolute
-    }
-
-    /// If self is just a simple ident, return it as Some
-    pub fn as_ident(&self) -> Option<&str> {
-        if !self.is_absolute && self.parts.len() == 1 {
-            Some(*self.parts.first().unwrap())
-        } else {
-            None
-        }
-    }
-
-    /// Concatenates two paths.
-    ///
-    /// Returns both `self` as `Err` if right hand path is absolute
-    pub fn concat(mut self, other: &Self) -> Result<Self, Self> {
-        if other.is_absolute {
-            Err(self)
-        } else {
-            self.parts.extend(other.parts.iter());
-            Ok(self)
-        }
-    }
-
-    pub fn to_string(&self) -> String {
-        format!("{}{}{}",
-                if self.is_absolute() { "\\" } else { "" },
-                self.parts[0],
-                self.parts[1..].iter().fold(String::new(), |acc, p| acc + "\\" + p))
-    }
-
-    pub fn from_str(path_str: &'src str, pos: SrcPos<'src>) -> Self {
-        let (is_absolute, path_str) = if path_str.ends_with("\\") {
-            pos.error_exit("Path ends with `\\`")
-        } else if path_str.starts_with('\\') {
-            if path_str.len() == 1 {
-                pos.error_exit("Path is a lone `\\`")
-            }
-            (true, &path_str[1..])
-        } else {
-            (false, path_str)
-        };
-
-        Path {
-            parts: path_str.split('\\')
-                           .map(|part| if part == "" {
-                               pos.error_exit("Invalid path")
-                           } else {
-                               part
-                           })
-                           .collect(),
-            is_absolute: is_absolute,
-            pos: pos,
-        }
-    }
-}
-impl<'src> PartialEq<str> for Path<'src> {
-    fn eq(&self, rhs: &str) -> bool {
-        self.to_string() == rhs
-    }
-}
-
-// TODO: Make recursive, like how it's represented in source
-#[derive(Clone, Debug)]
-pub struct Use<'src> {
-    pub path: Path<'src>,
-    pub pos: SrcPos<'src>,
-}
-
 #[derive(Clone, Debug)]
 pub struct StaticDef<'src> {
     pub body: Expr<'src>,
@@ -235,7 +155,7 @@ pub struct StrLit<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Binding<'src> {
-    pub path: Path<'src>,
+    pub ident: Ident<'src>,
     pub typ: Type<'src>,
 }
 
@@ -277,9 +197,8 @@ impl<'src> Call<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Block<'src> {
-    pub uses: Vec<Use<'src>>,
-    pub static_defs: HashMap<Ident<'src>, StaticDef<'src>>,
-    pub extern_funcs: HashMap<Ident<'src>, ExternProcDecl<'src>>,
+    pub static_defs: HashMap<&'src str, StaticDef<'src>>,
+    pub extern_funcs: HashMap<&'src str, ExternProcDecl<'src>>,
     pub exprs: Vec<Expr<'src>>,
     pub pos: SrcPos<'src>,
 }
@@ -331,7 +250,6 @@ impl<'src> Lambda<'src> {
 #[derive(Clone, Debug)]
 pub struct VarDef<'src> {
     pub binding: Ident<'src>,
-    pub mutable: bool,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
@@ -343,32 +261,6 @@ pub struct Assign<'src> {
     pub rhs: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Symbol<'src> {
-    pub ident: Ident<'src>,
-    pub typ: Type<'src>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Deref<'src> {
-    pub r: Expr<'src>,
-    pub pos: SrcPos<'src>,
-}
-impl<'src> Deref<'src> {
-    pub fn get_type(&self) -> Cow<Type<'src>> {
-        match self.r.get_type() {
-            Cow::Owned(Type::Construct("RawPtr", ref args)) => {
-                Cow::Owned(args.first().cloned().unwrap_or_else(|| unreachable!()))
-            }
-            Cow::Borrowed(&Type::Construct("RawPtr", ref args)) => {
-                Cow::Borrowed(args.first().unwrap_or_else(|| unreachable!()))
-            }
-            ref t if **t == Type::Unknown => Cow::Borrowed(&TYPE_UNKNOWN),
-            _ => unreachable!(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -398,8 +290,6 @@ pub enum Expr<'src> {
     Lambda(Box<Lambda<'src>>),
     VarDef(Box<VarDef<'src>>),
     Assign(Box<Assign<'src>>),
-    Symbol(Symbol<'src>),
-    Deref(Box<Deref<'src>>),
     Transmute(Box<Transmute<'src>>),
     /// Type ascription. E.g. `(:Int32 42)`
     TypeAscript(Box<TypeAscript<'src>>),
@@ -411,15 +301,13 @@ impl<'src> Expr<'src> {
             Expr::NumLit(ref l) => &l.pos,
             Expr::StrLit(ref l) => &l.pos,
             Expr::Bool(ref b) => &b.pos,
-            Expr::Binding(ref bnd) => &bnd.path.pos,
+            Expr::Binding(ref bnd) => &bnd.ident.pos,
             Expr::Call(ref call) => &call.pos,
             Expr::Block(ref block) => &block.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
             Expr::VarDef(ref def) => &def.pos,
             Expr::Assign(ref a) => &a.pos,
-            Expr::Symbol(ref s) => &s.ident.pos,
-            Expr::Deref(ref deref) => &deref.pos,
             Expr::Transmute(ref trans) => &trans.pos,
             Expr::TypeAscript(ref a) => &a.pos,
         }
@@ -438,8 +326,6 @@ impl<'src> Expr<'src> {
             Expr::Lambda(ref lam) => Cow::Owned(lam.get_type()),
             Expr::VarDef(ref def) => Cow::Borrowed(&def.typ),
             Expr::Assign(ref assign) => Cow::Borrowed(&assign.typ),
-            Expr::Symbol(ref sym) => Cow::Borrowed(&sym.typ),
-            Expr::Deref(ref deref) => deref.get_type(),
             Expr::Transmute(ref trans) => Cow::Borrowed(&trans.typ),
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Unknown` to imply that inference is needed
@@ -450,7 +336,6 @@ impl<'src> Expr<'src> {
 
 /// Represents an item, i.e. a use-statement or a definition or some such
 pub enum Item<'src> {
-    Use(Use<'src>),
     StaticDef(Ident<'src>, StaticDef<'src>),
     ExternProcDecl(Ident<'src>, ExternProcDecl<'src>),
     Expr(Expr<'src>),
@@ -458,7 +343,6 @@ pub enum Item<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Module<'src> {
-    pub uses: Vec<Use<'src>>,
-    pub static_defs: HashMap<Ident<'src>, StaticDef<'src>>,
-    pub extern_funcs: HashMap<Ident<'src>, ExternProcDecl<'src>>,
+    pub static_defs: HashMap<&'src str, StaticDef<'src>>,
+    pub extern_funcs: HashMap<&'src str, ExternProcDecl<'src>>,
 }
