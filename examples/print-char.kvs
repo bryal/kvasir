@@ -5,18 +5,18 @@
 
 (def-static print-n
   (lambda (n)
-    (block
-     (def-var-mut ascii-n 48)
-     (set ascii-n (add-int8 ascii-n n))
-     (putchar ascii-n)
-     (putchar 10)
-     0)))
+    (begin
+      (def-var-mut ascii-n 48)
+      (set ascii-n (add-int8 ascii-n n))
+      (putchar ascii-n)
+      (putchar 10)
+      0)))
 
 (def-static print-n-to-0
   (lambda (n)
     (if (eq-int8 n 0)
         (print-n 0)
-        (block (print-n n)
+        (begin (print-n n)
                (print-n-to-0 (sub-int8 n 1))))))
 
 (def-static main

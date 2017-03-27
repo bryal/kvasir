@@ -304,7 +304,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("lambda", _) => {
                         Expr::Lambda(Box::new(parse_lambda(tail, pos.clone())))
                     }
-                    CST::Ident("block", _) => {
+                    CST::Ident("begin", _) => {
                         parse_block(tail, pos.clone())
                             .map(|block| Expr::Block(Box::new(block)))
                             .unwrap_or(Expr::Nil(Nil { typ: Type::Unknown, pos: pos.clone() }))
