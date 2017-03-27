@@ -1,11 +1,11 @@
 // FIXME: ArityMiss is not very descriptive. Customize message for each error case
 
+use self::ParseErr::*;
+use super::SrcPos;
+use super::ast::*;
+use super::lex::CST;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use super::SrcPos;
-use super::lex::CST;
-use super::ast::*;
-use self::ParseErr::*;
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
@@ -15,8 +15,8 @@ enum ParseErr {
     Mismatch(&'static str, &'static str),
     /// Mismatch in the amount of parameters given. Some amount was expected, another was given
     ArityMis(usize, usize),
-    /// Something was expected (and not found) 
-   Expected(&'static str),
+    /// Something was expected (and not found)
+    Expected(&'static str),
 }
 impl Display for ParseErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -44,7 +44,6 @@ pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
             }
         }
         CST::SExpr(_, ref pos) => pos.error_exit("Empty type construction"),
-        CST::List(_, ref pos) => pos.error_exit("Expected type, found syntax list (`[...]`)"),
         CST::Ident("_", _) => Type::Unknown,
         CST::Ident("Nil", _) => TYPE_NIL.clone(),
         CST::Ident(basic, _) => Type::Basic(basic),
@@ -94,7 +93,6 @@ fn parse_paths_tree<'src>(cst: &CST<'src>) -> Vec<Path<'src>> {
         CST::Ident(ident, ref pos) => vec![Path::from_str(ident, pos.clone())],
         CST::Num(_, ref pos) => pos.error_exit("Expected path, found numeric literal"),
         CST::Str(_, ref pos) => pos.error_exit("Expected path, found string literal"),
-        CST::List(_, ref pos) => pos.error_exit("Expected path, found syntax list"),
     }
 }
 
@@ -103,12 +101,7 @@ fn parse_use<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Vec<Use<'src>> {
     csts.iter()
         .map(parse_paths_tree)
         .flat_map(|paths| paths)
-        .map(|path| {
-            Use {
-                path: path,
-                pos: pos.clone(),
-            }
-        })
+        .map(|path| Use { path: path, pos: pos.clone() })
         .collect()
 }
 
@@ -118,10 +111,7 @@ fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>
         match *ident_cst {
             CST::Ident(name, ref id_pos) => {
                 (Ident::new(name, id_pos.clone()),
-                 StaticDef {
-                    body: parse_expr(&body_cst),
-                    pos: pos,
-                })
+                 StaticDef { body: parse_expr(&body_cst), pos: pos })
             }
             _ => ident_cst.pos().error_exit(Expected("identifier")),
         }
@@ -180,7 +170,7 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
         pos.error_exit(ArityMis(2, csts.len()))
     }
     match csts[0] {
-        CST::List(ref params_csts, _) => {
+        CST::SExpr(ref params_csts, _) => {
             Lambda {
                 params: params_csts.iter()
                                    .map(|param_cst| {
@@ -232,10 +222,7 @@ fn parse_deref<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Deref<'src> {
     if csts.len() != 1 {
         pos.error_exit(ArityMis(1, csts.len()))
     }
-    Deref {
-        r: parse_expr(&csts[0]),
-        pos: pos,
-    }
+    Deref { r: parse_expr(&csts[0]), pos: pos }
 }
 
 /// Parse a `CST` as an expression to `Transmute`
@@ -277,7 +264,6 @@ fn parse_quoted_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                 pos: pos.clone(),
             }))
         }
-        CST::List(_, ref pos) => pos.error_exit("Expected expression, found syntax list"),
         CST::Ident(ident, ref pos) => {
             Expr::Symbol(Symbol {
                 ident: Ident::new(ident, pos.clone()),
@@ -321,10 +307,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("block", _) => {
                         parse_block(tail, pos.clone())
                             .map(|block| Expr::Block(Box::new(block)))
-                            .unwrap_or(Expr::Nil(Nil {
-                                typ: Type::Unknown,
-                                pos: pos.clone(),
-                            }))
+                            .unwrap_or(Expr::Nil(Nil { typ: Type::Unknown, pos: pos.clone() }))
                     }
                     CST::Ident("def-var", _) => {
                         Expr::VarDef(Box::new(parse_var_def(tail, pos.clone())))
@@ -346,13 +329,9 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     _ => Expr::Call(Box::new(parse_sexpr(&sexpr[0], tail, pos.clone()))),
                 }
             } else {
-                Expr::Nil(Nil {
-                    typ: Type::Unknown,
-                    pos: pos.clone(),
-                })
+                Expr::Nil(Nil { typ: Type::Unknown, pos: pos.clone() })
             }
         }
-        CST::List(_, ref pos) => pos.error_exit("Expected expression, found syntax list"),
         CST::Ident("true", ref pos) => {
             Expr::Bool(Bool {
                 val: true,
@@ -405,54 +384,11 @@ fn parse_extern_proc<'src>(csts: &[CST<'src>],
                     csts[1].pos().error_exit("Type of external static must be fully specified")
                 }
 
-                let decl = ExternProcDecl {
-                    typ: typ,
-                    pos: pos.clone(),
-                };
+                let decl = ExternProcDecl { typ: typ, pos: pos.clone() };
 
                 (Ident::new(name, id_pos.clone()), decl)
             }
             _ => csts[0].pos().error_exit(Expected("identifier")),
-        }
-    }
-}
-
-macro_rules! attribute_struct_parser {
-    ($attr_name: expr;
-     $fn_name: ident -> $ret_ty: ty;
-     $struct_init: expr;
-     [$( ($field: ident, $field_str: expr) ),*]) => {
-        fn $fn_name<'src>(csts: &[CST<'src>]) -> $ret_ty {
-            $( let mut $field = None; )*
-
-            for cst in csts {
-                match *cst {
-                    CST::List(ref list, ref list_pos) if list.len() == 2 => {
-                        match list[0] {
-                            $(
-                            CST::Ident($field_str, _) => {
-                                if let CST::Str(ref s, _) = list[1] {
-                                    $field = Some(s.clone());
-                                } else {
-                                    list[1].pos().error_exit(format!(
-                                        "Invalid value for field `{}`. Expected string",
-                                        $field_str))
-                                }
-                            }
-                            )*
-                            CST::Ident(n, ref field_pos) => {
-                                field_pos.error_exit("Attribute `{}` has no field named `{}`", $attr_name, n)
-                            }
-                            _ => list_pos.error_exit("Expected field name (ident)"),
-                        }
-                    }
-                    _ => cst.pos().error_exit("Expected `[FIELD VALUE]` pair"),
-                }
-            }
-
-            let mut s = $struct_init;
-            $( s.$field = $field; )*
-            s
         }
     }
 }
@@ -487,31 +423,31 @@ fn parse_items<'src>(csts: &[CST<'src>])
                          HashMap<Ident<'src>, StaticDef<'src>>,
                          HashMap<Ident<'src>, ExternProcDecl<'src>>,
                          Vec<Expr<'src>>) {
-        let mut uses = Vec::new();
-        let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
-        let mut exprs = Vec::new();
+    let mut uses = Vec::new();
+    let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
+    let mut exprs = Vec::new();
 
-        for item in csts.iter().flat_map(parse_item) {
-            match item {
-                Item::Use(u) => uses.push(u),
-                Item::StaticDef(id, def) => {
-                    let id_s = id.s;
-                    if let Some(def) = static_defs.insert(id, def) {
-                        def.pos.error_exit(format!("Duplicate static definition `{}`", id_s))
-                    }
+    for item in csts.iter().flat_map(parse_item) {
+        match item {
+            Item::Use(u) => uses.push(u),
+            Item::StaticDef(id, def) => {
+                let id_s = id.s;
+                if let Some(def) = static_defs.insert(id, def) {
+                    def.pos.error_exit(format!("Duplicate static definition `{}`", id_s))
                 }
-                Item::ExternProcDecl(id, decl) => {
-                    let id_s = id.s;
-                    if let Some(decl) = extern_funcs.insert(id, decl) {
-                        decl.pos
-                            .error_exit(format!("Duplicate external procedure declaration `{}`", id_s))
-                    }
-                }
-                Item::Expr(expr) => exprs.push(expr),
             }
+            Item::ExternProcDecl(id, decl) => {
+                let id_s = id.s;
+                if let Some(decl) = extern_funcs.insert(id, decl) {
+                    decl.pos
+                        .error_exit(format!("Duplicate external procedure declaration `{}`", id_s))
+                }
+            }
+            Item::Expr(expr) => exprs.push(expr),
         }
+    }
 
-        (uses, static_defs, extern_funcs, exprs)
+    (uses, static_defs, extern_funcs, exprs)
 }
 
 /// Parse a list of `CST`s as the items of a `Module`

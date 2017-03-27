@@ -4,11 +4,11 @@
 // TODO: Use visitor pattern with a Tokenizer, wherein additional information can be stored,
 //       such as file name.
 
-use itertools::Itertools;
 use self::LexErr::*;
+use super::SrcPos;
+use itertools::Itertools;
 use std::borrow::Cow;
 use std::fmt;
-use super::SrcPos;
 
 /// Common errors for various lexing actions
 enum LexErr {
@@ -61,14 +61,10 @@ fn unescape_char(c: char) -> Option<char> {
 /// -- [Wikipedia](https://en.wikipedia.org/wiki/Lexical_analysis#Token)
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token<'src> {
-    /// Left parenthesis, `(`
+    /// Left parenthesis `(`
     LParen,
-    /// Right parenthesis, `)`
+    /// Right parenthesis `)`
     RParen,
-    /// Left bracket, `[`
-    LBracket,
-    /// Right bracket, `]`
-    RBracket,
     /// Identifier
     Ident(&'src str),
     /// Numeric literal
@@ -234,8 +230,6 @@ impl<'src> Iterator for Tokens<'src> {
                 '\'' => (Token::Quote, 1),
                 '(' => (Token::LParen, 1),
                 ')' => (Token::RParen, 1),
-                '[' => (Token::LBracket, 1),
-                ']' => (Token::RBracket, 1),
                 '"' => tokenize_str_lit(self.src, i),
                 'r' if self.src[i + 1..].starts_with(|c: char| c == '"' || c == '#') => {
                     tokenize_raw_str_lit(self.src, i)
@@ -257,8 +251,6 @@ impl<'src> Iterator for Tokens<'src> {
 pub enum CST<'src> {
     /// An S-Expression.
     SExpr(Vec<CST<'src>>, SrcPos<'src>),
-    /// A non-expression list of syntax items surrounded by square brackets.
-    List(Vec<CST<'src>>, SrcPos<'src>),
     /// An identifier.
     Ident(&'src str, SrcPos<'src>),
     /// A numeric literal.
@@ -270,7 +262,6 @@ impl<'src> CST<'src> {
     pub fn pos(&self) -> &SrcPos<'src> {
         match *self {
             CST::SExpr(_, ref p) |
-            CST::List(_, ref p) |
             CST::Ident(_, ref p) |
             CST::Num(_, ref p) |
             CST::Str(_, ref p) => p,
@@ -284,12 +275,6 @@ impl<'src> CST<'src> {
                 let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
                 pos.end = end;
                 CST::SExpr(list, pos)
-            }
-            Token::LBracket => {
-                let (list, end) = tokens_to_trees_until(nexts,
-                                                        Some((pos.clone(), &Token::RBracket)));
-                pos.end = end;
-                CST::List(list, pos)
             }
             Token::Ident(ident) => CST::Ident(ident, pos),
             Token::Num(num) => CST::Num(num, pos),
@@ -314,11 +299,6 @@ impl<'src> fmt::Display for CST<'src> {
             CST::SExpr(ref v, _) => {
                 write!(f,
                        "({})",
-                       v.iter().map(|e| e.to_string()).intersperse(" ".into()).collect::<String>())
-            }
-            CST::List(ref v, _) => {
-                write!(f,
-                       "[{}]",
                        v.iter().map(|e| e.to_string()).intersperse(" ".into()).collect::<String>())
             }
         }

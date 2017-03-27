@@ -4,7 +4,7 @@
 (extern-proc sub-int8 (Proc UInt8 UInt8 UInt8))
 
 (def-static print-n
-  (lambda [n]
+  (lambda (n)
     (block
      (def-var-mut ascii-n 48)
      (set ascii-n (add-int8 ascii-n n))
@@ -13,12 +13,12 @@
      0)))
 
 (def-static print-n-to-0
-  (lambda [n]
+  (lambda (n)
     (if (eq-int8 n 0)
         (print-n 0)
         (block (print-n n)
                (print-n-to-0 (sub-int8 n 1))))))
 
 (def-static main
-  (lambda []
+  (lambda ()
     (print-n-to-0 9)))
