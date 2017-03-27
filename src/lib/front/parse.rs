@@ -292,7 +292,7 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
     match *cst {
         CST::SExpr(ref sexpr, ref pos) if !sexpr.is_empty() => {
             match sexpr[0] {
-                CST::Ident("def-static", _) => {
+                CST::Ident("define", _) => {
                     let (id, def) = parse_static_def(&sexpr[1..], pos.clone());
                     vec![Item::StaticDef(id, def)]
                 }

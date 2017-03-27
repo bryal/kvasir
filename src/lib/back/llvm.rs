@@ -618,12 +618,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                     undef_funcs.push((func, lam));
                 }
                 _ => {
-                    // temporarily set static definitions as undefined in order to have them all
-                    // available while generating the definition for each one
-                    let v = Value::new_undef(Type::get::<()>(self.context));
-                    let undef_glob = GlobalValue::from_super(v)
-                        .and_then(|gv| GlobalVariable::from_super(gv))
-                        .unwrap_or_else(|| unreachable!{});
+                    // Declare statics
+                    let undef_glob = self.module
+                                         .add_global(id,
+                                                     self.gen_type(&*static_def.body.get_type()));
                     static_decls.insert(id, (undef_glob, &static_def.body));
                     undef_statics.push(id);
                 }

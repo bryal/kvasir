@@ -3,22 +3,24 @@
 (extern-proc add-int8 (Proc UInt8 UInt8 UInt8))
 (extern-proc sub-int8 (Proc UInt8 UInt8 UInt8))
 
-(def-static print-n
+(define ascii-0 48)
+
+(define print-n
   (lambda (n)
     (begin
-      (def-var ascii-n 48)
+      (def-var ascii-n ascii-0)
       (set ascii-n (add-int8 ascii-n n))
       (putchar ascii-n)
       (putchar 10)
       0)))
 
-(def-static print-n-to-0
+(define print-n-to-0
   (lambda (n)
     (if (eq-int8 n 0)
         (print-n 0)
         (begin (print-n n)
                (print-n-to-0 (sub-int8 n 1))))))
 
-(def-static main
+(define main
   (lambda ()
     (print-n-to-0 9)))
