@@ -7,12 +7,12 @@
 
 (define print-n
   (lambda (n)
-    (begin
-      (def-var ascii-n ascii-0)
-      (set ascii-n (add-int8 ascii-n n))
-      (putchar ascii-n)
-      (putchar 10)
-      0)))
+    (let ((ascii-n ascii-0))
+      (begin
+        (set ascii-n (add-int8 ascii-n n))
+        (putchar ascii-n)
+        (putchar 10)
+        0))))
 
 (define print-n-to-0
   (lambda (n)
@@ -23,5 +23,4 @@
 
 (define main
   (lambda ()
-    (begin
-      (print-n-to-0 9))))
+    (print-n-to-0 9)))

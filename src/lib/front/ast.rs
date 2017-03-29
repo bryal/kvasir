@@ -1,8 +1,9 @@
-use super::SrcPos;
+
 use std::borrow;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash;
+use super::SrcPos;
 
 lazy_static!{
     pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
@@ -212,24 +213,9 @@ pub struct Lambda<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct VarDef<'src> {
-    pub binding: Ident<'src>,
-    pub body: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
-}
-
-#[derive(Clone, Debug)]
 pub struct Assign<'src> {
     pub lhs: Expr<'src>,
     pub rhs: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Transmute<'src> {
-    pub arg: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
@@ -252,10 +238,7 @@ pub enum Expr<'src> {
     Block(Box<Block<'src>>),
     If(Box<If<'src>>),
     Lambda(Box<Lambda<'src>>),
-    VarDef(Box<VarDef<'src>>),
     Assign(Box<Assign<'src>>),
-    Transmute(Box<Transmute<'src>>),
-    /// Type ascription. E.g. `(:Int32 42)`
     TypeAscript(Box<TypeAscript<'src>>),
 }
 impl<'src> Expr<'src> {
@@ -270,9 +253,7 @@ impl<'src> Expr<'src> {
             Expr::Block(ref block) => &block.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
-            Expr::VarDef(ref def) => &def.pos,
             Expr::Assign(ref a) => &a.pos,
-            Expr::Transmute(ref trans) => &trans.pos,
             Expr::TypeAscript(ref a) => &a.pos,
         }
     }
@@ -288,9 +269,7 @@ impl<'src> Expr<'src> {
             Expr::Block(ref block) => &block.typ,
             Expr::If(ref cond) => &cond.typ,
             Expr::Lambda(ref lam) => &lam.typ,
-            Expr::VarDef(ref def) => &def.typ,
             Expr::Assign(ref assign) => &assign.typ,
-            Expr::Transmute(ref trans) => &trans.typ,
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Unknown` to imply that inference is needed
             Expr::TypeAscript(_) => &TYPE_UNKNOWN,

@@ -1,11 +1,11 @@
 // FIXME: ArityMiss is not very descriptive. Customize message for each error case
 
 use self::ParseErr::*;
+use std::collections::HashMap;
+use std::fmt::{self, Display};
 use super::SrcPos;
 use super::ast::*;
 use super::lex::CST;
-use std::collections::HashMap;
-use std::fmt::{self, Display};
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
@@ -121,6 +121,10 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
     }
 }
 
+fn parse_param<'src>(cst: &CST<'src>) -> Param<'src> {
+    Param::new(parse_ident(cst), Type::Unknown)
+}
+
 /// Parse a list of `CST`s as the parts of a `Lambda`
 fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
     if csts.len() != 2 {
@@ -129,11 +133,7 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
     match csts[0] {
         CST::SExpr(ref params_csts, _) => {
             Lambda {
-                params: params_csts.iter()
-                                   .map(|param_cst| {
-                                       Param::new(parse_ident(param_cst), Type::Unknown)
-                                   })
-                                   .collect(),
+                params: params_csts.iter().map(parse_param).collect(),
                 body: parse_expr(&csts[1]),
                 typ: Type::Unknown,
                 pos: pos,
@@ -143,21 +143,51 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
     }
 }
 
-/// Parse a list of `CST`s as the parts of a `VarDef`
-fn parse_var_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> VarDef<'src> {
+fn collect_pair<T, U, I>(it: I) -> (Vec<T>, Vec<U>)
+    where I: Iterator<Item = (T, U)>
+{
+    let mut v1 = Vec::with_capacity(it.size_hint().0);
+    let mut v2 = Vec::with_capacity(it.size_hint().0);
+    for (t, u) in it {
+        v1.push(t);
+        v2.push(u);
+    }
+    (v1, v2)
+}
+
+/// Parse a `let` special form and return as an invocation of a lambda
+fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
+    fn parse_binding<'src>(cst: &CST<'src>) -> (Param<'src>, Expr<'src>) {
+        match *cst {
+            CST::SExpr(ref binding_pair, ref pos) => if binding_pair.len() == 2 {
+                (parse_param(&binding_pair[0]), parse_expr(&binding_pair[1]))
+            } else {
+                pos.error_exit(Expected("pair of variable name and value"))
+            },
+            ref c => c.pos().error_exit(Expected("variable binding")),
+        }
+    }
+
     if csts.len() != 2 {
         pos.error_exit(ArityMis(2, csts.len()))
     }
-    match csts[0] {
-        CST::Ident(binding, ref binding_pos) => {
-            VarDef {
-                binding: Ident::new(binding, binding_pos.clone()),
-                body: parse_expr(&csts[1]),
-                typ: Type::Unknown,
-                pos: pos,
-            }
-        }
-        _ => csts[0].pos().error_exit(Expected("identifier")),
+
+    let (params, args) = match csts[0] {
+        CST::SExpr(ref bindings_csts, _) => collect_pair(bindings_csts.iter().map(parse_binding)),
+        ref c => c.pos().error_exit(Expected("list of variable bindings")),
+    };
+
+    let l = Lambda {
+        params: params,
+        body: parse_expr(&csts[1]),
+        typ: Type::Unknown,
+        pos: pos.clone(),
+    };
+    Call {
+        proced: Expr::Lambda(Box::new(l)),
+        args: args,
+        typ: Type::Unknown,
+        pos: pos,
     }
 }
 
@@ -169,18 +199,6 @@ fn parse_assign<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
     Assign {
         lhs: parse_expr(&csts[0]),
         rhs: parse_expr(&csts[1]),
-        typ: Type::Unknown,
-        pos: pos,
-    }
-}
-
-/// Parse a `CST` as an expression to `Transmute`
-fn parse_transmute<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Transmute<'src> {
-    if csts.len() != 1 {
-        pos.error_exit(ArityMis(1, csts.len()))
-    }
-    Transmute {
-        arg: parse_expr(&csts[0]),
         typ: Type::Unknown,
         pos: pos,
     }
@@ -208,18 +226,15 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("lambda", _) => {
                         Expr::Lambda(Box::new(parse_lambda(tail, pos.clone())))
                     }
+                    CST::Ident("let", _) => {
+                        Expr::Call(Box::new(parse_let(tail, pos.clone())))
+                    }
                     CST::Ident("begin", _) => {
                         parse_block(tail, pos.clone())
                             .map(|block| Expr::Block(Box::new(block)))
                             .unwrap_or(Expr::Nil(Nil { pos: pos.clone() }))
                     }
-                    CST::Ident("def-var", _) => {
-                        Expr::VarDef(Box::new(parse_var_def(tail, pos.clone())))
-                    }
                     CST::Ident("set", _) => Expr::Assign(Box::new(parse_assign(tail, pos.clone()))),
-                    CST::Ident("transmute", _) => {
-                        Expr::Transmute(Box::new(parse_transmute(tail, pos.clone())))
-                    }
                     CST::Ident(":", _) => {
                         Expr::TypeAscript(Box::new(parse_type_ascript(tail, pos.clone())))
                     }

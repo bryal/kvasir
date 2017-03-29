@@ -6,9 +6,9 @@
 //       `foo.infer_types(...)
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
-use self::InferenceErr::*;
 use lib::collections::ScopeStack;
 use lib::front::ast::*;
+use self::InferenceErr::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
@@ -271,38 +271,11 @@ impl<'src> Inferer<'src> {
             .map(|(k, v)| (k, Some(v)))
             .collect());
 
-        let old_vars_len = self.vars.len();
-
-        // First pass. If possible, all vars defined in block should have types inferred.
         for expr in init.iter_mut() {
-            if let Expr::VarDef(ref mut var_def) = *expr {
-                self.infer_var_def(var_def, &Type::Unknown);
-                self.vars.push((var_def.binding.s, var_def.body.get_type().clone()));
-            } else {
-                self.infer_expr(expr, &Type::Unknown);
-            }
+            self.infer_expr(expr, &Type::Unknown);
         }
 
-        self.infer_expr(last, expected_ty);
-
-        let mut block_defined_vars = self.vars.split_off(old_vars_len).into_iter();
-
-        // Second pass. Infer types for all expressions in block now that types for all bindings
-        // are, if possible, known.
-        for expr in init {
-            if let Expr::VarDef(ref mut var_def) = *expr {
-                let v = block_defined_vars.next().expect("ICE: block_defined_vars empty");
-
-                self.infer_expr(&mut var_def.body, &v.1);
-
-                self.vars.push(v);
-            } else {
-                self.infer_expr(expr, &Type::Unknown);
-            }
-        }
         let last_typ = self.infer_expr(last, expected_ty);
-
-        self.vars.truncate(old_vars_len);
 
         block.static_defs =
             self.static_defs
@@ -391,38 +364,14 @@ impl<'src> Inferer<'src> {
         &lam.typ
     }
 
-    fn infer_var_def(&mut self, def: &mut VarDef<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        if let Some(inferred) = expected_ty.infer_by(&TYPE_NIL) {
-            self.infer_expr(&mut def.body, &Type::Unknown);
-            def.typ = inferred.clone();
-            inferred
-        } else {
-            def.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
-        }
-    }
-
     fn infer_assign(&mut self, assign: &mut Assign<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         if let Some(inferred) = expected_ty.infer_by(&TYPE_NIL) {
             let rhs_typ = self.infer_expr(&mut assign.rhs, &assign.lhs.get_type());
             self.infer_expr(&mut assign.lhs, &rhs_typ);
+            assign.typ = inferred.clone();
             inferred
         } else {
             assign.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
-        }
-    }
-
-    fn infer_transmute<'ast>(&mut self,
-                             trans: &'ast mut Transmute<'src>,
-                             expected_ty: &Type<'src>)
-                             -> &'ast Type<'src> {
-        if let Some(inferred) = trans.typ.infer_by(expected_ty) {
-            trans.typ = inferred;
-
-            self.infer_expr(&mut trans.arg, &Type::Unknown);
-
-            &trans.typ
-        } else {
-            trans.pos.error_exit(TypeMis(expected_ty, &trans.typ))
         }
     }
 
@@ -472,7 +421,6 @@ impl<'src> Inferer<'src> {
 
         match *expr {
             Expr::Nil(ref mut nil) => self.infer_nil(nil, &expected_ty),
-            Expr::VarDef(ref mut def) => self.infer_var_def(def, &expected_ty),
             Expr::Assign(ref mut assign) => self.infer_assign(assign, &expected_ty),
             Expr::NumLit(ref mut l) => self.infer_num_lit(l, &expected_ty),
             Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_ty),
@@ -482,7 +430,6 @@ impl<'src> Inferer<'src> {
             Expr::Block(ref mut block) => self.infer_block(block, &expected_ty),
             Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty).clone(),
-            Expr::Transmute(ref mut trans) => self.infer_transmute(trans, &expected_ty).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
         }
     }

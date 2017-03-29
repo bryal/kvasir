@@ -1,8 +1,9 @@
-use self::CodegenErr::*;
+
 use lib::collections::ScopeStack;
 use lib::front::SrcPos;
 use lib::front::ast::{self, Expr};
 use llvm::*;
+use self::CodegenErr::*;
 use std::{fmt, mem};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -61,7 +62,6 @@ fn add_constant_static<'ctx>(module: &'ctx Module,
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
     pub module: &'ctx Module,
-    target_data: CBox<TargetData>,
     builder: &'ctx Builder,
     /// The function currently being built
     building_func: RefCell<Option<&'ctx Function>>,
@@ -71,14 +71,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         CodeGenerator {
             context: context,
             module: module,
-            target_data: TargetData::new(module.get_target()),
             builder: builder,
             building_func: RefCell::new(None),
         }
-    }
-
-    fn size_of(&self, typ: &Type) -> u64 {
-        self.target_data.size_of(typ)
     }
 
     fn gen_nil(&self) -> &'ctx Value {
@@ -357,17 +352,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         anon
     }
 
-    fn gen_var_def<'a>(&self, env: &mut Env<'src, 'ast, 'ctx>, def: &'ast ast::VarDef<'src>) {
-        let typ: &'ctx Type = self.gen_type(&def.body.get_type());
-        let var: &'ctx Value = self.builder.build_alloca(typ);
-
-        var.set_name(def.binding.s);
-
-        self.builder.build_store(self.gen_expr(env, &def.body), var);
-
-        env.vars.push((def.binding.s, var));
-    }
-
     fn gen_lvalue(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
             Expr::Binding(ref bnd) => {
@@ -384,51 +368,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
     }
 
-    fn gen_transmute(&self,
-                     env: &mut Env<'src, 'ast, 'ctx>,
-                     trans: &'ast ast::Transmute<'src>)
-                     -> &'ctx Value {
-        let ll_arg = self.gen_expr(env, &trans.arg);
-
-        let ll_arg_typ = ll_arg.get_type();
-        let ll_target_typ = self.gen_type(&trans.typ);
-
-        let (arg_size, target_size) = (self.size_of(ll_arg_typ), self.size_of(ll_target_typ));
-
-        if arg_size != target_size {
-            trans.pos.error_exit(format!("Transmute to type of different size: {} ({} bytes) to \
-                                          {} ({} bytes)",
-                                         trans.arg.get_type(),
-                                         arg_size,
-                                         trans.typ,
-                                         target_size))
-        }
-
-        if ll_arg_typ == ll_target_typ {
-            ll_arg
-        } else if ll_arg_typ.is_pointer() && ll_target_typ.is_pointer() {
-            self.builder.build_bit_cast(ll_arg, ll_target_typ)
-        } else if ll_arg_typ.is_pointer() &&
-                  (trans.typ == ast::Type::Basic("IntPtr") ||
-                   trans.typ == ast::Type::Basic("UIntPtr")) {
-            self.builder.build_ptr_to_int(ll_arg, ll_target_typ)
-        } else if ll_arg_typ.is_pointer() {
-            let ptr_int = self.builder.build_ptr_to_int(ll_arg, Type::get::<usize>(self.context));
-
-            self.builder.build_bit_cast(ptr_int, ll_target_typ)
-        } else if ll_target_typ.is_pointer() &&
-                  (*trans.arg.get_type() == ast::Type::Basic("IntPtr") ||
-                   *trans.arg.get_type() == ast::Type::Basic("UIntPtr")) {
-            self.builder.build_int_to_ptr(ll_arg, ll_target_typ)
-        } else if ll_target_typ.is_pointer() {
-            let ptr_int = self.builder.build_bit_cast(ll_arg, Type::get::<usize>(self.context));
-
-            self.builder.build_int_to_ptr(ptr_int, ll_target_typ)
-        } else {
-            self.builder.build_bit_cast(ll_arg, ll_target_typ)
-        }
-    }
-
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
@@ -441,15 +380,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Block(ref block) => self.gen_block(env, block),
             Expr::If(ref cond) => self.gen_if(env, cond, &expr.get_type()),
             Expr::Lambda(ref lam) => self.gen_lambda(env, lam),
-            Expr::VarDef(ref def) => {
-                self.gen_var_def(env, def);
-                self.gen_nil()
-            }
             Expr::Assign(ref assign) => {
                 self.gen_assign(env, assign);
                 self.gen_nil()
             }
-            Expr::Transmute(ref trans) => self.gen_transmute(env, trans),
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
         }
