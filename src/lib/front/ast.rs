@@ -1,9 +1,8 @@
-
+use super::SrcPos;
 use std::borrow;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash;
-use super::SrcPos;
 
 lazy_static!{
     pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
@@ -23,9 +22,8 @@ pub enum Type<'src> {
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
 impl<'src> Type<'src> {
-    pub fn new_proc(mut arg_tys: Vec<Type<'src>>, return_ty: Type<'src>) -> Self {
-        arg_tys.push(return_ty);
-        Type::Construct("Proc", arg_tys)
+    pub fn new_func(arg: Type<'src>, ret: Type<'src>) -> Self {
+        Type::Construct("->", vec![arg, ret])
     }
 
     pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
@@ -49,13 +47,12 @@ impl<'src> Type<'src> {
         }
     }
 
-    /// If the type is a procedure type signature, extract the parameter types and the return type.
-    pub fn get_proc_sig(&self) -> Option<(&[Type<'src>], &Type<'src>)> {
+    /// If the type is a function type signature, extract the parameter type and the return type.
+    pub fn get_func_sig(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
-            Type::Construct("Proc", ref ts) => {
-                Some(ts.split_last()
-                       .map(|(b, ps)| (ps, b))
-                       .expect("ICE: `Proc` construct with no arguments"))
+            Type::Construct("->", ref ts) => {
+                assert_eq!(ts.len(), 2);
+                Some((&ts[0], &ts[1]))
             }
             _ => None,
         }
@@ -178,10 +175,33 @@ pub struct Bool<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Call<'src> {
-    pub proced: Expr<'src>,
-    pub args: Vec<Expr<'src>>,
+    pub func: Expr<'src>,
+    // None <=> type is nil
+    pub arg: Option<Expr<'src>>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
+}
+
+impl<'src> Call<'src> {
+    pub fn new_multary(func: Expr<'src>, mut args: Vec<Expr<'src>>, pos: SrcPos<'src>) -> Self {
+        let last = args.pop();
+
+        let calls = args.into_iter().fold(func, |f, arg| {
+            Expr::Call(Box::new(Call {
+                func: f,
+                arg: Some(arg),
+                typ: Type::Unknown,
+                pos: pos.clone(),
+            }))
+        });
+
+        Call {
+            func: calls,
+            arg: last,
+            typ: Type::Unknown,
+            pos: pos,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -203,24 +223,44 @@ pub struct If<'src> {
     pub pos: SrcPos<'src>,
 }
 
-// A parameter for a function/lambda/procedure
+// A parameter for a function/lambda/
 #[derive(Clone, Debug)]
 pub struct Param<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
 }
-impl<'src> Param<'src> {
-    pub fn new(ident: Ident<'src>, typ: Type<'src>) -> Param<'src> {
-        Param { ident: ident, typ: typ }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Lambda<'src> {
-    pub params: Vec<Param<'src>>,
+    // None <=> type is nil
+    pub param: Option<Param<'src>>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
+}
+
+pub fn get_param_type<'p, 'src>(param: &'p Option<Param<'src>>) -> &'p Type<'src> {
+    param.as_ref().map(|p| &p.typ).unwrap_or(&TYPE_NIL)
+}
+
+impl<'src> Lambda<'src> {
+    pub fn new_multary(mut params: Vec<Param<'src>>, body: Expr<'src>, pos: &SrcPos<'src>) -> Self {
+        let innermost = Lambda {
+            param: params.pop(),
+            body: body,
+            typ: Type::Unknown,
+            pos: pos.clone(),
+        };
+
+        params.into_iter().rev().fold(innermost, |inner, param| {
+            Lambda {
+                param: Some(param),
+                body: Expr::Lambda(Box::new(inner)),
+                typ: Type::Unknown,
+                pos: pos.clone(),
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug)]

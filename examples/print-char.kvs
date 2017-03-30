@@ -1,18 +1,23 @@
-(extern-proc putchar (Proc UInt8 Int32))
-(extern-proc eq-int8 (Proc (Cons UInt8 UInt8) Bool))
-(extern-proc add-int8 (Proc (Cons UInt8 UInt8) UInt8))
-(extern-proc sub-int8 (Proc (Cons UInt8 UInt8) UInt8))
+(extern-proc putchar (-> UInt8 Int32))
+(extern-proc eq-int8 (-> (Cons UInt8 UInt8) Bool))
+(extern-proc add-int8 (-> (Cons UInt8 UInt8) UInt8))
+(extern-proc sub-int8 (-> (Cons UInt8 UInt8) UInt8))
 
 (define ascii-0 48)
 
+(define print-offset
+  (lambda (offset base)
+    (begin
+      (set base (add-int8 (cons base offset)))
+      (putchar base)
+      (putchar 10)
+      0)))
+
 (define print-n
   (lambda (n)
-    (let ((ascii-n ascii-0))
-      (begin
-        (set ascii-n (add-int8 (cons ascii-n n)))
-        (putchar ascii-n)
-        (putchar 10)
-        0))))
+    (let ((base ascii-0)
+          (offset n))
+      (print-offset offset base))))
 
 (define print-n-to-0
   (lambda (n)

@@ -6,9 +6,9 @@
 //       `foo.infer_types(...)
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
 
+use self::InferenceErr::*;
 use lib::collections::ScopeStack;
 use lib::front::ast::*;
-use self::InferenceErr::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
@@ -18,6 +18,7 @@ enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
     TypeMis(&'p Type<'src>, &'p Type<'src>),
     ArmsDiffer(&'p Type<'src>, &'p Type<'src>),
+    NonNilNullary(&'p Type<'src>),
 }
 impl<'src, 'p> Display for InferenceErr<'src, 'p> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -35,6 +36,10 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
                        c,
                        a)
             }
+            NonNilNullary(t) => write!(f,
+                                       "Infering non-nil type `{}` for the parameter of a \
+                                        nullary function",
+                                       t),
         }
     }
 }
@@ -194,35 +199,17 @@ impl<'src> Inferer<'src> {
         }
     }
 
-    fn infer_call_arg_types(&mut self, call: &mut Call<'src>) {
-        let proc_type = call.proced.get_type();
+    fn infer_call_arg(&mut self, call: &mut Call<'src>) {
+        let func_type = call.func.get_type();
 
-        let expected_types: Vec<&Type> = if proc_type.is_partially_known() {
-            // The type of the procedure is not unknown.
-            // If it's a valid procedure type, use it for inference
-
-            match proc_type.get_proc_sig() {
-                Some((param_tys, _)) if param_tys.len() == call.args.len() => {
-                    param_tys.iter().collect()
-                }
-                Some((param_tys, _)) => {
-                    call.pos.error_exit(format!("Arity mismatch. Expected {}, found {}",
-                                                param_tys.len(),
-                                                call.args.len()))
-                }
-                None => {
-                    call.proced
-                        .pos()
-                        .error_exit(TypeMis(&Type::new_proc(vec![Type::Unknown], Type::Unknown),
-                                            &proc_type))
-                }
-            }
+        let expected_typ: &Type = if func_type.is_partially_known() {
+            &func_type.get_func_sig().unwrap_or_else(|| unreachable!()).0
         } else {
-            vec![call.proced.get_type(); call.args.len()]
+            &TYPE_UNKNOWN
         };
 
-        for (arg, expect_ty) in call.args.iter_mut().zip(expected_types) {
-            self.infer_expr(arg, &expect_ty);
+        if let Some(ref mut arg) = call.arg {
+            self.infer_expr(arg, expected_typ);
         }
     }
 
@@ -230,29 +217,26 @@ impl<'src> Inferer<'src> {
                          call: &'call mut Call<'src>,
                          expected_ty: &Type<'src>)
                          -> &'call Type<'src> {
-        self.infer_call_arg_types(call);
+        self.infer_call_arg(call);
 
-        let expected_proc_type = Type::new_proc(call.args
-                                                    .iter()
-                                                    .map(|arg| arg.get_type().clone())
-                                                    .collect(),
-                                                expected_ty.clone());
+        let arg_typ = call.arg.as_ref().map(|arg| arg.get_type()).unwrap_or(&TYPE_NIL).clone();
+        let expected_func_type = Type::new_func(arg_typ, expected_ty.clone());
 
-        let old_proc_typ = call.proced.get_type().clone();
+        let old_func_typ = call.func.get_type().clone();
 
-        let proc_typ = self.infer_expr(&mut call.proced, &expected_proc_type);
+        let func_typ = self.infer_expr(&mut call.func, &expected_func_type);
 
         // TODO: This only works for function pointers, i.e. lambdas will need some different type.
         //       When traits are added, use a function trait like Rusts Fn/FnMut/FnOnce
 
-        if old_proc_typ != proc_typ {
+        if old_func_typ != func_typ {
             // New type information regarding arg types available
-            self.infer_call_arg_types(call);
+            self.infer_call_arg(call);
         }
 
-        call.typ = call.proced
+        call.typ = call.func
                        .get_type()
-                       .get_proc_sig()
+                       .get_func_sig()
                        .map(|(_, ret_typ)| ret_typ.clone())
                        .unwrap_or(Type::Unknown);
 
@@ -304,29 +288,24 @@ impl<'src> Inferer<'src> {
         }
     }
 
-    fn infer_lambda_args(&mut self, lam: &mut Lambda<'src>, expected_params: &[&Type<'src>]) {
-        for (param, expected_param) in lam.params.iter_mut().zip(expected_params) {
-            match param.typ.infer_by(expected_param) {
+    fn infer_param(&mut self, lam: &mut Lambda<'src>, expected_typ: &Type<'src>) {
+        match lam.param {
+            Some(ref mut param) => match param.typ.infer_by(expected_typ) {
                 Some(inferred) => param.typ = inferred,
-                None => param.ident.pos.error_exit(TypeMis(expected_param, &param.typ)),
-            }
+                None => param.ident.pos.error_exit(TypeMis(expected_typ, &param.typ)),
+            },
+            None => if expected_typ.infer_by(&TYPE_NIL).is_none() {
+                lam.pos.error_exit(NonNilNullary(expected_typ))
+            },
         }
     }
 
     fn infer_lambda<'l>(&mut self,
-                        lam: &'l mut Lambda<'src>,
+                        mut lam: &'l mut Lambda<'src>,
                         expected_ty: &Type<'src>)
                         -> &'l Type<'src> {
-        let (expected_params, expected_body) = match expected_ty.get_proc_sig() {
-            Some((params, _)) if params.len() != lam.params.len() => {
-                lam.pos.error_exit(TypeMis(expected_ty, &lam.typ))
-            }
-            Some((params, body)) => (params.iter().collect(), body),
-            None if *expected_ty == Type::Unknown => {
-                (vec![expected_ty; lam.params.len()], expected_ty)
-            }
-            None => lam.pos.error_exit(TypeMis(expected_ty, &lam.typ)),
-        };
+        let (expected_param, expected_body) = expected_ty.get_func_sig()
+                                                         .unwrap_or((&TYPE_UNKNOWN, &TYPE_UNKNOWN));
 
         // Own type is `Unknown` if no type has been inferred yet, or none was inferable
 
@@ -342,24 +321,20 @@ impl<'src> Inferer<'src> {
             }
         }
 
-        self.infer_lambda_args(lam, &expected_params);
+        self.infer_param(&mut lam, &expected_param);
 
-        let (vars_len, n_params) = (self.vars.len(), lam.params.len());
-
-        self.vars.extend(lam.params.iter().cloned().map(|param| (param.ident.s, param.typ)));
-
-        self.infer_expr(&mut lam.body, &expected_body);
-
-        assert_eq!(self.vars.len(), vars_len + n_params);
-
-        for (param, found) in lam.params
-                                 .iter_mut()
-                                 .zip(self.vars.drain(vars_len..))
-                                 .map(|(param, (_, found))| (&mut param.typ, found)) {
-            *param = found;
+        if let Some(ref mut param) = lam.param {
+            self.vars.push((param.ident.s, param.typ.clone()));
+            self.infer_expr(&mut lam.body, &expected_body);
+            param.typ = self.vars
+                            .pop()
+                            .expect("ICE: Variable stack empty after infer expr when infer lambda")
+                            .1;
+        } else {
+            self.infer_expr(&mut lam.body, &expected_body);
         }
 
-        lam.typ = Type::new_proc(lam.params.iter().map(|p| p.typ.clone()).collect(),
+        lam.typ = Type::new_func(get_param_type(&lam.param).clone(),
                                  lam.body.get_type().clone());
         &lam.typ
     }
@@ -459,7 +434,8 @@ pub fn infer_types(ast: &mut Module) {
                            None)
                        .unwrap();
 
-    inferer.infer_static_def(&mut main, &Type::new_proc(vec![], Type::Basic("Int64")));
+    inferer.infer_static_def(&mut main,
+                             &Type::new_func(TYPE_NIL.clone(), Type::Basic("Int64")));
 
     inferer.static_defs.update("main", Some(main));
 

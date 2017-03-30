@@ -249,7 +249,7 @@ fn main() {
     // println!("AST PARSED:\n{:#?}\n", ast);
 
     infer_types(&mut ast);
-    // println!("AST INFERED:\n{:#?}\n", ast);
+    println!("AST INFERED:\n{:#?}\n", ast);
 
     compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

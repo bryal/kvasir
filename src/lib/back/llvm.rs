@@ -1,9 +1,8 @@
-
+use self::CodegenErr::*;
 use lib::collections::ScopeStack;
 use lib::front::SrcPos;
-use lib::front::ast::{self, Expr};
+use lib::front::ast::{self, Expr, get_param_type};
 use llvm::*;
-use self::CodegenErr::*;
 use std::{fmt, mem};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -99,12 +98,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             PType::Basic("Float32") => Type::get::<f32>(self.context),
             PType::Basic("Float64") => Type::get::<f64>(self.context),
             PType::Basic("Nil") => StructType::new(self.context, &[], false),
-            PType::Construct("Proc", _) => {
-                let (params, ret) = typ.get_proc_sig().unwrap();
-                FunctionType::new(self.gen_type(ret),
-                                  &params.iter()
-                                         .map(|param| self.gen_type(param))
-                                         .collect::<Vec<_>>())
+            PType::Construct("->", ref v) => {
+                let (param, ret) = (&v[0], &v[1]);
+                FunctionType::new(self.gen_type(ret), &[self.gen_type(param)])
             }
             PType::Construct("RawPtr", ref args) => PointerType::new(self.gen_type(&args[0])),
             PType::Construct("Cons", ref ts) => StructType::new(self.context,
@@ -191,40 +187,38 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            })
     }
 
-    /// Generates IR code for a procedure call. If the call is in a tail position and the call
+    /// Generates IR code for a function call. If the call is in a tail position and the call
     /// is a recursive call to the caller itself, make a tail call and return `Nothing`.
     /// Otherwise, make a normal call and return the result.
     fn gen_call(&self,
                 env: &mut Env<'src, 'ast, 'ctx>,
                 call: &'ast ast::Call<'src>)
                 -> &'ctx Value {
-        let proced = Function::from_super(self.gen_expr(env, &call.proced)).unwrap_or_else(|| {
-            call.proced
+        let func = Function::from_super(self.gen_expr(env, &call.func)).unwrap_or_else(|| {
+            call.func
                 .pos()
-                .error_exit(ICE("expression in procedure pos is not a function".into()))
+                .error_exit(ICE("expression in function pos is not a function".into()))
         });
 
-        let mut args = Vec::new();
-        for arg in &call.args {
-            args.push(self.gen_expr(env, arg))
-        }
-
-        self.builder.build_call(proced, &args)
+        let arg = call.arg
+                      .as_ref()
+                      .map(|ref arg| self.gen_expr(env, arg))
+                      .unwrap_or_else(|| self.gen_nil());
+        self.builder.build_call(func, &[arg])
     }
 
     fn gen_tail_call(&self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>) {
-        let proced = Function::from_super(self.gen_expr(env, &call.proced)).unwrap_or_else(|| {
-            call.proced
+        let func = Function::from_super(self.gen_expr(env, &call.func)).unwrap_or_else(|| {
+            call.func
                 .pos()
-                .error_exit(ICE("expression in procedure pos is not a function".into()))
+                .error_exit(ICE("expression in function pos is not a function".into()))
         });
 
-        let mut args = Vec::new();
-        for arg in &call.args {
-            args.push(self.gen_expr(env, arg))
-        }
-
-        let call = self.builder.build_call(proced, &args);
+        let arg = call.arg
+                      .as_ref()
+                      .map(|ref arg| self.gen_expr(env, arg))
+                      .unwrap_or_else(|| self.gen_nil());
+        let call = self.builder.build_tail_call(func, &[arg]);
 
         self.builder.build_ret(call);
     }
@@ -431,51 +425,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            .unwrap_or_else(|| bnd.ident.pos.error_exit("binding does not point to constant"))
     }
 
-
-    fn gen_const_call(&self,
-                      env: &mut Env<'src, 'ast, 'ctx>,
-                      call: &'ast ast::Call<'src>)
-                      -> &'ctx Value {
-        let args = call.args
-                       .iter()
-                       .map(|arg| self.gen_const_expr(env, arg))
-                       .collect::<Vec<_>>();
-
-        match call.proced {
-            Expr::Binding(ref bnd) if &bnd.ident == "+" => {
-                self.builder.build_add(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "-" => {
-                self.builder.build_sub(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "*" => {
-                self.builder.build_mul(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "/" => {
-                self.builder.build_div(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "and" => {
-                self.builder.build_and(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "or" => {
-                self.builder.build_or(&args[0], &args[1])
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "=" => {
-                self.builder.build_cmp(&args[0], &args[1], Predicate::Equal)
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == ">" => {
-                self.builder.build_cmp(&args[0], &args[1], Predicate::GreaterThan)
-            }
-            Expr::Binding(ref bnd) if &bnd.ident == "<" => {
-                self.builder.build_cmp(&args[0], &args[1], Predicate::LessThan)
-            }
-            Expr::Binding(ref bnd) => {
-                bnd.ident.pos.error_exit("Binding does not point to a constant function")
-            }
-            _ => call.pos.error_exit("Non-constant function in constant expression"),
-        }
-    }
-
     fn gen_const_expr(&self,
                       env: &mut Env<'src, 'ast, 'ctx>,
                       expr: &'ast Expr<'src>)
@@ -487,7 +436,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::StrLit(ref lit) => self.gen_str(lit),
             Expr::Bool(ref b) => self.gen_bool(b),
             Expr::Binding(ref bnd) => self.gen_eval_const_binding(env, bnd),
-            Expr::Call(ref call) => self.gen_const_call(env, call),
             _ => expr.pos().error_exit("Expression cannot be used in a constant expression"),
         }
     }
@@ -514,18 +462,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        let mut param_vars = Vec::with_capacity(def_lam.params.len());
+        let param_var = self.builder.build_alloca(self.gen_type(get_param_type(&def_lam.param)));
+        let name = def_lam.param.as_ref().map(|p| p.ident.s).unwrap_or("_");
 
-        for (i, param) in def_lam.params.iter().enumerate() {
-            let param_var = self.builder.build_alloca(self.gen_type(&param.typ));
-            param_var.set_name(param.ident.s);
+        param_var.set_name(name);
 
-            self.builder.build_store(&*func[i], param_var);
+        self.builder.build_store(&*func[0], param_var);
 
-            param_vars.push((param.ident.s, param_var));
-        }
-
-        let old_vars = mem::replace(&mut env.vars, param_vars);
+        let old_vars = mem::replace(&mut env.vars, vec![(name, param_var)]);
 
         if let Some(e) = self.gen_tail_expr(env, &def_lam.body) {
             self.builder.build_ret(e);

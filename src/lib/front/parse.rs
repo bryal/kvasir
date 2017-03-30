@@ -1,11 +1,11 @@
 // FIXME: ArityMiss is not very descriptive. Customize message for each error case
 
 use self::ParseErr::*;
-use std::collections::HashMap;
-use std::fmt::{self, Display};
 use super::SrcPos;
 use super::ast::*;
 use super::lex::CST;
+use std::collections::HashMap;
+use std::fmt::{self, Display};
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
@@ -76,13 +76,23 @@ fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>
 }
 
 /// Parse a first `CST` and some following `CST`s as a procedure and some arguments, i.e. a call
-fn parse_sexpr<'src>(proc_cst: &CST<'src>,
+fn parse_sexpr<'src>(func_cst: &CST<'src>,
                      args_csts: &[CST<'src>],
                      pos: SrcPos<'src>)
                      -> Call<'src> {
+    let (last, init) =
+        args_csts.split_last().map(|(l, i)| (Some(parse_expr(l)), i)).unwrap_or((None, &[]));
+    let calls = init.iter().map(parse_expr).fold(parse_expr(func_cst), |func, arg| {
+        Expr::Call(Box::new(Call {
+            func: func,
+            arg: Some(arg),
+            typ: Type::Unknown,
+            pos: pos.clone(),
+        }))
+    });
     Call {
-        proced: parse_expr(proc_cst),
-        args: args_csts.iter().map(parse_expr).collect(),
+        func: calls,
+        arg: last,
         typ: Type::Unknown,
         pos: pos,
     }
@@ -122,22 +132,22 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
 }
 
 fn parse_param<'src>(cst: &CST<'src>) -> Param<'src> {
-    Param::new(parse_ident(cst), Type::Unknown)
+    Param {
+        ident: parse_ident(cst),
+        typ: Type::Unknown,
+    }
 }
 
 /// Parse a list of `CST`s as the parts of a `Lambda`
-fn parse_lambda<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Lambda<'src> {
+fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
     if csts.len() != 2 {
         pos.error_exit(ArityMis(2, csts.len()))
     }
     match csts[0] {
         CST::SExpr(ref params_csts, _) => {
-            Lambda {
-                params: params_csts.iter().map(parse_param).collect(),
-                body: parse_expr(&csts[1]),
-                typ: Type::Unknown,
-                pos: pos,
-            }
+            Lambda::new_multary(params_csts.iter().map(parse_param).collect(),
+                                parse_expr(&csts[1]),
+                                pos)
         }
         _ => csts[0].pos().error_exit(Expected("parameter list")),
     }
@@ -177,19 +187,11 @@ fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
         ref c => c.pos().error_exit(Expected("list of variable bindings")),
     };
 
-    let l = Lambda {
-        params: params,
-        body: parse_expr(&csts[1]),
-        typ: Type::Unknown,
-        pos: pos.clone(),
-    };
-    Call {
-        proced: Expr::Lambda(Box::new(l)),
-        args: args,
-        typ: Type::Unknown,
-        pos: pos,
-    }
+    let l = Lambda::new_multary(params, parse_expr(&csts[1]), &pos);
+
+    Call::new_multary(Expr::Lambda(Box::new(l)), args, pos)
 }
+
 
 /// Parse a list of `CST`s as the parts of an `Assign`
 fn parse_assign<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
@@ -237,7 +239,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                 match *head {
                     CST::Ident("if", _) => Expr::If(Box::new(parse_if(tail, pos.clone()))),
                     CST::Ident("lambda", _) => {
-                        Expr::Lambda(Box::new(parse_lambda(tail, pos.clone())))
+                        Expr::Lambda(Box::new(parse_lambda(tail, pos)))
                     }
                     CST::Ident("let", _) => {
                         Expr::Call(Box::new(parse_let(tail, pos.clone())))
