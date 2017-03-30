@@ -216,6 +216,19 @@ fn parse_type_ascript<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> TypeAscrip
     }
 }
 
+/// Parse a list of `CST`s as a `Cons` pair
+fn parse_cons<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Cons<'src> {
+    if csts.len() != 2 {
+        pos.error_exit(ArityMis(2, csts.len()))
+    }
+    Cons {
+        typ: Type::Unknown,
+        car: parse_expr(&csts[0]),
+        cdr: parse_expr(&csts[1]),
+        pos: pos,
+    }
+}
+
 /// Parse a `CST` as an `Expr`
 pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
     match *cst {
@@ -237,6 +250,9 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("set", _) => Expr::Assign(Box::new(parse_assign(tail, pos.clone()))),
                     CST::Ident(":", _) => {
                         Expr::TypeAscript(Box::new(parse_type_ascript(tail, pos.clone())))
+                    }
+                    CST::Ident("cons", _) => {
+                        Expr::Cons(Box::new(parse_cons(tail, pos.clone())))
                     }
                     _ => Expr::Call(Box::new(parse_sexpr(&sexpr[0], tail, pos.clone()))),
                 }

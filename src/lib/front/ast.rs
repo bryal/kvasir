@@ -28,6 +28,10 @@ impl<'src> Type<'src> {
         Type::Construct("Proc", arg_tys)
     }
 
+    pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
+        Type::Construct("Cons", vec![car_typ, cdr_typ])
+    }
+
     pub fn is_unknown(&self) -> bool {
         match *self {
             Type::Unknown => true,
@@ -53,6 +57,13 @@ impl<'src> Type<'src> {
                        .map(|(b, ps)| (ps, b))
                        .expect("ICE: `Proc` construct with no arguments"))
             }
+            _ => None,
+        }
+    }
+
+    pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+        match *self {
+            Type::Construct("Cons", ref ts) if ts.len() == 2 => Some((&ts[0], &ts[1])),
             _ => None,
         }
     }
@@ -228,6 +239,14 @@ pub struct TypeAscript<'src> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Cons<'src> {
+    pub typ: Type<'src>,
+    pub car: Expr<'src>,
+    pub cdr: Expr<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -240,6 +259,7 @@ pub enum Expr<'src> {
     Lambda(Box<Lambda<'src>>),
     Assign(Box<Assign<'src>>),
     TypeAscript(Box<TypeAscript<'src>>),
+    Cons(Box<Cons<'src>>),
 }
 impl<'src> Expr<'src> {
     pub fn pos(&self) -> &SrcPos<'src> {
@@ -255,6 +275,7 @@ impl<'src> Expr<'src> {
             Expr::Lambda(ref l) => &l.pos,
             Expr::Assign(ref a) => &a.pos,
             Expr::TypeAscript(ref a) => &a.pos,
+            Expr::Cons(ref c) => &c.pos,
         }
     }
 
@@ -273,6 +294,7 @@ impl<'src> Expr<'src> {
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Unknown` to imply that inference is needed
             Expr::TypeAscript(_) => &TYPE_UNKNOWN,
+            Expr::Cons(ref c) => &c.typ,
         }
     }
 }

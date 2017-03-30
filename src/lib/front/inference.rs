@@ -396,6 +396,20 @@ impl<'src> Inferer<'src> {
         self.infer_expr(expr, &expected_ty2)
     }
 
+    fn infer_cons(&mut self, cons: &mut Cons<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+        let unknown_cons_typ = Type::new_cons(Type::Unknown, Type::Unknown);
+
+        let maybe_expected_inferred = expected_ty.infer_by(&unknown_cons_typ);
+        if let Some((e_car, e_cdr)) = maybe_expected_inferred.as_ref().and_then(|t| t.get_cons()) {
+            let car_typ = self.infer_expr(&mut cons.car, e_car);
+            let cdr_typ = self.infer_expr(&mut cons.cdr, e_cdr);
+            cons.typ = Type::new_cons(car_typ, cdr_typ);
+            cons.typ.clone()
+        } else {
+            cons.pos.error_exit(TypeMis(expected_ty, &unknown_cons_typ))
+        }
+    }
+
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         let mut expected_ty = Cow::Borrowed(expected_ty);
 
@@ -431,6 +445,7 @@ impl<'src> Inferer<'src> {
             Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
+            Expr::Cons(ref mut cons) => self.infer_cons(cons, &expected_ty),
         }
     }
 }

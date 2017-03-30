@@ -107,6 +107,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                                          .collect::<Vec<_>>())
             }
             PType::Construct("RawPtr", ref args) => PointerType::new(self.gen_type(&args[0])),
+            PType::Construct("Cons", ref ts) => StructType::new(self.context,
+                                                                &[self.gen_type(&ts[0]),
+                                                                  self.gen_type(&ts[1])],
+                                                                false),
             _ => panic!("Type `{}` is not yet implemented", typ),
         }
     }
@@ -368,6 +372,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
     }
 
+    fn gen_cons(&self,
+                env: &mut Env<'src, 'ast, 'ctx>,
+                cons: &'ast ast::Cons<'src>)
+                -> &'ctx Value {
+        Value::new_struct(self.context,
+                          &[self.gen_expr(env, &cons.car), self.gen_expr(env, &cons.cdr)],
+                          false)
+    }
+
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
         match *expr {
@@ -386,6 +399,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             }
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
+            Expr::Cons(ref c) => self.gen_cons(env, c),
         }
     }
 
