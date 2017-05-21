@@ -107,19 +107,19 @@ impl<'src> Inferer<'src> {
 
     fn infer_num_lit(&mut self, lit: &mut NumLit<'src>, expected_ty: &Type<'src>) -> Type<'src> {
         match *expected_ty {
-            Type::Unknown |
-            Type::Basic("Int8") |
-            Type::Basic("UInt8") |
-            Type::Basic("Int16") |
-            Type::Basic("UInt16") |
-            Type::Basic("Int32") |
-            Type::Basic("UInt32") |
-            Type::Basic("Float32") |
-            Type::Basic("Int64") |
-            Type::Basic("UInt64") |
-            Type::Basic("Float64") |
-            Type::Basic("IntPtr") |
-            Type::Basic("UIntPtr") => {
+            Type::Uninferred |
+            Type::Const("Int8") |
+            Type::Const("UInt8") |
+            Type::Const("Int16") |
+            Type::Const("UInt16") |
+            Type::Const("Int32") |
+            Type::Const("UInt32") |
+            Type::Const("Float32") |
+            Type::Const("Int64") |
+            Type::Const("UInt64") |
+            Type::Const("Float64") |
+            Type::Const("IntPtr") |
+            Type::Const("UIntPtr") => {
                 lit.typ = expected_ty.clone();
                 expected_ty.clone()
             }
@@ -182,7 +182,7 @@ impl<'src> Inferer<'src> {
                 // We are currently doing inference inside this definition, and as such
                 // no more type information can be given for sure than Unknown
 
-                Type::Unknown
+                Type::Uninferred
             }
         } else if let Some(var_ty) = self.get_var_type_mut(bnd.ident.s) {
             // Binding is a variable
@@ -205,7 +205,7 @@ impl<'src> Inferer<'src> {
         let expected_typ: &Type = if func_type.is_partially_known() {
             &func_type.get_func_sig().unwrap_or_else(|| unreachable!()).0
         } else {
-            &TYPE_UNKNOWN
+            &TYPE_UNINFERRED
         };
 
         if let Some(ref mut arg) = call.arg {
@@ -238,7 +238,7 @@ impl<'src> Inferer<'src> {
                        .get_type()
                        .get_func_sig()
                        .map(|(_, ret_typ)| ret_typ.clone())
-                       .unwrap_or(Type::Unknown);
+                       .unwrap_or(Type::Uninferred);
 
         &call.typ
     }
@@ -256,7 +256,7 @@ impl<'src> Inferer<'src> {
             .collect());
 
         for expr in init.iter_mut() {
-            self.infer_expr(expr, &Type::Unknown);
+            self.infer_expr(expr, &Type::Uninferred);
         }
 
         let last_typ = self.infer_expr(last, expected_ty);
@@ -282,7 +282,7 @@ impl<'src> Inferer<'src> {
             let cons_typ = self.infer_expr(&mut cond.consequent, &inferred);
             let alt_typ = self.infer_expr(&mut cond.alternative, &inferred);
 
-            if cons_typ == inferred && alt_typ == inferred { inferred } else { Type::Unknown }
+            if cons_typ == inferred && alt_typ == inferred { inferred } else { Type::Uninferred }
         } else {
             cond.pos.error_exit(ArmsDiffer(&cons_typ, &alt_typ))
         }
@@ -305,7 +305,8 @@ impl<'src> Inferer<'src> {
                         expected_ty: &Type<'src>)
                         -> &'l Type<'src> {
         let (expected_param, expected_body) = expected_ty.get_func_sig()
-                                                         .unwrap_or((&TYPE_UNKNOWN, &TYPE_UNKNOWN));
+                                                         .unwrap_or((&TYPE_UNINFERRED,
+                                                                     &TYPE_UNINFERRED));
 
         // Own type is `Unknown` if no type has been inferred yet, or none was inferable
 
@@ -372,7 +373,7 @@ impl<'src> Inferer<'src> {
     }
 
     fn infer_cons(&mut self, cons: &mut Cons<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        let unknown_cons_typ = Type::new_cons(Type::Unknown, Type::Unknown);
+        let unknown_cons_typ = Type::new_cons(Type::Uninferred, Type::Uninferred);
 
         let maybe_expected_inferred = expected_ty.infer_by(&unknown_cons_typ);
         if let Some((e_car, e_cdr)) = maybe_expected_inferred.as_ref().and_then(|t| t.get_cons()) {
@@ -430,12 +431,12 @@ pub fn infer_types(ast: &mut Module) {
 
     let mut main = replace(inferer.static_defs
                                   .get_mut("main")
-                                  .expect("ICE: In infer_ast: No main def"),
+                                  .expect("ICE: In infer_types: No main def"),
                            None)
                        .unwrap();
 
     inferer.infer_static_def(&mut main,
-                             &Type::new_func(TYPE_NIL.clone(), Type::Basic("Int64")));
+                             &Type::new_func(TYPE_NIL.clone(), Type::Const("Int64")));
 
     inferer.static_defs.update("main", Some(main));
 

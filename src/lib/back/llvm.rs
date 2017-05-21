@@ -83,30 +83,30 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         use lib::front::ast::Type as PType;
 
         match *typ {
-            PType::Unknown => panic!("Type was Unknown at compile time"),
-            PType::Basic("Int8") => Type::get::<i8>(self.context),
-            PType::Basic("Int16") => Type::get::<i16>(self.context),
-            PType::Basic("Int32") => Type::get::<i32>(self.context),
-            PType::Basic("Int64") => Type::get::<i64>(self.context),
-            PType::Basic("IntPtr") => Type::get::<isize>(self.context),
-            PType::Basic("UInt8") => Type::get::<u8>(self.context),
-            PType::Basic("UInt16") => Type::get::<u16>(self.context),
-            PType::Basic("UInt32") => Type::get::<u32>(self.context),
-            PType::Basic("UInt64") => Type::get::<u64>(self.context),
-            PType::Basic("UIntPtr") => Type::get::<usize>(self.context),
-            PType::Basic("Bool") => Type::get::<bool>(self.context),
-            PType::Basic("Float32") => Type::get::<f32>(self.context),
-            PType::Basic("Float64") => Type::get::<f64>(self.context),
-            PType::Basic("Nil") => StructType::new(self.context, &[], false),
-            PType::Construct("->", ref v) => {
+            PType::Uninferred => panic!("Type was Unknown at compile time"),
+            PType::Const("Int8") => Type::get::<i8>(self.context),
+            PType::Const("Int16") => Type::get::<i16>(self.context),
+            PType::Const("Int32") => Type::get::<i32>(self.context),
+            PType::Const("Int64") => Type::get::<i64>(self.context),
+            PType::Const("IntPtr") => Type::get::<isize>(self.context),
+            PType::Const("UInt8") => Type::get::<u8>(self.context),
+            PType::Const("UInt16") => Type::get::<u16>(self.context),
+            PType::Const("UInt32") => Type::get::<u32>(self.context),
+            PType::Const("UInt64") => Type::get::<u64>(self.context),
+            PType::Const("UIntPtr") => Type::get::<usize>(self.context),
+            PType::Const("Bool") => Type::get::<bool>(self.context),
+            PType::Const("Float32") => Type::get::<f32>(self.context),
+            PType::Const("Float64") => Type::get::<f64>(self.context),
+            PType::Const("Nil") => StructType::new(self.context, &[], false),
+            PType::App("->", ref v) => {
                 let (param, ret) = (&v[0], &v[1]);
                 FunctionType::new(self.gen_type(ret), &[self.gen_type(param)])
             }
-            PType::Construct("RawPtr", ref args) => PointerType::new(self.gen_type(&args[0])),
-            PType::Construct("Cons", ref ts) => StructType::new(self.context,
-                                                                &[self.gen_type(&ts[0]),
-                                                                  self.gen_type(&ts[1])],
-                                                                false),
+            PType::App("RawPtr", ref args) => PointerType::new(self.gen_type(&args[0])),
+            PType::App("Cons", ref ts) => StructType::new(self.context,
+                                                          &[self.gen_type(&ts[0]),
+                                                            self.gen_type(&ts[1])],
+                                                          false),
             _ => panic!("Type `{}` is not yet implemented", typ),
         }
     }
@@ -121,19 +121,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
         let parser = match num.typ {
-            ast::Type::Basic("Int8") => CodeGenerator::parse_gen_lit::<i8>,
-            ast::Type::Basic("Int16") => CodeGenerator::parse_gen_lit::<i16>,
-            ast::Type::Basic("Int32") => CodeGenerator::parse_gen_lit::<i32>,
-            ast::Type::Basic("Int64") => CodeGenerator::parse_gen_lit::<i64>,
-            ast::Type::Basic("IntPtr") => CodeGenerator::parse_gen_lit::<isize>,
-            ast::Type::Basic("UInt8") => CodeGenerator::parse_gen_lit::<u8>,
-            ast::Type::Basic("UInt16") => CodeGenerator::parse_gen_lit::<u16>,
-            ast::Type::Basic("UInt32") => CodeGenerator::parse_gen_lit::<u32>,
-            ast::Type::Basic("UInt64") => CodeGenerator::parse_gen_lit::<u64>,
-            ast::Type::Basic("UIntPtr") => CodeGenerator::parse_gen_lit::<usize>,
-            ast::Type::Basic("Bool") => CodeGenerator::parse_gen_lit::<bool>,
-            ast::Type::Basic("Float32") => CodeGenerator::parse_gen_lit::<f32>,
-            ast::Type::Basic("Float64") => CodeGenerator::parse_gen_lit::<f64>,
+            ast::Type::Const("Int8") => CodeGenerator::parse_gen_lit::<i8>,
+            ast::Type::Const("Int16") => CodeGenerator::parse_gen_lit::<i16>,
+            ast::Type::Const("Int32") => CodeGenerator::parse_gen_lit::<i32>,
+            ast::Type::Const("Int64") => CodeGenerator::parse_gen_lit::<i64>,
+            ast::Type::Const("IntPtr") => CodeGenerator::parse_gen_lit::<isize>,
+            ast::Type::Const("UInt8") => CodeGenerator::parse_gen_lit::<u8>,
+            ast::Type::Const("UInt16") => CodeGenerator::parse_gen_lit::<u16>,
+            ast::Type::Const("UInt32") => CodeGenerator::parse_gen_lit::<u32>,
+            ast::Type::Const("UInt64") => CodeGenerator::parse_gen_lit::<u64>,
+            ast::Type::Const("UIntPtr") => CodeGenerator::parse_gen_lit::<usize>,
+            ast::Type::Const("Bool") => CodeGenerator::parse_gen_lit::<bool>,
+            ast::Type::Const("Float32") => CodeGenerator::parse_gen_lit::<f32>,
+            ast::Type::Const("Float64") => CodeGenerator::parse_gen_lit::<f64>,
             _ => num.pos.error_exit(ICE("type of numeric literal is not numeric".into())),
         };
         parser(self, &num.lit, &num.typ, &num.pos)

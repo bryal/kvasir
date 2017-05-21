@@ -5,34 +5,38 @@ use std::fmt;
 use std::hash;
 
 lazy_static!{
-    pub static ref TYPE_UNKNOWN: Type<'static> = Type::Unknown;
-    pub static ref TYPE_NIL: Type<'static> = Type::Basic("Nil");
-    pub static ref TYPE_BOOL: Type<'static> = Type::Basic("Bool");
-    pub static ref TYPE_BYTE_SLICE: Type<'static> = Type::Construct("Slice",
-                                                                    vec![Type::Basic("UInt8")]);
+    pub static ref TYPE_UNINFERRED: Type<'static> = Type::Uninferred;
+    pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil");
+    pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool");
+    pub static ref TYPE_BYTE_SLICE: Type<'static> = Type::App("Slice", vec![Type::Const("UInt8")]);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type<'src> {
-    Unknown,
-    Basic(&'src str),
-    Construct(&'src str, Vec<Type<'src>>),
+    Uninferred,
+    /// A type variable identified by an integer, bound in a type scheme
+    Var(usize),
+    /// A monotype constant, like `int`, or `string`
+    Const(&'src str),
+    /// An application of a type function over one/some/no monotype(s)
+    App(&'src str, Vec<Type<'src>>),
 }
+
 /// The tuple has the type constructor `*`, as it is a
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
 impl<'src> Type<'src> {
     pub fn new_func(arg: Type<'src>, ret: Type<'src>) -> Self {
-        Type::Construct("->", vec![arg, ret])
+        Type::App("->", vec![arg, ret])
     }
 
     pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
-        Type::Construct("Cons", vec![car_typ, cdr_typ])
+        Type::App("Cons", vec![car_typ, cdr_typ])
     }
 
     pub fn is_unknown(&self) -> bool {
         match *self {
-            Type::Unknown => true,
+            Type::Uninferred => true,
             _ => false,
         }
     }
@@ -41,16 +45,17 @@ impl<'src> Type<'src> {
     }
     pub fn is_fully_known(&self) -> bool {
         match *self {
-            Type::Unknown => false,
-            Type::Basic(_) => true,
-            Type::Construct(_, ref args) => args.iter().all(Type::is_fully_known),
+            Type::Uninferred => false,
+            Type::Var(_) => unimplemented!(),
+            Type::Const(_) => true,
+            Type::App(_, ref args) => args.iter().all(Type::is_fully_known),
         }
     }
 
     /// If the type is a function type signature, extract the parameter type and the return type.
     pub fn get_func_sig(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
-            Type::Construct("->", ref ts) => {
+            Type::App("->", ref ts) => {
                 assert_eq!(ts.len(), 2);
                 Some((&ts[0], &ts[1]))
             }
@@ -60,35 +65,37 @@ impl<'src> Type<'src> {
 
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
-            Type::Construct("Cons", ref ts) if ts.len() == 2 => Some((&ts[0], &ts[1])),
+            Type::App("Cons", ref ts) if ts.len() == 2 => Some((&ts[0], &ts[1])),
             _ => None,
         }
     }
 
-    /// Recursively infer all `Unknown` by the `by` type.
+    /// Recursively infer all `Uninferred` by the `by` type.
     /// If types are incompatible, e.g. `(Vec Inferred)` v. `(Option Int32)`, return `None`
     pub fn infer_by(&self, by: &Self) -> Option<Self> {
         match (self, by) {
             (_, _) if self == by => Some(self.clone()),
-            (_, &Type::Unknown) => Some(self.clone()),
-            (&Type::Unknown, _) => Some(by.clone()),
-            (&Type::Construct(ref s1, ref as1), &Type::Construct(ref s2, ref as2)) if s1 == s2 => {
+            (_, &Type::Uninferred) => Some(self.clone()),
+            (&Type::Uninferred, _) => Some(by.clone()),
+            (&Type::App(ref s1, ref as1), &Type::App(ref s2, ref as2)) if s1 == s2 => {
                 as1.iter()
                    .zip(as2.iter())
                    .map(|(a1, a2)| a1.infer_by(a2))
                    .collect::<Option<_>>()
-                   .map(|args| Type::Construct(s1.clone(), args))
+                   .map(|args| Type::App(s1.clone(), args))
             }
             (_, _) => None,
         }
     }
 }
+
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Type::Unknown => write!(f, "_"),
-            Type::Basic(basic) => write!(f, "{}", basic),
-            Type::Construct(constructor, ref args) => {
+            Type::Uninferred => write!(f, "_"),
+            Type::Var(id) => write!(f, "<var {}>", id),
+            Type::Const(basic) => write!(f, "{}", basic),
+            Type::App(constructor, ref args) => {
                 write!(f,
                        "({} {})",
                        constructor,
@@ -190,7 +197,7 @@ impl<'src> Call<'src> {
             Expr::Call(Box::new(Call {
                 func: f,
                 arg: Some(arg),
-                typ: Type::Unknown,
+                typ: Type::Uninferred,
                 pos: pos.clone(),
             }))
         });
@@ -198,7 +205,7 @@ impl<'src> Call<'src> {
         Call {
             func: calls,
             arg: last,
-            typ: Type::Unknown,
+            typ: Type::Uninferred,
             pos: pos,
         }
     }
@@ -248,7 +255,7 @@ impl<'src> Lambda<'src> {
         let innermost = Lambda {
             param: params.pop(),
             body: body,
-            typ: Type::Unknown,
+            typ: Type::Uninferred,
             pos: pos.clone(),
         };
 
@@ -256,7 +263,7 @@ impl<'src> Lambda<'src> {
             Lambda {
                 param: Some(param),
                 body: Expr::Lambda(Box::new(inner)),
-                typ: Type::Unknown,
+                typ: Type::Uninferred,
                 pos: pos.clone(),
             }
         })
@@ -332,8 +339,8 @@ impl<'src> Expr<'src> {
             Expr::Lambda(ref lam) => &lam.typ,
             Expr::Assign(ref assign) => &assign.typ,
             // The existance of a type ascription implies that the expression has not yet been
-            // inferred. As such, return type `Unknown` to imply that inference is needed
-            Expr::TypeAscript(_) => &TYPE_UNKNOWN,
+            // inferred. As such, return type `Uninferred` to imply that inference is needed
+            Expr::TypeAscript(_) => &TYPE_UNINFERRED,
             Expr::Cons(ref c) => &c.typ,
         }
     }

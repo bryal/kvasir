@@ -1,11 +1,11 @@
 // FIXME: ArityMiss is not very descriptive. Customize message for each error case
 
 use self::ParseErr::*;
+use std::collections::HashMap;
+use std::fmt::{self, Display};
 use super::SrcPos;
 use super::ast::*;
 use super::lex::CST;
-use std::collections::HashMap;
-use std::fmt::{self, Display};
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
@@ -38,15 +38,15 @@ pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
         CST::SExpr(ref construct, _) if !construct.is_empty() => {
             match construct[0] {
                 CST::Ident(constructor, _) => {
-                    Type::Construct(constructor, construct[1..].iter().map(parse_type).collect())
+                    Type::App(constructor, construct[1..].iter().map(parse_type).collect())
                 }
                 _ => construct[0].pos().error_exit(Invalid("type constructor")),
             }
         }
         CST::SExpr(_, ref pos) => pos.error_exit("Empty type construction"),
-        CST::Ident("_", _) => Type::Unknown,
+        CST::Ident("_", _) => Type::Uninferred,
         CST::Ident("Nil", _) => TYPE_NIL.clone(),
-        CST::Ident(basic, _) => Type::Basic(basic),
+        CST::Ident(basic, _) => Type::Const(basic),
         CST::Num(_, ref pos) => pos.error_exit(Mismatch("type", "numeric literal")),
         CST::Str(_, ref pos) => pos.error_exit(Mismatch("type", "string literal")),
     }
@@ -86,14 +86,14 @@ fn parse_sexpr<'src>(func_cst: &CST<'src>,
         Expr::Call(Box::new(Call {
             func: func,
             arg: Some(arg),
-            typ: Type::Unknown,
+            typ: Type::Uninferred,
             pos: pos.clone(),
         }))
     });
     Call {
         func: calls,
         arg: last,
-        typ: Type::Unknown,
+        typ: Type::Uninferred,
         pos: pos,
     }
 }
@@ -110,7 +110,7 @@ fn parse_block<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Option<Block<'src
             static_defs: static_defs,
             extern_funcs: extern_funcs,
             exprs: exprs,
-            typ: Type::Unknown,
+            typ: Type::Uninferred,
             pos: pos,
         })
     }
@@ -125,7 +125,7 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
             predicate: parse_expr(&csts[0]),
             consequent: parse_expr(&csts[1]),
             alternative: parse_expr(&csts[2]),
-            typ: Type::Unknown,
+            typ: Type::Uninferred,
             pos: pos,
         }
     }
@@ -134,7 +134,7 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
 fn parse_param<'src>(cst: &CST<'src>) -> Param<'src> {
     Param {
         ident: parse_ident(cst),
-        typ: Type::Unknown,
+        typ: Type::Uninferred,
     }
 }
 
@@ -201,7 +201,7 @@ fn parse_assign<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
     Assign {
         lhs: parse_expr(&csts[0]),
         rhs: parse_expr(&csts[1]),
-        typ: Type::Unknown,
+        typ: Type::Uninferred,
         pos: pos,
     }
 }
@@ -224,7 +224,7 @@ fn parse_cons<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Cons<'src> {
         pos.error_exit(ArityMis(2, csts.len()))
     }
     Cons {
-        typ: Type::Unknown,
+        typ: Type::Uninferred,
         car: parse_expr(&csts[0]),
         cdr: parse_expr(&csts[1]),
         pos: pos,
@@ -271,20 +271,20 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
         CST::Ident(ident, ref pos) => {
             Expr::Binding(Binding {
                 ident: Ident::new(ident, pos.clone()),
-                typ: Type::Unknown,
+                typ: Type::Uninferred,
             })
         }
         CST::Num(num, ref pos) => {
             Expr::NumLit(NumLit {
                 lit: num,
-                typ: Type::Unknown,
+                typ: Type::Uninferred,
                 pos: pos.clone(),
             })
         }
         CST::Str(ref s, ref pos) => {
             Expr::StrLit(StrLit {
                 lit: s.clone(),
-                typ: Type::Unknown,
+                typ: Type::Uninferred,
                 pos: pos.clone(),
             })
         }
