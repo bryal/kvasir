@@ -243,11 +243,14 @@ impl<'src> Inferer<'src> {
         &call.typ
     }
 
-    fn infer_block(&mut self, block: &mut Block<'src>, expected_ty: &Type<'src>) -> Type<'src> {
+    fn infer_block<'a>(&mut self,
+                       block: &'a mut Block<'src>,
+                       expected_ty: &Type<'src>)
+                       -> &'a Type<'src> {
         let (init, last) = if let Some((last, init)) = block.exprs.split_last_mut() {
             (init, last)
         } else {
-            return TYPE_NIL.clone();
+            return &TYPE_NIL;
         };
 
         self.static_defs.push(replace(&mut block.static_defs, HashMap::new())
@@ -269,7 +272,8 @@ impl<'src> Inferer<'src> {
                 .map(|(k, v)| (k, v.expect("ICE: None when unmapping block const def")))
                 .collect();
 
-        last_typ
+        block.typ = last_typ;
+        &block.typ
     }
 
     fn infer_if(&mut self, cond: &mut If<'src>, expected_typ: &Type<'src>) -> Type<'src> {
@@ -417,7 +421,7 @@ impl<'src> Inferer<'src> {
             Expr::Bool(ref mut b) => self.infer_bool(b, &expected_ty),
             Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_ty),
             Expr::Call(ref mut call) => self.infer_call(call, &expected_ty).clone(),
-            Expr::Block(ref mut block) => self.infer_block(block, &expected_ty),
+            Expr::Block(ref mut block) => self.infer_block(block, &expected_ty).clone(),
             Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
