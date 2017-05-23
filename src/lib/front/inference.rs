@@ -183,25 +183,25 @@ impl<'src> Inferer<'src> {
                         def: &mut StaticDef<'src>,
                         expected_ty: &Type<'src>)
                         -> Type<'src> {
-        // Remove all local variables from scope while inferencing types for a static definition
-        let old_vars = replace(&mut self.vars, Vec::new());
+        let vars = replace(&mut self.vars, Vec::new());
 
         let inferred = self.infer_expr(&mut def.body, expected_ty);
 
-        self.vars = old_vars;
+        self.vars = vars;
+
         inferred
     }
 
-    fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        if let Some(type_nil) = expected_ty.infer_by(&TYPE_NIL) {
+    fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        if let Some(type_nil) = expected_type.infer_by(&TYPE_NIL) {
             type_nil
         } else {
-            nil.pos.error_exit(TypeMis(expected_ty, &TYPE_NIL))
+            nil.pos.error_exit(TypeMis(expected_type, &TYPE_NIL))
         }
     }
 
-    fn infer_num_lit(&mut self, lit: &mut NumLit<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        match *expected_ty {
+    fn infer_num_lit(&mut self, lit: &mut NumLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        match *expected_type {
             Type::Uninferred |
             Type::Const("Int8") |
             Type::Const("UInt8") |
@@ -215,46 +215,56 @@ impl<'src> Inferer<'src> {
             Type::Const("Float64") |
             Type::Const("IntPtr") |
             Type::Const("UIntPtr") => {
-                lit.typ = expected_ty.clone();
-                expected_ty.clone()
+                lit.typ = expected_type.clone();
+                expected_type.clone()
             }
             _ => {
                 lit.pos.error_exit(format!("Type mismatch. Expected `{}`, found numeric literal",
-                                           expected_ty))
+                                           expected_type))
             }
         }
     }
 
-    fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        if expected_ty.infer_by(&TYPE_BYTE_SLICE).is_some() {
+    fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        if expected_type.infer_by(&TYPE_BYTE_SLICE).is_some() {
             lit.typ = TYPE_BYTE_SLICE.clone();
             TYPE_BYTE_SLICE.clone()
         } else {
-            lit.pos.error_exit(TypeMis(expected_ty, &TYPE_BYTE_SLICE))
+            lit.pos.error_exit(TypeMis(expected_type, &TYPE_BYTE_SLICE))
         }
     }
 
-    fn infer_bool(&mut self, b: &mut Bool<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        if expected_ty.infer_by(&TYPE_BOOL).is_some() {
+    fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        if expected_type.infer_by(&TYPE_BOOL).is_some() {
             TYPE_BOOL.clone()
         } else {
-            b.pos.error_exit(TypeMis(expected_ty, &TYPE_BOOL))
+            b.pos.error_exit(TypeMis(expected_type, &TYPE_BOOL))
         }
     }
 
-    fn infer_binding(&mut self, bnd: &mut Binding<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        // In order to not violate any borrowing rules, use get_height to check if entry exists
-        // and to speed up upcoming lookup
-        if let Some(height) = self.extern_funcs.get_height(bnd.ident.s) {
-            // Don't infer types for external items,
-            // just check compatibility with expected_ty
+    fn infer_binding(&mut self, bnd: &mut Binding<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        if self.get_var_type_mut(bnd.ident.s).is_some() {
+            // Binding is a variable
 
-            let extern_typ = &self.extern_funcs.get_at_height(bnd.ident.s, height).unwrap().typ;
-            if let Some(inferred) = extern_typ.infer_by(expected_ty) {
+            let var_type = self.get_var_type_mut(bnd.ident.s).unwrap();
+
+            if let Some(inferred) = var_type.infer_by(expected_type) {
+                *var_type = inferred.clone();
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.ident.pos.error_exit(TypeMis(expected_ty, &extern_typ))
+                bnd.ident.pos.error_exit(TypeMis(expected_type, var_type))
+            }
+        } else if let Some(height) = self.extern_funcs.get_height(bnd.ident.s) {
+            // Don't infer types for external items,
+            // just check compatibility with expected_type
+
+            let extern_type = &self.extern_funcs.get_at_height(bnd.ident.s, height).unwrap().typ;
+            if let Some(inferred) = extern_type.infer_by(expected_type) {
+                bnd.typ = inferred.clone();
+                inferred
+            } else {
+                bnd.ident.pos.error_exit(TypeMis(expected_type, &extern_type))
             }
         } else if let Some(height) = self.static_defs.get_height(bnd.ident.s) {
             // Binding is a constant. Do inference
@@ -264,26 +274,18 @@ impl<'src> Inferer<'src> {
                         None);
 
             if let Some(mut def) = maybe_def {
-                let inferred = self.infer_static_def(&mut def, expected_ty);
+                // The definition is available, do inference
+
+                let inferred = self.infer_static_def(&mut def, expected_type);
                 self.static_defs.update(bnd.ident.s, Some(def));
                 bnd.typ = inferred.clone();
 
                 inferred
             } else {
-                // We are currently doing inference inside this definition, and as such
-                // no more type information can be given for sure than Unknown
+                // We are already inferring the type of this definition,
+                // i.e. it's a recursive definition
 
-                Type::Uninferred
-            }
-        } else if let Some(var_ty) = self.get_var_type_mut(bnd.ident.s) {
-            // Binding is a variable
-
-            if let Some(inferred) = var_ty.infer_by(expected_ty) {
-                *var_ty = inferred.clone();
-                bnd.typ = inferred.clone();
-                inferred
-            } else {
-                bnd.ident.pos.error_exit(TypeMis(expected_ty, var_ty))
+                unimplemented!()
             }
         } else {
             bnd.ident.pos.error_exit(format!("Unresolved path `{}`", bnd.ident))
@@ -441,41 +443,19 @@ impl<'src> Inferer<'src> {
         }
     }
 
+    // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        let mut expected_type = Cow::Borrowed(expected_type);
-
-        {
-            let expr_type = expr.get_type();
-
-            // Own type is `Uninferred` if no type has been inferred yet, or none was inferable
-            if expr_type.is_partially_known() {
-                if let Some(extended_expected_type) = expr_type.infer_by(&expected_type) {
-                    if *expr_type == extended_expected_type {
-                        // Own type can't be inferred further by `expected_ty`
-                        return expr_type.clone();
-                    }
-                    expected_type = Cow::Owned(extended_expected_type)
-                } else {
-                    // Own type and expected type are not compatible. Type mismatch
-                    expr.pos().error_exit(TypeMis(&expected_type, &expr_type));
-                }
-            }
-        }
-
-        // Own type is uninferred, or `expected_type` is more known or specialized than own type.
-        // Do inference
-
         match *expr {
-            Expr::Nil(ref mut nil) => self.infer_nil(nil, &expected_type),
-            Expr::NumLit(ref mut l) => self.infer_num_lit(l, &expected_type),
-            Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_type),
-            Expr::Bool(ref mut b) => self.infer_bool(b, &expected_type),
-            Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_type),
-            Expr::Call(ref mut call) => self.infer_call(call, &expected_type).clone(),
-            Expr::If(ref mut cond) => self.infer_if(cond, &expected_type),
-            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_type).clone(),
-            Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_type),
-            Expr::Cons(ref mut cons) => self.infer_cons(cons, &expected_type),
+            Expr::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
+            Expr::NumLit(ref mut l) => self.infer_num_lit(l, expected_type),
+            Expr::StrLit(ref mut l) => self.infer_str_lit(l, expected_type),
+            Expr::Bool(ref mut b) => self.infer_bool(b, expected_type),
+            Expr::Binding(ref mut bnd) => self.infer_binding(bnd, expected_type),
+            Expr::Call(ref mut call) => self.infer_call(call, expected_type).clone(),
+            Expr::If(ref mut cond) => self.infer_if(cond, expected_type),
+            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, expected_type).clone(),
+            Expr::TypeAscript(_) => self.infer_type_ascript(expr, expected_type),
+            Expr::Cons(ref mut cons) => self.infer_cons(cons, expected_type),
         }
     }
 }

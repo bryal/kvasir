@@ -46,12 +46,13 @@ impl<'src> Type<'src> {
     pub fn is_partially_known(&self) -> bool {
         !self.is_unknown()
     }
-    pub fn is_fully_known(&self) -> bool {
+
+    pub fn is_fully_inferred(&self) -> bool {
         match *self {
             Type::Uninferred => false,
-            Type::Var(_) => unimplemented!(),
+            Type::Var(_) => true,
             Type::Const(_) => true,
-            Type::App(_, ref args) => args.iter().all(Type::is_fully_known),
+            Type::App(_, ref args) => args.iter().all(Type::is_fully_inferred),
             Type::Scheme(_, _) => unimplemented!(),
         }
     }

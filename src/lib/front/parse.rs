@@ -264,7 +264,7 @@ fn parse_extern_proc<'src>(csts: &[CST<'src>],
             CST::Ident(name, ref id_pos) => {
                 let typ = parse_type(&csts[1]);
 
-                if !typ.is_fully_known() {
+                if !typ.is_fully_inferred() {
                     csts[1].pos().error_exit("Type of external static must be fully specified")
                 }
 
