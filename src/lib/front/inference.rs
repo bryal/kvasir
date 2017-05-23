@@ -5,6 +5,8 @@
 // TODO: Replace verbose type error checks with:
 //       `foo.infer_types(...)
 //           .unwrap_or_else(foo.pos().type_mismatcher(expected_ty))`
+// TODO: Encode whether types have been inferred in the type of the
+//       AST. E.g. `type InferredAst = Ast<Ty = Type>; type UninferredAst = Ast<Ty = Option<Type>>`
 
 use self::InferenceErr::*;
 use lib::collections::ScopeStack;
@@ -13,6 +15,93 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::mem::{replace, swap};
+
+/// Instantiate the type scheme of `vars` and `poly` with `t`
+///
+/// If `t` is not consistent with the signature, not counting conflicting type
+/// variables, return `None`.
+///
+/// # Example
+/// ```
+/// (forall a,b,c in (instantiate (forall a in (Tuple a a a c)) (Tuple a b int int)))
+///     = (Tuple int int int c)
+/// ```
+fn instantiate<'src>(vars: &mut HashMap<u64, Type<'src>>,
+                     poly: &Type<'src>,
+                     t: &Type<'src>)
+                     -> Option<Type<'src>> {
+    /// Substitute parts or the whole of the constraint for more specialized parts
+    /// in `special`.
+    ///
+    /// If `special` is not consistent with the constraint, not counting conflicting
+    /// type variables, return `None`
+    fn specialize_constraint<'src>(constraint: &Type<'src>,
+                                   special: &Type<'src>)
+                                   -> Option<Type<'src>> {
+        match (constraint, special) {
+            (_, _) if constraint == special => Some(constraint.clone()),
+            (&Type::Uninferred, _) => Some(special.clone()),
+            (_, &Type::Uninferred) => Some(constraint.clone()),
+            (&Type::Var(a), &Type::Var(b)) if a < b => Some(Type::Var(a)),
+            (&Type::Var(_), _) => Some(special.clone()),
+            (&Type::App(s1, ref as1), &Type::App(s2, ref as2)) if s1 == s2 => {
+                as1.iter()
+                   .zip(as2)
+                   .map(|(a1, a2)| specialize_constraint(a1, a2))
+                   .collect::<Option<_>>()
+                   .map(|args| Type::App(s1, args))
+            }
+            (_, _) => None,
+        }
+    }
+
+    /// Gather constraints for the type variables `vars` from the most special types of `t`
+    fn gather_constraints<'src>(vars: &mut HashMap<u64, Type<'src>>,
+                                poly: &Type<'src>,
+                                t: &Type<'src>)
+                                -> Result<(), ()> {
+        match (poly, t) {
+            (&Type::Var(ref id), _) if vars.contains_key(id) => {
+                match specialize_constraint(&vars[id], t) {
+                    Some(c) => {
+                        vars.insert(*id, c);
+                        Ok(())
+                    }
+                    None => Err(()),
+                }
+            }
+            (&Type::App(s1, ref as1), &Type::App(s2, ref as2)) if s1 == s2 => {
+                as1.iter()
+                   .zip(as2)
+                   .map(|(a1, a2)| gather_constraints(vars, a1, a2))
+                   .fold(Ok(()), |acc, r| acc.and(r))
+            }
+            (&Type::Scheme(_, _), _) |
+            (_, &Type::Scheme(_, _)) => panic!("ICE: Type scheme encountered during \
+                                                `gather_constraints`"),
+            (_, _) => Ok(()),
+        }
+    }
+
+    /// Apply the substitutions from type variables to inferred and constrained
+    /// types of `substs` to the relevant type variables in `poly`
+    fn substitute<'src>(substs: &HashMap<u64, Type<'src>>, poly: &Type<'src>) -> Type<'src> {
+        match *poly {
+            Type::Var(ref id) if substs.contains_key(id) => substs[id].clone(),
+            Type::App(s, ref args) => Type::App(s,
+                                                args.iter()
+                                                    .map(|arg| substitute(substs, arg))
+                                                    .collect()),
+            Type::Scheme(_, _) => panic!("ICE: Type scheme encountered during `substitute`"),
+            _ => poly.clone(),
+        }
+    }
+
+    match gather_constraints(vars, poly, t) {
+        Ok(()) => Some(substitute(vars, poly)),
+        Err(()) => None,
+    }
+}
 
 enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
@@ -215,6 +304,10 @@ impl<'src> Inferer<'src> {
         }
     }
 
+    // 1. Infer function and arg types independently
+    // 2. Instantiate function for the most specialized args
+    // 3. Attempt to unify the function type and the argument types
+    //    by specializing polytypes
     fn infer_call<'call>(&mut self,
                          call: &'call mut Call<'src>,
                          expected_ty: &Type<'src>)
@@ -316,7 +409,7 @@ impl<'src> Inferer<'src> {
 
         // Own type is `Uninferred` if no type has been inferred yet, or none was inferrable
 
-        if lam.typ.is_partially_inferred() {
+        if lam.typ.is_partially_known() {
             if let Some(extended_expected_type) = lam.typ.infer_by(expected_type) {
                 if lam.typ == extended_expected_type {
                     // Own type can't be inferred further by `expected_type`
@@ -324,7 +417,7 @@ impl<'src> Inferer<'src> {
                 }
             } else {
                 // Own type and expected type are not compatible. Type mismatch
-                lam.pos.error_exit(TypeMis(expected_ty, &lam.typ));
+                lam.pos.error_exit(TypeMis(expected_type, &lam.typ));
             }
         }
 
@@ -399,11 +492,11 @@ impl<'src> Inferer<'src> {
             let expr_type = expr.get_type();
 
             // Own type is `Uninferred` if no type has been inferred yet, or none was inferable
-            if expr_type.is_partially_inferred() {
-                if let Some(extended_expected_type) = expr_type.infer_by(expected_type) {
+            if expr_type.is_partially_known() {
+                if let Some(extended_expected_type) = expr_type.infer_by(&expected_type) {
                     if *expr_type == extended_expected_type {
                         // Own type can't be inferred further by `expected_ty`
-                        return expr_typ.clone();
+                        return expr_type.clone();
                     }
                     expected_type = Cow::Owned(extended_expected_type)
                 } else {

@@ -1,4 +1,5 @@
 use super::SrcPos;
+use itertools::Itertools;
 use std::borrow;
 use std::collections::HashMap;
 use std::fmt;
@@ -15,11 +16,13 @@ lazy_static!{
 pub enum Type<'src> {
     Uninferred,
     /// A type variable identified by an integer, bound in a type scheme
-    Var(usize),
+    Var(u64),
     /// A monotype constant, like `int`, or `string`
     Const(&'src str),
     /// An application of a type function over one/some/no monotype(s)
     App(&'src str, Vec<Type<'src>>),
+    /// A polymorphic type scheme
+    Scheme(Vec<u64>, Box<Type<'src>>),
 }
 
 /// The tuple has the type constructor `*`, as it is a
@@ -49,6 +52,7 @@ impl<'src> Type<'src> {
             Type::Var(_) => unimplemented!(),
             Type::Const(_) => true,
             Type::App(_, ref args) => args.iter().all(Type::is_fully_known),
+            Type::Scheme(_, _) => unimplemented!(),
         }
     }
 
@@ -101,6 +105,13 @@ impl<'src> fmt::Display for Type<'src> {
                        constructor,
                        args.iter().fold(String::new(), |acc, arg| format!("{} {}", acc, arg)))
             }
+            Type::Scheme(ref vars, ref body) => write!(f,
+                                                       "(forall ({}) {})",
+                                                       vars.iter()
+                                                           .map(|id| format!("${}", id))
+                                                           .intersperse(" ".to_string())
+                                                           .collect::<String>(),
+                                                       body),
         }
     }
 }
