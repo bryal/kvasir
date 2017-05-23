@@ -94,7 +94,13 @@ impl<'src> Inferer<'src> {
                         def: &mut StaticDef<'src>,
                         expected_ty: &Type<'src>)
                         -> Type<'src> {
-        self.infer_expr(&mut def.body, expected_ty)
+        // Remove all local variables from scope while inferencing types for a static definition
+        let old_vars = replace(&mut self.vars, Vec::new());
+
+        let inferred = self.infer_expr(&mut def.body, expected_ty);
+
+        self.vars = old_vars;
+        inferred
     }
 
     fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_ty: &Type<'src>) -> Type<'src> {
@@ -169,11 +175,7 @@ impl<'src> Inferer<'src> {
                         None);
 
             if let Some(mut def) = maybe_def {
-                let old_vars = replace(&mut self.vars, Vec::new());
-
                 let inferred = self.infer_static_def(&mut def, expected_ty);
-
-                self.vars = old_vars;
                 self.static_defs.update(bnd.ident.s, Some(def));
                 bnd.typ = inferred.clone();
 
@@ -306,18 +308,18 @@ impl<'src> Inferer<'src> {
 
     fn infer_lambda<'l>(&mut self,
                         mut lam: &'l mut Lambda<'src>,
-                        expected_ty: &Type<'src>)
+                        expected_type: &Type<'src>)
                         -> &'l Type<'src> {
-        let (expected_param, expected_body) = expected_ty.get_func_sig()
-                                                         .unwrap_or((&TYPE_UNINFERRED,
-                                                                     &TYPE_UNINFERRED));
+        let (expected_param, expected_body) = expected_type.get_func_sig()
+                                                           .unwrap_or((&TYPE_UNINFERRED,
+                                                                       &TYPE_UNINFERRED));
 
-        // Own type is `Unknown` if no type has been inferred yet, or none was inferable
+        // Own type is `Uninferred` if no type has been inferred yet, or none was inferrable
 
-        if lam.typ.is_partially_known() {
-            if let Some(inferred) = expected_ty.infer_by(&lam.typ) {
-                if lam.typ == inferred {
-                    // Own type can't be inferred further by `expected_ty`
+        if lam.typ.is_partially_inferred() {
+            if let Some(extended_expected_type) = lam.typ.infer_by(expected_type) {
+                if lam.typ == extended_expected_type {
+                    // Own type can't be inferred further by `expected_type`
                     return &lam.typ;
                 }
             } else {
@@ -390,42 +392,43 @@ impl<'src> Inferer<'src> {
         }
     }
 
-    fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_ty: &Type<'src>) -> Type<'src> {
-        let mut expected_ty = Cow::Borrowed(expected_ty);
+    fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        let mut expected_type = Cow::Borrowed(expected_type);
 
         {
-            let expr_typ = expr.get_type();
+            let expr_type = expr.get_type();
 
-            // Own type is `Unknown` if no type has been inferred yet, or none was inferable
-            if expr_typ.is_partially_known() {
-                if let Some(inferred) = expected_ty.infer_by(&expr_typ) {
-                    if *expr_typ == inferred {
+            // Own type is `Uninferred` if no type has been inferred yet, or none was inferable
+            if expr_type.is_partially_inferred() {
+                if let Some(extended_expected_type) = expr_type.infer_by(expected_type) {
+                    if *expr_type == extended_expected_type {
                         // Own type can't be inferred further by `expected_ty`
                         return expr_typ.clone();
                     }
-                    expected_ty = Cow::Owned(inferred)
+                    expected_type = Cow::Owned(extended_expected_type)
                 } else {
                     // Own type and expected type are not compatible. Type mismatch
-                    expr.pos().error_exit(TypeMis(&expected_ty, &expr_typ));
+                    expr.pos().error_exit(TypeMis(&expected_type, &expr_type));
                 }
             }
         }
 
-        // Own type is unknown, or `expected_ty` is more known than own type. Do inference
+        // Own type is uninferred, or `expected_type` is more known or specialized than own type.
+        // Do inference
 
         match *expr {
-            Expr::Nil(ref mut nil) => self.infer_nil(nil, &expected_ty),
-            Expr::Assign(ref mut assign) => self.infer_assign(assign, &expected_ty),
-            Expr::NumLit(ref mut l) => self.infer_num_lit(l, &expected_ty),
-            Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_ty),
-            Expr::Bool(ref mut b) => self.infer_bool(b, &expected_ty),
-            Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_ty),
-            Expr::Call(ref mut call) => self.infer_call(call, &expected_ty).clone(),
-            Expr::Block(ref mut block) => self.infer_block(block, &expected_ty).clone(),
-            Expr::If(ref mut cond) => self.infer_if(cond, &expected_ty),
-            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_ty).clone(),
-            Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_ty),
-            Expr::Cons(ref mut cons) => self.infer_cons(cons, &expected_ty),
+            Expr::Nil(ref mut nil) => self.infer_nil(nil, &expected_type),
+            Expr::Assign(ref mut assign) => self.infer_assign(assign, &expected_type),
+            Expr::NumLit(ref mut l) => self.infer_num_lit(l, &expected_type),
+            Expr::StrLit(ref mut l) => self.infer_str_lit(l, &expected_type),
+            Expr::Bool(ref mut b) => self.infer_bool(b, &expected_type),
+            Expr::Binding(ref mut bnd) => self.infer_binding(bnd, &expected_type),
+            Expr::Call(ref mut call) => self.infer_call(call, &expected_type).clone(),
+            Expr::Block(ref mut block) => self.infer_block(block, &expected_type).clone(),
+            Expr::If(ref mut cond) => self.infer_if(cond, &expected_type),
+            Expr::Lambda(ref mut lam) => self.infer_lambda(lam, &expected_type).clone(),
+            Expr::TypeAscript(_) => self.infer_type_ascript(expr, &expected_type),
+            Expr::Cons(ref mut cons) => self.infer_cons(cons, &expected_type),
         }
     }
 }
