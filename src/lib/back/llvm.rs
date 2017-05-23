@@ -223,46 +223,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.build_ret(call);
     }
 
-    fn gen_handle_block<T, F>(&self,
-                              env: &mut Env<'src, 'ast, 'ctx>,
-                              block: &'ast ast::Block<'src>,
-                              handler: F)
-                              -> T
-        where F: FnOnce(&Self, &mut Env<'src, 'ast, 'ctx>, &'ast Expr<'src>) -> T
-    {
-        self.gen_static_defs(env, &block.static_defs);
-
-        let old_n_vars = env.vars.len();
-
-        let (last, statements) = block.exprs.split_last().expect("no exprs in block");
-
-        for statement in statements {
-            self.gen_expr(env, statement);
-        }
-
-        let r = handler(self, env, last);
-
-        env.vars.truncate(old_n_vars);
-        env.funcs.pop();
-        env.statics.pop();
-
-        r
-    }
-
-    fn gen_block(&self,
-                 env: &mut Env<'src, 'ast, 'ctx>,
-                 block: &'ast ast::Block<'src>)
-                 -> &'ctx Value {
-        self.gen_handle_block(env, block, Self::gen_expr)
-    }
-
-    fn gen_tail_block(&self,
-                      env: &mut Env<'src, 'ast, 'ctx>,
-                      block: &'ast ast::Block<'src>)
-                      -> Option<&'ctx Value> {
-        self.gen_handle_block(env, block, Self::gen_tail_expr)
-    }
-
     fn gen_if(&self,
               env: &mut Env<'src, 'ast, 'ctx>,
               cond: &'ast ast::If<'src>,
@@ -350,22 +310,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         anon
     }
 
-    fn gen_lvalue(&self, env: &mut Env<'src, 'ast, 'ctx>, expr: &'ast Expr<'src>) -> &'ctx Value {
-        match *expr {
-            Expr::Binding(ref bnd) => {
-                env.get_var(bnd.ident.s)
-                   .unwrap_or_else(|| expr.pos().error_exit("Invalid assignee expression"))
-            }
-            _ => expr.pos().error_exit("Invalid assignee expression"),
-        }
-    }
-
-    fn gen_assign(&self, env: &mut Env<'src, 'ast, 'ctx>, assign: &'ast ast::Assign<'src>) {
-        let var = self.gen_lvalue(env, &assign.lhs);
-
-        self.builder.build_store(self.gen_expr(env, &assign.rhs), var);
-    }
-
     fn gen_cons(&self,
                 env: &mut Env<'src, 'ast, 'ctx>,
                 cons: &'ast ast::Cons<'src>)
@@ -384,13 +328,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Bool(ref b) => self.gen_bool(b),
             Expr::Binding(ref bnd) => self.gen_r_binding(env, bnd),
             Expr::Call(ref call) => self.gen_call(env, call),
-            Expr::Block(ref block) => self.gen_block(env, block),
             Expr::If(ref cond) => self.gen_if(env, cond, &expr.get_type()),
             Expr::Lambda(ref lam) => self.gen_lambda(env, lam),
-            Expr::Assign(ref assign) => {
-                self.gen_assign(env, assign);
-                self.gen_nil()
-            }
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
             Expr::Cons(ref c) => self.gen_cons(env, c),
@@ -407,7 +346,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 self.gen_tail_call(env, call);
                 None
             }
-            Expr::Block(ref block) => self.gen_tail_block(env, block),
             Expr::If(ref cond) => self.gen_tail_if(env, cond, &expr.get_type()),
             _ => Some(self.gen_expr(env, expr)),
         }

@@ -222,15 +222,6 @@ impl<'src> Call<'src> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Block<'src> {
-    pub static_defs: HashMap<&'src str, StaticDef<'src>>,
-    pub extern_funcs: HashMap<&'src str, ExternProcDecl<'src>>,
-    pub exprs: Vec<Expr<'src>>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
-}
-
 /// if-then-else expression
 #[derive(Clone, Debug)]
 pub struct If<'src> {
@@ -282,14 +273,6 @@ impl<'src> Lambda<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Assign<'src> {
-    pub lhs: Expr<'src>,
-    pub rhs: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
-}
-
-#[derive(Clone, Debug)]
 pub struct TypeAscript<'src> {
     pub typ: Type<'src>,
     pub expr: Expr<'src>,
@@ -312,10 +295,8 @@ pub enum Expr<'src> {
     Bool(Bool<'src>),
     Binding(Binding<'src>),
     Call(Box<Call<'src>>),
-    Block(Box<Block<'src>>),
     If(Box<If<'src>>),
     Lambda(Box<Lambda<'src>>),
-    Assign(Box<Assign<'src>>),
     TypeAscript(Box<TypeAscript<'src>>),
     Cons(Box<Cons<'src>>),
 }
@@ -328,10 +309,8 @@ impl<'src> Expr<'src> {
             Expr::Bool(ref b) => &b.pos,
             Expr::Binding(ref bnd) => &bnd.ident.pos,
             Expr::Call(ref call) => &call.pos,
-            Expr::Block(ref block) => &block.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
-            Expr::Assign(ref a) => &a.pos,
             Expr::TypeAscript(ref a) => &a.pos,
             Expr::Cons(ref c) => &c.pos,
         }
@@ -345,10 +324,8 @@ impl<'src> Expr<'src> {
             Expr::Bool(_) => &TYPE_BOOL,
             Expr::Binding(ref bnd) => &bnd.typ,
             Expr::Call(ref call) => &call.typ,
-            Expr::Block(ref block) => &block.typ,
             Expr::If(ref cond) => &cond.typ,
             Expr::Lambda(ref lam) => &lam.typ,
-            Expr::Assign(ref assign) => &assign.typ,
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Uninferred` to imply that inference is needed
             Expr::TypeAscript(_) => &TYPE_UNINFERRED,

@@ -1,11 +1,11 @@
 // FIXME: ArityMiss is not very descriptive. Customize message for each error case
 
 use self::ParseErr::*;
-use std::collections::HashMap;
-use std::fmt::{self, Display};
 use super::SrcPos;
 use super::ast::*;
 use super::lex::CST;
+use std::collections::HashMap;
+use std::fmt::{self, Display};
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
@@ -98,24 +98,6 @@ fn parse_sexpr<'src>(func_cst: &CST<'src>,
     }
 }
 
-/// Parse a list of `CST`s as a `Block`.
-/// Returns `None` if there are no expressions in the block.
-fn parse_block<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Option<Block<'src>> {
-    let (static_defs, extern_funcs, exprs) = parse_items(csts);
-
-    if exprs.is_empty() {
-        None
-    } else {
-        Some(Block {
-            static_defs: static_defs,
-            extern_funcs: extern_funcs,
-            exprs: exprs,
-            typ: Type::Uninferred,
-            pos: pos,
-        })
-    }
-}
-
 /// Parse a list of `CST`s as parts of an `If` conditional
 fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
     if csts.len() != 3 {
@@ -192,20 +174,6 @@ fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
     Call::new_multary(Expr::Lambda(Box::new(l)), args, pos)
 }
 
-
-/// Parse a list of `CST`s as the parts of an `Assign`
-fn parse_assign<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Assign<'src> {
-    if csts.len() != 2 {
-        pos.error_exit(ArityMis(2, csts.len()))
-    }
-    Assign {
-        lhs: parse_expr(&csts[0]),
-        rhs: parse_expr(&csts[1]),
-        typ: Type::Uninferred,
-        pos: pos,
-    }
-}
-
 /// Parse a list of `CST`s as a `TypeAscript`
 fn parse_type_ascript<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
     if csts.len() != 2 {
@@ -244,12 +212,6 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                     CST::Ident("let", _) => {
                         Expr::Call(Box::new(parse_let(tail, pos.clone())))
                     }
-                    CST::Ident("begin", _) => {
-                        parse_block(tail, pos.clone())
-                            .map(|block| Expr::Block(Box::new(block)))
-                            .unwrap_or(Expr::Nil(Nil { pos: pos.clone() }))
-                    }
-                    CST::Ident("set", _) => Expr::Assign(Box::new(parse_assign(tail, pos.clone()))),
                     CST::Ident(":", _) => {
                         Expr::TypeAscript(Box::new(parse_type_ascript(tail, pos.clone())))
                     }
