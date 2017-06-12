@@ -196,20 +196,21 @@ pub struct Bool<'src> {
 #[derive(Clone, Debug)]
 pub struct Call<'src> {
     pub func: Expr<'src>,
-    // None <=> type is nil
-    pub arg: Option<Expr<'src>>,
+    pub arg: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
 impl<'src> Call<'src> {
     pub fn new_multary(func: Expr<'src>, mut args: Vec<Expr<'src>>, pos: SrcPos<'src>) -> Self {
-        let last = args.pop();
+        let last = args.pop().unwrap_or_else(|| {
+            pos.error_exit("Empty argument list. Function calls can't be nullary")
+        });
 
         let calls = args.into_iter().fold(func, |f, arg| {
             Expr::Call(Box::new(Call {
                                     func: f,
-                                    arg: Some(arg),
+                                    arg: arg,
                                     typ: Type::Uninferred,
                                     pos: pos.clone(),
                                 }))
@@ -278,6 +279,14 @@ impl<'src> Lambda<'src> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Let<'src> {
+    pub bindings: Vec<(Param<'src>, Expr<'src>)>,
+    pub body: Expr<'src>,
+    pub typ: Type<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub struct TypeAscript<'src> {
     pub typ: Type<'src>,
     pub expr: Expr<'src>,
@@ -302,6 +311,7 @@ pub enum Expr<'src> {
     Call(Box<Call<'src>>),
     If(Box<If<'src>>),
     Lambda(Box<Lambda<'src>>),
+    Let(Box<Let<'src>>),
     TypeAscript(Box<TypeAscript<'src>>),
     Cons(Box<Cons<'src>>),
 }
@@ -316,6 +326,7 @@ impl<'src> Expr<'src> {
             Expr::Call(ref call) => &call.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
+            Expr::Let(ref l) => &l.pos,
             Expr::TypeAscript(ref a) => &a.pos,
             Expr::Cons(ref c) => &c.pos,
         }
@@ -331,6 +342,7 @@ impl<'src> Expr<'src> {
             Expr::Call(ref call) => &call.typ,
             Expr::If(ref cond) => &cond.typ,
             Expr::Lambda(ref lam) => &lam.typ,
+            Expr::Let(ref l) => &l.typ,
             // The existance of a type ascription implies that the expression has not yet been
             // inferred. As such, return type `Uninferred` to imply that inference is needed
             Expr::TypeAscript(_) => &TYPE_UNINFERRED,

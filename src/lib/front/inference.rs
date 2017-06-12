@@ -314,9 +314,7 @@ impl<'src> Inferer<'src> {
             &TYPE_UNINFERRED
         };
 
-        if let Some(ref mut arg) = call.arg {
-            self.infer_expr(arg, expected_typ);
-        }
+        self.infer_expr(&mut call.arg, expected_typ);
     }
 
     // 1. Infer function and arg types independently
@@ -329,11 +327,7 @@ impl<'src> Inferer<'src> {
                          -> &'call Type<'src> {
         self.infer_call_arg(call);
 
-        let arg_typ = call.arg
-                          .as_ref()
-                          .map(|arg| arg.get_type())
-                          .unwrap_or(&TYPE_NIL)
-                          .clone();
+        let arg_typ = call.arg.get_type().clone();
         let expected_func_type = Type::new_func(arg_typ, expected_ty.clone());
 
         let old_func_typ = call.func.get_type().clone();
@@ -418,6 +412,10 @@ impl<'src> Inferer<'src> {
         &lam.typ
     }
 
+    fn infer_let(&mut self, let_: &mut Let<'src>, expected_type: &Type<'src>) -> &Type<'src> {
+        unimplemented!()
+    }
+
     fn infer_type_ascript(&mut self,
                           expr: &mut Expr<'src>,
                           expected_ty: &Type<'src>)
@@ -464,6 +462,7 @@ impl<'src> Inferer<'src> {
             Expr::Call(ref mut call) => self.infer_call(call, expected_type).clone(),
             Expr::If(ref mut cond) => self.infer_if(cond, expected_type),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, expected_type).clone(),
+            Expr::Let(ref mut l) => self.infer_let(l, expected_type).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascript(expr, expected_type),
             Expr::Cons(ref mut cons) => self.infer_cons(cons, expected_type),
         }

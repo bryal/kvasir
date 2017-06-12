@@ -210,10 +210,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 .error_exit(ICE("expression in function pos is not a function".into()))
         });
 
-        let arg = call.arg
-                      .as_ref()
-                      .map(|ref arg| self.gen_expr(env, arg))
-                      .unwrap_or_else(|| self.gen_nil());
+        let arg = self.gen_expr(env, &call.arg);
         self.builder.build_call(func, &[arg])
     }
 
@@ -224,10 +221,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 .error_exit(ICE("expression in function pos is not a function".into()))
         });
 
-        let arg = call.arg
-                      .as_ref()
-                      .map(|ref arg| self.gen_expr(env, arg))
-                      .unwrap_or_else(|| self.gen_nil());
+        let arg = self.gen_expr(env, &call.arg);
         let call = self.builder.build_tail_call(func, &[arg]);
 
         self.builder.build_ret(call);
@@ -342,6 +336,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Call(ref call) => self.gen_call(env, call),
             Expr::If(ref cond) => self.gen_if(env, cond, &expr.get_type()),
             Expr::Lambda(ref lam) => self.gen_lambda(env, lam),
+            Expr::Let(ref l) => unimplemented!(),
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
             Expr::Cons(ref c) => self.gen_cons(env, c),

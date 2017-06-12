@@ -87,25 +87,9 @@ fn parse_sexpr<'src>(func_cst: &CST<'src>,
                      args_csts: &[CST<'src>],
                      pos: SrcPos<'src>)
                      -> Call<'src> {
-    let (last, init) = args_csts.split_last()
-                                .map(|(l, i)| (Some(parse_expr(l)), i))
-                                .unwrap_or((None, &[]));
-    let calls = init.iter()
-                    .map(parse_expr)
-                    .fold(parse_expr(func_cst), |func, arg| {
-        Expr::Call(Box::new(Call {
-                                func: func,
-                                arg: Some(arg),
-                                typ: Type::Uninferred,
-                                pos: pos.clone(),
-                            }))
-    });
-    Call {
-        func: calls,
-        arg: last,
-        typ: Type::Uninferred,
-        pos: pos,
-    }
+    Call::new_multary(parse_expr(func_cst),
+                      args_csts.iter().map(parse_expr).collect(),
+                      pos)
 }
 
 /// Parse a list of `CST`s as parts of an `If` conditional
@@ -146,20 +130,8 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
     }
 }
 
-fn collect_pair<T, U, I>(it: I) -> (Vec<T>, Vec<U>)
-    where I: Iterator<Item = (T, U)>
-{
-    let mut v1 = Vec::with_capacity(it.size_hint().0);
-    let mut v2 = Vec::with_capacity(it.size_hint().0);
-    for (t, u) in it {
-        v1.push(t);
-        v2.push(u);
-    }
-    (v1, v2)
-}
-
 /// Parse a `let` special form and return as an invocation of a lambda
-fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
+fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
     fn parse_binding<'src>(cst: &CST<'src>) -> (Param<'src>, Expr<'src>) {
         match *cst {
             CST::SExpr(ref binding_pair, ref pos) => if binding_pair.len() == 2 {
@@ -175,15 +147,19 @@ fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
         pos.error_exit(ArityMis(2, csts.len()))
     }
 
-    let (params, args) = match csts[0] {
-        CST::SExpr(ref bindings_csts, _) => collect_pair(bindings_csts.iter().map(parse_binding)),
+    let body = parse_expr(&csts[1]);
+
+    match csts[0] {
+        CST::SExpr(ref bindings_csts, _) => Let {
+            bindings: bindings_csts.iter()
+                                   .map(parse_binding)
+                                   .collect(),
+            body: body,
+            typ: Type::Uninferred,
+            pos: pos.clone(),
+        },
         ref c => c.pos().error_exit(Expected("list of variable bindings")),
-    };
-
-    // let l = Lambda::new_multary(params, parse_expr(&csts[1]), &pos);
-    // Call::new_multary(Expr::Lambda(Box::new(l)), args, pos)
-
-    unimplemented!()
+    }
 }
 
 /// Parse a list of `CST`s as a `TypeAscript`
@@ -222,7 +198,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
                         Expr::Lambda(Box::new(parse_lambda(tail, pos)))
                     }
                     CST::Ident("let", _) => {
-                        Expr::Call(Box::new(parse_let(tail, pos.clone())))
+                        Expr::Let(Box::new(parse_let(tail, pos.clone())))
                     }
                     CST::Ident(":", _) => {
                         Expr::TypeAscript(Box::new(parse_type_ascript(tail, pos.clone())))
