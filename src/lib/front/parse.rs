@@ -87,15 +87,18 @@ fn parse_sexpr<'src>(func_cst: &CST<'src>,
                      args_csts: &[CST<'src>],
                      pos: SrcPos<'src>)
                      -> Call<'src> {
-    let (last, init) =
-        args_csts.split_last().map(|(l, i)| (Some(parse_expr(l)), i)).unwrap_or((None, &[]));
-    let calls = init.iter().map(parse_expr).fold(parse_expr(func_cst), |func, arg| {
+    let (last, init) = args_csts.split_last()
+                                .map(|(l, i)| (Some(parse_expr(l)), i))
+                                .unwrap_or((None, &[]));
+    let calls = init.iter()
+                    .map(parse_expr)
+                    .fold(parse_expr(func_cst), |func, arg| {
         Expr::Call(Box::new(Call {
-            func: func,
-            arg: Some(arg),
-            typ: Type::Uninferred,
-            pos: pos.clone(),
-        }))
+                                func: func,
+                                arg: Some(arg),
+                                typ: Type::Uninferred,
+                                pos: pos.clone(),
+                            }))
     });
     Call {
         func: calls,
@@ -133,8 +136,9 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
         pos.error_exit(ArityMis(2, csts.len()))
     }
     match csts[0] {
-        CST::SExpr(ref params_csts, _) => {
+        CST::SExpr(ref params_csts, ref params_pos) => {
             Lambda::new_multary(params_csts.iter().map(parse_param).collect(),
+                                params_pos,
                                 parse_expr(&csts[1]),
                                 pos)
         }
@@ -176,9 +180,10 @@ fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Call<'src> {
         ref c => c.pos().error_exit(Expected("list of variable bindings")),
     };
 
-    let l = Lambda::new_multary(params, parse_expr(&csts[1]), &pos);
+    // let l = Lambda::new_multary(params, parse_expr(&csts[1]), &pos);
+    // Call::new_multary(Expr::Lambda(Box::new(l)), args, pos)
 
-    Call::new_multary(Expr::Lambda(Box::new(l)), args, pos)
+    unimplemented!()
 }
 
 /// Parse a list of `CST`s as a `TypeAscript`
@@ -239,23 +244,23 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
         }
         CST::Ident(ident, ref pos) => {
             Expr::Binding(Binding {
-                ident: Ident::new(ident, pos.clone()),
-                typ: Type::Uninferred,
-            })
+                              ident: Ident::new(ident, pos.clone()),
+                              typ: Type::Uninferred,
+                          })
         }
         CST::Num(num, ref pos) => {
             Expr::NumLit(NumLit {
-                lit: num,
-                typ: Type::Uninferred,
-                pos: pos.clone(),
-            })
+                             lit: num,
+                             typ: Type::Uninferred,
+                             pos: pos.clone(),
+                         })
         }
         CST::Str(ref s, ref pos) => {
             Expr::StrLit(StrLit {
-                lit: s.clone(),
-                typ: Type::Uninferred,
-                pos: pos.clone(),
-            })
+                             lit: s.clone(),
+                             typ: Type::Uninferred,
+                             pos: pos.clone(),
+                         })
         }
     }
 }
@@ -272,7 +277,9 @@ fn parse_extern_proc<'src>(csts: &[CST<'src>],
                 let typ = parse_type(&csts[1]);
 
                 if !typ.is_fully_inferred() {
-                    csts[1].pos().error_exit("Type of external static must be fully specified")
+                    csts[1]
+                        .pos()
+                        .error_exit("Type of external static must be fully specified")
                 }
 
                 let decl = ExternProcDecl { typ: typ, pos: pos.clone() };
@@ -306,10 +313,11 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
 }
 
 /// Parse a list of `CST`s as a list of items
-fn parse_items<'src>(csts: &[CST<'src>])
-                     -> (HashMap<&'src str, StaticDef<'src>>,
-                         HashMap<&'src str, ExternProcDecl<'src>>,
-                         Vec<Expr<'src>>) {
+fn parse_items<'src>
+    (csts: &[CST<'src>])
+     -> (HashMap<&'src str, StaticDef<'src>>,
+         HashMap<&'src str, ExternProcDecl<'src>>,
+         Vec<Expr<'src>>) {
     let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
     let mut exprs = Vec::new();
 
@@ -317,7 +325,8 @@ fn parse_items<'src>(csts: &[CST<'src>])
         match item {
             Item::StaticDef(id, def) => {
                 if let Some(def) = static_defs.insert(id.s, def) {
-                    def.pos.error_exit(format!("Duplicate static definition `{}`", id.s))
+                    def.pos
+                       .error_exit(format!("Duplicate static definition `{}`", id.s))
                 }
             }
             Item::ExternProcDecl(id, decl) => {

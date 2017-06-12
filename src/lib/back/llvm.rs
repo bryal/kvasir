@@ -1,7 +1,7 @@
 use self::CodegenErr::*;
 use lib::collections::ScopeStack;
 use lib::front::SrcPos;
-use lib::front::ast::{self, Expr, get_param_type};
+use lib::front::ast::{self, Expr};
 use llvm::*;
 use std::{fmt, mem};
 use std::cell::RefCell;
@@ -43,7 +43,12 @@ impl<'src: 'ast, 'ast, 'ctx> Env<'src, 'ast, 'ctx> {
     }
 
     fn get_var(&self, id: &str) -> Option<&'ctx Value> {
-        self.vars.iter().cloned().rev().find(|&(b, _)| b == id).map(|(_, t)| t)
+        self.vars
+            .iter()
+            .cloned()
+            .rev()
+            .find(|&(b, _)| b == id)
+            .map(|(_, t)| t)
     }
 }
 
@@ -134,7 +139,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Bool") => CodeGenerator::parse_gen_lit::<bool>,
             ast::Type::Const("Float32") => CodeGenerator::parse_gen_lit::<f32>,
             ast::Type::Const("Float64") => CodeGenerator::parse_gen_lit::<f64>,
-            _ => num.pos.error_exit(ICE("type of numeric literal is not numeric".into())),
+            _ => num.pos
+                    .error_exit(ICE("type of numeric literal is not numeric".into())),
         };
         parser(self, &num.lit, &num.typ, &num.pos)
     }
@@ -143,7 +149,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn get_array_as_ptr(&self, array_ptr: &'ctx Value) -> &'ctx Value {
         // First, deref ptr to array (index first element of ptr, like pointer indexing in C).
         // Second, get address of first element in array == address of array start
-        self.builder.build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
+        self.builder
+            .build_gep(array_ptr, &vec![0usize.compile(self.context); 2])
     }
 
     fn gen_str(&self, s: &'ast ast::StrLit<'src>) -> &'ctx Value {
@@ -155,7 +162,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         // { i8* @lit.bytes, i64 /* machines ptr size */ 13 }
         //     where @lit.bytes = global [13 x i8] c"Hello, world!"
         Value::new_struct(self.context,
-                          &[self.get_array_as_ptr(static_array), s.lit.len().compile(self.context)],
+                          &[self.get_array_as_ptr(static_array),
+                            s.lit.len().compile(self.context)],
                           false)
     }
 
@@ -175,16 +183,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            .map(|&(ptr, _)| &***ptr)
            .or(env.get_var(bnd.ident.s))
            .map(|ptr| {
-               let v = self.builder.build_load(ptr);
-               v.set_name(&format!("{}_tmp", bnd.ident.s));
-               v
-           })
+                    let v = self.builder.build_load(ptr);
+                    v.set_name(&format!("{}_tmp", bnd.ident.s));
+                    v
+                })
            .or(env.funcs
                   .get(bnd.ident.s)
                   .map(|&func| &***func))
            .unwrap_or_else(|| {
-               bnd.ident.pos.error_exit(ICE("undefined binding at compile time".into()))
-           })
+                               bnd.ident
+                                  .pos
+                                  .error_exit(ICE("undefined binding at compile time".into()))
+                           })
     }
 
     /// Generates IR code for a function call. If the call is in a tail position and the call
@@ -234,7 +244,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let else_br = parent_func.append("cond_else");
         let next_br = parent_func.append("cond_next");
 
-        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
+        self.builder
+            .build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
 
         let mut phi_nodes = vec![];
 
@@ -266,7 +277,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
 
-        self.builder.build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
+        self.builder
+            .build_cond_br(self.gen_expr(env, &cond.predicate), then_br, else_br);
 
         let mut phi_nodes = vec![];
 
@@ -360,7 +372,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
            .get(bnd.ident.s)
            .cloned()
            .map(|(_, e)| self.gen_const_expr(env, e))
-           .unwrap_or_else(|| bnd.ident.pos.error_exit("binding does not point to constant"))
+           .unwrap_or_else(|| {
+                               bnd.ident
+                                  .pos
+                                  .error_exit("binding does not point to constant")
+                           })
     }
 
     fn gen_const_expr(&self,
@@ -374,7 +390,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::StrLit(ref lit) => self.gen_str(lit),
             Expr::Bool(ref b) => self.gen_bool(b),
             Expr::Binding(ref bnd) => self.gen_eval_const_binding(env, bnd),
-            _ => expr.pos().error_exit("Expression cannot be used in a constant expression"),
+            _ => expr.pos()
+                     .error_exit("Expression cannot be used in a constant expression"),
         }
     }
 
@@ -400,8 +417,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        let param_var = self.builder.build_alloca(self.gen_type(get_param_type(&def_lam.param)));
-        let name = def_lam.param.as_ref().map(|p| p.ident.s).unwrap_or("_");
+        let param_var = self.builder
+                            .build_alloca(self.gen_type(&def_lam.param.typ));
+        let name = def_lam.param.ident.s;
 
         param_var.set_name(name);
 
@@ -445,9 +463,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 }
                 _ => {
                     // Declare statics
-                    let undef_glob = self.module
-                                         .add_global(id,
-                                                     self.gen_type(&*static_def.body.get_type()));
+                    let undef_glob =
+                        self.module
+                            .add_global(id, self.gen_type(&*static_def.body.get_type()));
                     static_decls.insert(id, (undef_glob, &static_def.body));
                     undef_statics.push(id);
                 }

@@ -142,9 +142,9 @@ impl<'src> Inferer<'src> {
     fn new(ast: &mut Module<'src>) -> Self {
         let mut static_defs = ScopeStack::new();
         static_defs.push(replace(&mut ast.static_defs, HashMap::new())
-            .into_iter()
-            .map(|(k, v)| (k, Some(v)))
-            .collect());
+                             .into_iter()
+                             .map(|(k, v)| (k, Some(v)))
+                             .collect());
 
         let mut extern_funcs = ScopeStack::new();
         extern_funcs.push(replace(&mut ast.extern_funcs, HashMap::new()));
@@ -159,24 +159,28 @@ impl<'src> Inferer<'src> {
     fn into_inner
         (mut self)
          -> (HashMap<&'src str, StaticDef<'src>>, HashMap<&'src str, ExternProcDecl<'src>>) {
-        let static_defs =
-            self.static_defs
+        let static_defs = self.static_defs
+                              .pop()
+                              .expect("ICE: Inferer::into_inner: static_defs.pop() failed")
+                              .into_iter()
+                              .map(|(k, v)| {
+            (k, v.expect("ICE: Inferer::into_inner: None when unmapping const def"))
+        })
+                              .collect();
+        let extern_funcs =
+            self.extern_funcs
                 .pop()
-                .expect("ICE: Inferer::into_inner: static_defs.pop() failed")
-                .into_iter()
-                .map(|(k, v)| {
-                    (k, v.expect("ICE: Inferer::into_inner: None when unmapping const def"))
-                })
-                .collect();
-        let extern_funcs = self.extern_funcs
-                               .pop()
-                               .expect("ICE: Inferer::into_inner: extern_funcs.pop() failed");
+                .expect("ICE: Inferer::into_inner: extern_funcs.pop() failed");
 
         (static_defs, extern_funcs)
     }
 
     fn get_var_type_mut(&mut self, id: &str) -> Option<&mut Type<'src>> {
-        self.vars.iter_mut().rev().find(|&&mut (b, _)| b == id).map(|&mut (_, ref mut t)| t)
+        self.vars
+            .iter_mut()
+            .rev()
+            .find(|&&mut (b, _)| b == id)
+            .map(|&mut (_, ref mut t)| t)
     }
 
     fn infer_static_def(&mut self,
@@ -219,8 +223,9 @@ impl<'src> Inferer<'src> {
                 expected_type.clone()
             }
             _ => {
-                lit.pos.error_exit(format!("Type mismatch. Expected `{}`, found numeric literal",
-                                           expected_type))
+                lit.pos
+                   .error_exit(format!("Type mismatch. Expected `{}`, found numeric literal",
+                                       expected_type))
             }
         }
     }
@@ -259,19 +264,25 @@ impl<'src> Inferer<'src> {
             // Don't infer types for external items,
             // just check compatibility with expected_type
 
-            let extern_type = &self.extern_funcs.get_at_height(bnd.ident.s, height).unwrap().typ;
+            let extern_type = &self.extern_funcs
+                                   .get_at_height(bnd.ident.s, height)
+                                   .unwrap()
+                                   .typ;
             if let Some(inferred) = extern_type.infer_by(expected_type) {
                 bnd.typ = inferred.clone();
                 inferred
             } else {
-                bnd.ident.pos.error_exit(TypeMis(expected_type, &extern_type))
+                bnd.ident
+                   .pos
+                   .error_exit(TypeMis(expected_type, &extern_type))
             }
         } else if let Some(height) = self.static_defs.get_height(bnd.ident.s) {
             // Binding is a constant. Do inference
 
-            let maybe_def =
-                replace(self.static_defs.get_at_height_mut(bnd.ident.s, height).unwrap(),
-                        None);
+            let maybe_def = replace(self.static_defs
+                                        .get_at_height_mut(bnd.ident.s, height)
+                                        .unwrap(),
+                                    None);
 
             if let Some(mut def) = maybe_def {
                 // The definition is available, do inference
@@ -288,7 +299,9 @@ impl<'src> Inferer<'src> {
                 unimplemented!()
             }
         } else {
-            bnd.ident.pos.error_exit(format!("Unresolved path `{}`", bnd.ident))
+            bnd.ident
+               .pos
+               .error_exit(format!("Unresolved path `{}`", bnd.ident))
         }
     }
 
@@ -316,7 +329,11 @@ impl<'src> Inferer<'src> {
                          -> &'call Type<'src> {
         self.infer_call_arg(call);
 
-        let arg_typ = call.arg.as_ref().map(|arg| arg.get_type()).unwrap_or(&TYPE_NIL).clone();
+        let arg_typ = call.arg
+                          .as_ref()
+                          .map(|arg| arg.get_type())
+                          .unwrap_or(&TYPE_NIL)
+                          .clone();
         let expected_func_type = Type::new_func(arg_typ, expected_ty.clone());
 
         let old_func_typ = call.func.get_type().clone();
@@ -357,14 +374,12 @@ impl<'src> Inferer<'src> {
     }
 
     fn infer_param(&mut self, lam: &mut Lambda<'src>, expected_typ: &Type<'src>) {
-        match lam.param {
-            Some(ref mut param) => match param.typ.infer_by(expected_typ) {
-                Some(inferred) => param.typ = inferred,
-                None => param.ident.pos.error_exit(TypeMis(expected_typ, &param.typ)),
-            },
-            None => if expected_typ.infer_by(&TYPE_NIL).is_none() {
-                lam.pos.error_exit(NonNilNullary(expected_typ))
-            },
+        match lam.param.typ.infer_by(expected_typ) {
+            Some(inferred) => lam.param.typ = inferred,
+            None => lam.param
+                       .ident
+                       .pos
+                       .error_exit(TypeMis(expected_typ, &lam.param.typ)),
         }
     }
 
@@ -372,9 +387,9 @@ impl<'src> Inferer<'src> {
                         mut lam: &'l mut Lambda<'src>,
                         expected_type: &Type<'src>)
                         -> &'l Type<'src> {
-        let (expected_param, expected_body) = expected_type.get_func_sig()
-                                                           .unwrap_or((&TYPE_UNINFERRED,
-                                                                       &TYPE_UNINFERRED));
+        let (expected_param, expected_body) =
+            expected_type.get_func_sig()
+                         .unwrap_or((&TYPE_UNINFERRED, &TYPE_UNINFERRED));
 
         // Own type is `Uninferred` if no type has been inferred yet, or none was inferrable
 
@@ -392,19 +407,14 @@ impl<'src> Inferer<'src> {
 
         self.infer_param(&mut lam, &expected_param);
 
-        if let Some(ref mut param) = lam.param {
-            self.vars.push((param.ident.s, param.typ.clone()));
-            self.infer_expr(&mut lam.body, &expected_body);
-            param.typ = self.vars
+        self.vars.push((lam.param.ident.s, lam.param.typ.clone()));
+        self.infer_expr(&mut lam.body, &expected_body);
+        lam.param.typ = self.vars
                             .pop()
                             .expect("ICE: Variable stack empty after infer expr when infer lambda")
                             .1;
-        } else {
-            self.infer_expr(&mut lam.body, &expected_body);
-        }
 
-        lam.typ = Type::new_func(get_param_type(&lam.param).clone(),
-                                 lam.body.get_type().clone());
+        lam.typ = Type::new_func(lam.param.typ.clone(), lam.body.get_type().clone());
         &lam.typ
     }
 
@@ -467,7 +477,7 @@ pub fn infer_types(ast: &mut Module) {
                                   .get_mut("main")
                                   .expect("ICE: In infer_types: No main def"),
                            None)
-                       .unwrap();
+                   .unwrap();
 
     inferer.infer_static_def(&mut main,
                              &Type::new_func(TYPE_NIL.clone(), Type::Const("Int64")));

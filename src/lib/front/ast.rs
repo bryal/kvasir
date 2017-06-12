@@ -104,7 +104,8 @@ impl<'src> fmt::Display for Type<'src> {
                 write!(f,
                        "({} {})",
                        constructor,
-                       args.iter().fold(String::new(), |acc, arg| format!("{} {}", acc, arg)))
+                       args.iter()
+                           .fold(String::new(), |acc, arg| format!("{} {}", acc, arg)))
             }
             Type::Scheme(ref vars, ref body) => write!(f,
                                                        "(forall ({}) {})",
@@ -207,11 +208,11 @@ impl<'src> Call<'src> {
 
         let calls = args.into_iter().fold(func, |f, arg| {
             Expr::Call(Box::new(Call {
-                func: f,
-                arg: Some(arg),
-                typ: Type::Uninferred,
-                pos: pos.clone(),
-            }))
+                                    func: f,
+                                    arg: Some(arg),
+                                    typ: Type::Uninferred,
+                                    pos: pos.clone(),
+                                }))
         });
 
         Call {
@@ -242,21 +243,24 @@ pub struct Param<'src> {
 
 #[derive(Clone, Debug)]
 pub struct Lambda<'src> {
-    // None <=> type is nil
-    pub param: Option<Param<'src>>,
+    pub param: Param<'src>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
-pub fn get_param_type<'p, 'src>(param: &'p Option<Param<'src>>) -> &'p Type<'src> {
-    param.as_ref().map(|p| &p.typ).unwrap_or(&TYPE_NIL)
-}
-
 impl<'src> Lambda<'src> {
-    pub fn new_multary(mut params: Vec<Param<'src>>, body: Expr<'src>, pos: &SrcPos<'src>) -> Self {
+    pub fn new_multary(mut params: Vec<Param<'src>>,
+                       params_pos: &SrcPos<'src>,
+                       body: Expr<'src>,
+                       pos: &SrcPos<'src>)
+                       -> Self {
         let innermost = Lambda {
-            param: params.pop(),
+            param: params.pop()
+                         .unwrap_or_else(|| {
+                params_pos.error_exit("Empty parameter list. Functions can't be \
+                                       nullary, consider defining a constant instead")
+            }),
             body: body,
             typ: Type::Uninferred,
             pos: pos.clone(),
@@ -264,7 +268,7 @@ impl<'src> Lambda<'src> {
 
         params.into_iter().rev().fold(innermost, |inner, param| {
             Lambda {
-                param: Some(param),
+                param: param,
                 body: Expr::Lambda(Box::new(inner)),
                 typ: Type::Uninferred,
                 pos: pos.clone(),
