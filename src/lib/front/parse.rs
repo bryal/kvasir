@@ -7,6 +7,13 @@ use super::lex::CST;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 
+/// Represents an item, i.e. a use-statement or a definition or some such
+enum Item<'src> {
+    StaticDef(Ident<'src>, StaticDef<'src>),
+    ExternProcDecl(Ident<'src>, ExternProcDecl<'src>),
+    Expr(Expr<'src>),
+}
+
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 enum ParseErr {
     /// Something is invalid

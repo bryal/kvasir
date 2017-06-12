@@ -335,13 +335,6 @@ impl<'src> Expr<'src> {
     }
 }
 
-/// Represents an item, i.e. a use-statement or a definition or some such
-pub enum Item<'src> {
-    StaticDef(Ident<'src>, StaticDef<'src>),
-    ExternProcDecl(Ident<'src>, ExternProcDecl<'src>),
-    Expr(Expr<'src>),
-}
-
 #[derive(Clone, Debug)]
 pub struct Module<'src> {
     pub static_defs: HashMap<&'src str, StaticDef<'src>>,
