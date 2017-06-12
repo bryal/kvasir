@@ -1,0 +1,53 @@
+;;; Program to test type inference
+
+(extern-proc add-int64 (-> Int64 Int64 Int64))
+(extern-proc sub-int64 (-> Int64 Int64 Int64))
+(extern-proc mul-int64 (-> Int64 Int64 Int64))
+(extern-proc eq-int64 (-> Int64 Int64 Bool))
+
+
+
+;;; Unordered function call dependencies.
+
+;; To infer `main`, `id2` must be inferred, and to infer
+;; `id2`, `id` must be inferred.
+
+(define id2 (lambda (x) (id x)))
+
+(define id (lambda (x) x))
+
+;; (define main
+;;   (lambda ()
+;;     (id2 1337)))
+
+
+
+;;; Direct recursion
+
+(define fac
+  (lambda (n)
+    (if (eq-int64 n 0)
+        1
+        (mul-int64 n (fac (sub-int64 n 1))))))
+
+;; (define main
+;;   (lambda ()
+;;     (fac 5)))
+
+
+
+;;; Indirect recursion (mutual recursion)
+
+(define indirect-1
+  (lambda (n)
+    (if (eq-int64 n 0)
+        1
+        (add-int64 1 (indirect-2 (sub-int64 n 1))))))
+
+(define indirect-2
+  (lambda (n)
+    (mul-int64 2 (indirect-1 n))))
+
+;; (define main
+;;   (lambda ()
+;;     (indirect-1 5)))
