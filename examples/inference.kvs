@@ -17,8 +17,8 @@
 (define id (lambda (x) x))
 
 ;; (define main
-;;   (lambda ()
-;;     (id2 1337)))
+;;   (lambda (real-world)
+;;     (cons (id2 1337) real-world)))
 
 
 
@@ -31,8 +31,8 @@
         (mul-int64 n (fac (sub-int64 n 1))))))
 
 ;; (define main
-;;   (lambda ()
-;;     (fac 5)))
+;;   (lambda (real-world)
+;;     (cons (fac 5) real-world)))
 
 
 
@@ -49,5 +49,22 @@
     (mul-int64 2 (indirect-1 n))))
 
 ;; (define main
-;;   (lambda ()
-;;     (indirect-1 5)))
+;;   (lambda (real-world)
+;;     (cons (indirect-1 5) real-world)))
+
+
+
+;;; Mutual recursion and polymorphism in let
+
+(define main
+  (lambda (real-world)
+    (let ((id-1 (lambda (n x)
+                  (if (eq-int64 n 0)
+                      x
+                      (id-2 n x))))
+          (id-2 (lambda (n x)
+                  (let ((n1 (sub-int64 n 1)))
+                    (if (eq-int64 n 5)
+                        (id-2 n1 x)
+                        (id-1 n1 x))))))
+      (cons (id-2 10 1337) real-world))))
