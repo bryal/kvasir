@@ -11,7 +11,6 @@
 use self::InferenceErr::*;
 use lib::collections::ScopeStack;
 use lib::front::ast::*;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::mem::{replace, swap};
@@ -113,7 +112,6 @@ enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
     TypeMis(&'p Type<'src>, &'p Type<'src>),
     ArmsDiffer(&'p Type<'src>, &'p Type<'src>),
-    NonNilNullary(&'p Type<'src>),
 }
 impl<'src, 'p> Display for InferenceErr<'src, 'p> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -133,14 +131,6 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
                         alternative, found `{}`",
                     c,
                     a
-                )
-            }
-            NonNilNullary(t) => {
-                write!(
-                    f,
-                    "Infering non-nil type `{}` for the parameter of a \
-                                        nullary function",
-                    t
                 )
             }
         }
