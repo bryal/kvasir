@@ -287,14 +287,26 @@ impl<'src> Lambda<'src> {
     }
 }
 
+/// A binding in a `let` special form
+#[derive(Clone, Debug)]
+pub struct LetBinding<'src> {
+    pub name: Param<'src>,
+    pub val: Expr<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+/// A `let` special form
 #[derive(Clone, Debug)]
 pub struct Let<'src> {
-    pub bindings: Vec<(Param<'src>, Expr<'src>)>,
+    pub bindings: Vec<LetBinding<'src>>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
+/// A type ascription.
+///
+/// Ascribes a specific type to an expression
 #[derive(Clone, Debug)]
 pub struct TypeAscript<'src> {
     pub typ: Type<'src>,

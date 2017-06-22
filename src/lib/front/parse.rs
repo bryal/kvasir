@@ -41,16 +41,31 @@ impl Display for ParseErr {
 /// Parse a `CST` as a `Type`
 pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
     match *tree {
-        // Type construction. E.g. `(Vec Int32)`
-        CST::SExpr(ref construct, _) if !construct.is_empty() => {
-            match construct[0] {
-                CST::Ident(constructor, _) => {
-                    Type::App(constructor, construct[1..].iter().map(parse_type).collect())
+        // Type application. E.g. `(Vec Int32)`
+        CST::SExpr(ref app, ref pos) if !app.is_empty() => {
+            match app[0] {
+                CST::Ident("->", _) if app.len() < 3 => {
+                    pos.error_exit(
+                        "Function type requires at least two arguments: \
+                                    one/multiple input(s) and an output",
+                    )
                 }
-                _ => construct[0].pos().error_exit(Invalid("type constructor")),
+                CST::Ident("->", _) if app.len() == 3 => {
+                    Type::App("->", vec![parse_type(&app[1]), parse_type(&app[2])])
+                }
+                CST::Ident("->", _) => {
+                    let last_fn = Type::new_func(
+                        parse_type(&app[app.len() - 3]),
+                        parse_type(&app[app.len() - 2]),
+                    );
+                    app[1..app.len() - 3].iter().rev().fold(last_fn, |acc, t| {
+                        Type::new_func(parse_type(t), acc)
+                    })
+                }
+                _ => app[0].pos().error_exit(Invalid("type constructor")),
             }
         }
-        CST::SExpr(_, ref pos) => pos.error_exit("Empty type construction"),
+        CST::SExpr(_, ref pos) => pos.error_exit("Empty type application"),
         CST::Ident("_", _) => Type::Uninferred,
         CST::Ident("Nil", _) => TYPE_NIL.clone(),
         CST::Ident(basic, _) => Type::Const(basic),
@@ -142,13 +157,19 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
 
 /// Parse a `let` special form and return as an invocation of a lambda
 fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
-    fn parse_binding<'src>(cst: &CST<'src>) -> (Param<'src>, Expr<'src>) {
+    fn parse_binding<'src>(cst: &CST<'src>) -> LetBinding<'src> {
         match *cst {
-            CST::SExpr(ref binding_pair, ref pos) => if binding_pair.len() == 2 {
-                (parse_param(&binding_pair[0]), parse_expr(&binding_pair[1]))
-            } else {
-                pos.error_exit(Expected("pair of variable name and value"))
-            },
+            CST::SExpr(ref binding_pair, ref pos) => {
+                if binding_pair.len() == 2 {
+                    LetBinding {
+                        name: parse_param(&binding_pair[0]),
+                        val: parse_expr(&binding_pair[1]),
+                        pos: pos.clone(),
+                    }
+                } else {
+                    pos.error_exit(Expected("pair of variable name and value"))
+                }
+            }
             ref c => c.pos().error_exit(Expected("variable binding")),
         }
     }
@@ -302,43 +323,31 @@ fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
     }
 }
 
-/// Parse a list of `CST`s as a list of items
-fn parse_items<'src>
-    (csts: &[CST<'src>])
-     -> (HashMap<&'src str, StaticDef<'src>>,
-         HashMap<&'src str, ExternProcDecl<'src>>,
-         Vec<Expr<'src>>) {
+/// Parse a list of `CST`s as the items of a `Module`
+fn parse_module<'src>(csts: &[CST<'src>]) -> Module<'src> {
     let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
-    let mut exprs = Vec::new();
 
     for item in csts.iter().flat_map(parse_item) {
         match item {
             Item::StaticDef(id, def) => {
                 if let Some(def) = static_defs.insert(id.s, def) {
-                    def.pos
-                       .error_exit(format!("Duplicate static definition `{}`", id.s))
+                    def.pos.error_exit(
+                        format!("Duplicate static definition `{}`", id.s),
+                    )
                 }
             }
             Item::ExternProcDecl(id, decl) => {
                 if let Some(decl) = extern_funcs.insert(id.s, decl) {
-                    decl.pos
-                        .error_exit(format!("Duplicate external procedure declaration `{}`", id.s))
+                    decl.pos.error_exit(format!(
+                        "Duplicate external procedure declaration `{}`",
+                        id.s
+                    ))
                 }
             }
-            Item::Expr(expr) => exprs.push(expr),
+            Item::Expr(expr) => expr.pos().error_exit("Expression at top level"),
         }
     }
 
-    (static_defs, extern_funcs, exprs)
-}
-
-/// Parse a list of `CST`s as the items of a `Module`
-fn parse_module<'src>(csts: &[CST<'src>]) -> Module<'src> {
-    let (static_defs, extern_funcs, exprs) = parse_items(csts);
-
-    for expr in exprs {
-        expr.pos().error_exit("Expression at top level");
-    }
     Module {
         static_defs: static_defs,
         extern_funcs: extern_funcs,
