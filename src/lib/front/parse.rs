@@ -72,8 +72,13 @@ fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>
     if let (Some(ident_cst), Some(body_cst)) = (csts.get(0), csts.get(1)) {
         match *ident_cst {
             CST::Ident(name, ref id_pos) => {
-                (Ident::new(name, id_pos.clone()),
-                 StaticDef { body: parse_expr(&body_cst), pos: pos })
+                (
+                    Ident::new(name, id_pos.clone()),
+                    StaticDef {
+                        body: parse_expr(&body_cst),
+                        pos: pos,
+                    },
+                )
             }
             _ => ident_cst.pos().error_exit(Expected("identifier")),
         }
@@ -83,13 +88,16 @@ fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>
 }
 
 /// Parse a first `CST` and some following `CST`s as a procedure and some arguments, i.e. a call
-fn parse_sexpr<'src>(func_cst: &CST<'src>,
-                     args_csts: &[CST<'src>],
-                     pos: SrcPos<'src>)
-                     -> Call<'src> {
-    Call::new_multary(parse_expr(func_cst),
-                      args_csts.iter().map(parse_expr).collect(),
-                      pos)
+fn parse_sexpr<'src>(
+    func_cst: &CST<'src>,
+    args_csts: &[CST<'src>],
+    pos: SrcPos<'src>,
+) -> Call<'src> {
+    Call::new_multary(
+        parse_expr(func_cst),
+        args_csts.iter().map(parse_expr).collect(),
+        pos,
+    )
 }
 
 /// Parse a list of `CST`s as parts of an `If` conditional
@@ -121,10 +129,12 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
     }
     match csts[0] {
         CST::SExpr(ref params_csts, ref params_pos) => {
-            Lambda::new_multary(params_csts.iter().map(parse_param).collect(),
-                                params_pos,
-                                parse_expr(&csts[1]),
-                                pos)
+            Lambda::new_multary(
+                params_csts.iter().map(parse_param).collect(),
+                params_pos,
+                parse_expr(&csts[1]),
+                pos,
+            )
         }
         _ => csts[0].pos().error_exit(Expected("parameter list")),
     }
@@ -151,9 +161,7 @@ fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
 
     match csts[0] {
         CST::SExpr(ref bindings_csts, _) => Let {
-            bindings: bindings_csts.iter()
-                                   .map(parse_binding)
-                                   .collect(),
+            bindings: bindings_csts.iter().map(parse_binding).collect(),
             body: body,
             typ: Type::Uninferred,
             pos: pos.clone(),
@@ -194,18 +202,12 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
             if let Some((head, tail)) = sexpr.split_first() {
                 match *head {
                     CST::Ident("if", _) => Expr::If(Box::new(parse_if(tail, pos.clone()))),
-                    CST::Ident("lambda", _) => {
-                        Expr::Lambda(Box::new(parse_lambda(tail, pos)))
-                    }
-                    CST::Ident("let", _) => {
-                        Expr::Let(Box::new(parse_let(tail, pos.clone())))
-                    }
+                    CST::Ident("lambda", _) => Expr::Lambda(Box::new(parse_lambda(tail, pos))),
+                    CST::Ident("let", _) => Expr::Let(Box::new(parse_let(tail, pos.clone()))),
                     CST::Ident(":", _) => {
                         Expr::TypeAscript(Box::new(parse_type_ascript(tail, pos.clone())))
                     }
-                    CST::Ident("cons", _) => {
-                        Expr::Cons(Box::new(parse_cons(tail, pos.clone())))
-                    }
+                    CST::Ident("cons", _) => Expr::Cons(Box::new(parse_cons(tail, pos.clone()))),
                     _ => Expr::Call(Box::new(parse_sexpr(&sexpr[0], tail, pos.clone()))),
                 }
             } else {
@@ -213,52 +215,64 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
             }
         }
         CST::Ident("true", ref pos) => {
-            Expr::Bool(Bool { val: true, pos: pos.clone() })
+            Expr::Bool(Bool {
+                val: true,
+                pos: pos.clone(),
+            })
         }
         CST::Ident("false", ref pos) => {
-            Expr::Bool(Bool { val: false, pos: pos.clone() })
+            Expr::Bool(Bool {
+                val: false,
+                pos: pos.clone(),
+            })
         }
         CST::Ident(ident, ref pos) => {
             Expr::Binding(Binding {
-                              ident: Ident::new(ident, pos.clone()),
-                              typ: Type::Uninferred,
-                          })
+                ident: Ident::new(ident, pos.clone()),
+                typ: Type::Uninferred,
+            })
         }
         CST::Num(num, ref pos) => {
             Expr::NumLit(NumLit {
-                             lit: num,
-                             typ: Type::Uninferred,
-                             pos: pos.clone(),
-                         })
+                lit: num,
+                typ: Type::Uninferred,
+                pos: pos.clone(),
+            })
         }
         CST::Str(ref s, ref pos) => {
             Expr::StrLit(StrLit {
-                             lit: s.clone(),
-                             typ: Type::Uninferred,
-                             pos: pos.clone(),
-                         })
+                lit: s.clone(),
+                typ: Type::Uninferred,
+                pos: pos.clone(),
+            })
         }
     }
 }
 
 /// Parse a list of `CST`s as an external procedure declaration
-fn parse_extern_proc<'src>(csts: &[CST<'src>],
-                           pos: &SrcPos<'src>)
-                           -> (Ident<'src>, ExternProcDecl<'src>) {
+fn parse_extern_proc<'src>(
+    csts: &[CST<'src>],
+    pos: &SrcPos<'src>,
+) -> (Ident<'src>, ExternProcDecl<'src>) {
     if csts.len() != 2 {
-        pos.error_exit("Invalid external procedure declaration. Expected identifier and type")
+        pos.error_exit(
+            "Invalid external procedure declaration. Expected identifier and type",
+        )
     } else {
         match csts[0] {
             CST::Ident(name, ref id_pos) => {
                 let typ = parse_type(&csts[1]);
 
                 if !typ.is_fully_inferred() {
-                    csts[1]
-                        .pos()
-                        .error_exit("Type of external static must be fully specified")
+                    csts[1].pos().error_exit(
+                        "Type of external static must be fully specified",
+                    )
                 }
 
-                let decl = ExternProcDecl { typ: typ, pos: pos.clone() };
+                let decl = ExternProcDecl {
+                    typ: typ,
+                    pos: pos.clone(),
+                };
 
                 (Ident::new(name, id_pos.clone()), decl)
             }

@@ -31,10 +31,12 @@ impl fmt::Display for LexErr {
             UntermStr => write!(f, "Unterminated string literal"),
             UntermRawStr => write!(f, "Unterminated raw string literal"),
             InvalidRawStrDelim(c) => {
-                write!(f,
-                       "Invalid character found in raw string delimitation: `{}`. Only `#` is \
+                write!(
+                    f,
+                    "Invalid character found in raw string delimitation: `{}`. Only `#` is \
                         allowed",
-                       c)
+                    c
+                )
             }
             InvalidNum => write!(f, "Invalid numeric literal"),
             InvalidIdent => write!(f, "Invalid ident"),
@@ -112,8 +114,9 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
 
     if let Some(first_after_octos) = str_src[n_delim_octos..].chars().next() {
         if first_after_octos != '"' {
-            SrcPos::new_pos(src, start + 1 + n_delim_octos)
-                .error_exit(InvalidRawStrDelim(first_after_octos))
+            SrcPos::new_pos(src, start + 1 + n_delim_octos).error_exit(
+                InvalidRawStrDelim(first_after_octos),
+            )
         }
     } else {
         SrcPos::new_interval(src, start, start + 1 + n_delim_octos).error_exit(UntermRawStr)
@@ -212,9 +215,7 @@ impl<'src> Iterator for Tokens<'src> {
 
     fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
         let pos = self.pos;
-        let mut chars = self.src[pos..]
-            .char_indices()
-            .map(|(n, c)| (pos + n, c));
+        let mut chars = self.src[pos..].char_indices().map(|(n, c)| (pos + n, c));
 
         while let Some((i, c)) = chars.next() {
             let (token, len) = match c {
@@ -280,12 +281,18 @@ impl<'src> CST<'src> {
             Token::Num(num) => CST::Num(num, pos),
             Token::Str(s) => CST::Str(s, pos),
             Token::Quote => {
-                CST::SExpr(vec![CST::Ident("quote", pos.clone()),
-                                CST::from_token(nexts.next().unwrap_or_else(|| {
-                                                    pos.error_exit(Unexpected("quote"))
-                                                }),
-                                                nexts)],
-                           pos)
+                CST::SExpr(
+                    vec![
+                        CST::Ident("quote", pos.clone()),
+                        CST::from_token(
+                            nexts.next().unwrap_or_else(
+                                || pos.error_exit(Unexpected("quote")),
+                            ),
+                            nexts
+                        ),
+                    ],
+                    pos,
+                )
             }
             _ => pos.error_exit(Unexpected("token")),
         }
@@ -297,9 +304,14 @@ impl<'src> fmt::Display for CST<'src> {
             CST::Ident(s, _) | CST::Num(s, _) => write!(f, "{}", s),
             CST::Str(ref s, _) => write!(f, "{}", s),
             CST::SExpr(ref v, _) => {
-                write!(f,
-                       "({})",
-                       v.iter().map(|e| e.to_string()).intersperse(" ".into()).collect::<String>())
+                write!(
+                    f,
+                    "({})",
+                    v.iter()
+                        .map(|e| e.to_string())
+                        .intersperse(" ".into())
+                        .collect::<String>()
+                )
             }
         }
     }
@@ -309,11 +321,13 @@ impl<'src> fmt::Display for CST<'src> {
 /// Construct trees from `tokens` until a lone `delim` is encountered.
 ///
 /// Returns trees and index of closing delimiter if one was supplied.
-fn tokens_to_trees_until<'src>(tokens: &mut Tokens<'src>,
-                               start_and_delim: Option<(SrcPos, &Token)>)
-                               -> (Vec<CST<'src>>, Option<usize>) {
-    let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t)))
-                                        .unwrap_or((None, None));
+fn tokens_to_trees_until<'src>(
+    tokens: &mut Tokens<'src>,
+    start_and_delim: Option<(SrcPos, &Token)>,
+) -> (Vec<CST<'src>>, Option<usize>) {
+    let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t))).unwrap_or(
+        (None, None),
+    );
 
     let mut trees = Vec::new();
 

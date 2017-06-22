@@ -186,10 +186,12 @@ fn main() {
 
     let mut opts = Options::new();
     opts.optopt("o", "out-file", "Write output to <FILENAME>", "FILENAME")
-        .optopt("",
-                "emit",
-                "Specify the type of output for the compiler to emit",
-                "llvm-ir|llvm-bc|obj")
+        .optopt(
+            "",
+            "emit",
+            "Specify the type of output for the compiler to emit",
+            "llvm-ir|llvm-bc|obj",
+        )
         .optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
         .optmulti("L", "", "Add <PATH> to the library search path", "PATH")
         .optflag("h", "help", "Display this help menu");
@@ -211,35 +213,46 @@ fn main() {
         return;
     };
 
-    let out_file_name = matches.opt_str("o")
-                               .map(|p| FileName::Some(PathBuf::from(p)))
-                               .unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
-                               .map(|filename| {
-        let parent = match filename.parent() {
-            None => "./".as_ref(),
-            Some(p) if p == Path::new("") => "./".as_ref(),
-            Some(p) => p,
-        };
-        canonicalize(parent)
-            .expect("Failed to canonicalize output filename")
-            .join(filename.file_name().expect("No filename supplied"))
-    });
+    let out_file_name = matches
+        .opt_str("o")
+        .map(|p| FileName::Some(PathBuf::from(p)))
+        .unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
+        .map(|filename| {
+            let parent = match filename.parent() {
+                None => "./".as_ref(),
+                Some(p) if p == Path::new("") => "./".as_ref(),
+                Some(p) => p,
+            };
+            canonicalize(parent)
+                .expect("Failed to canonicalize output filename")
+                .join(filename.file_name().expect("No filename supplied"))
+        });
 
-    let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(Emission::Bin);
+    let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(
+        Emission::Bin,
+    );
 
     let link_libs = matches.opt_strs("l");
     let lib_paths = matches.opt_strs("L");
 
-    println!("    Compiling {}",
-             canonicalize(inp_file_name.as_path())
-                 .expect("Failed to canonicalize input filename")
-                 .to_string_lossy());
+    println!(
+        "    Compiling {}",
+        canonicalize(inp_file_name.as_path())
+            .expect("Failed to canonicalize input filename")
+            .to_string_lossy()
+    );
 
     let mut src_code = String::with_capacity(4_000);
     File::open(&inp_file_name)
-        .expect(&format!("Failed to open file `{}`", inp_file_name.display()))
+        .expect(&format!(
+            "Failed to open file `{}`",
+            inp_file_name.display()
+        ))
         .read_to_string(&mut src_code)
-        .expect(&format!("Reading contents of `{}` failed", inp_file_name.display()));
+        .expect(&format!(
+            "Reading contents of `{}` failed",
+            inp_file_name.display()
+        ));
 
     let csts = concrete_syntax_trees_from_src(&src_code);
 

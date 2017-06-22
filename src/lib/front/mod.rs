@@ -61,10 +61,12 @@ impl<'src> SrcPos<'src> {
             }
             line_start += line_len;
         }
-        unreachable!("Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): \
+        unreachable!(
+            "Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): \
                       {}",
-                     self,
-                     self.src.len())
+            self,
+            self.src.len()
+        )
     }
 
     fn print_expansion(&self, t: &mut term::StdoutTerminal) {
@@ -83,14 +85,18 @@ impl<'src> SrcPos<'src> {
         println!("{}: {}", row, line);
 
         t.fg(color::BRIGHT_MAGENTA).ok();
-        println!("{}^{}",
-                 repeat(' ')
-                     .take(col + (row as f32).log10() as usize + 3)
-                     .collect::<String>(),
-                 repeat('~')
-                     .take(min(self.end.unwrap_or(self.start + 1) - self.start - 1,
-                               line_len - col))
-                     .collect::<String>());
+        println!(
+            "{}^{}",
+            repeat(' ')
+                .take(col + (row as f32).log10() as usize + 3)
+                .collect::<String>(),
+            repeat('~')
+                .take(min(
+                    self.end.unwrap_or(self.start + 1) - self.start - 1,
+                    line_len - col,
+                ))
+                .collect::<String>()
+        );
         t.reset().ok();
     }
 
@@ -126,14 +132,18 @@ impl<'src> SrcPos<'src> {
         println!("{}: {}", row, line);
 
         t.fg(color).ok();
-        println!("{}^{}",
-                 repeat(' ')
-                     .take(col + (row as f32).log10() as usize + 3)
-                     .collect::<String>(),
-                 repeat('~')
-                     .take(min(self.end.unwrap_or(self.start + 1) - self.start - 1,
-                               line_len - col))
-                     .collect::<String>());
+        println!(
+            "{}^{}",
+            repeat(' ')
+                .take(col + (row as f32).log10() as usize + 3)
+                .collect::<String>(),
+            repeat('~')
+                .take(min(
+                    self.end.unwrap_or(self.start + 1) - self.start - 1,
+                    line_len - col,
+                ))
+                .collect::<String>()
+        );
         t.reset().ok();
     }
 

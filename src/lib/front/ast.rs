@@ -84,10 +84,10 @@ impl<'src> Type<'src> {
             (&Type::Uninferred, _) => Some(by.clone()),
             (&Type::App(ref s1, ref as1), &Type::App(ref s2, ref as2)) if s1 == s2 => {
                 as1.iter()
-                   .zip(as2.iter())
-                   .map(|(a1, a2)| a1.infer_by(a2))
-                   .collect::<Option<_>>()
-                   .map(|args| Type::App(s1.clone(), args))
+                    .zip(as2.iter())
+                    .map(|(a1, a2)| a1.infer_by(a2))
+                    .collect::<Option<_>>()
+                    .map(|args| Type::App(s1.clone(), args))
             }
             (_, _) => None,
         }
@@ -101,19 +101,26 @@ impl<'src> fmt::Display for Type<'src> {
             Type::Var(id) => write!(f, "<var {}>", id),
             Type::Const(basic) => write!(f, "{}", basic),
             Type::App(constructor, ref args) => {
-                write!(f,
-                       "({} {})",
-                       constructor,
-                       args.iter()
-                           .fold(String::new(), |acc, arg| format!("{} {}", acc, arg)))
+                write!(
+                    f,
+                    "({} {})",
+                    constructor,
+                    args.iter().fold(String::new(), |acc, arg| {
+                        format!("{} {}", acc, arg)
+                    })
+                )
             }
-            Type::Scheme(ref vars, ref body) => write!(f,
-                                                       "(forall ({}) {})",
-                                                       vars.iter()
-                                                           .map(|id| format!("${}", id))
-                                                           .intersperse(" ".to_string())
-                                                           .collect::<String>(),
-                                                       body),
+            Type::Scheme(ref vars, ref body) => {
+                write!(
+                    f,
+                    "(forall ({}) {})",
+                    vars.iter()
+                        .map(|id| format!("${}", id))
+                        .intersperse(" ".to_string())
+                        .collect::<String>(),
+                    body
+                )
+            }
         }
     }
 }
@@ -209,11 +216,11 @@ impl<'src> Call<'src> {
 
         let calls = args.into_iter().fold(func, |f, arg| {
             Expr::Call(Box::new(Call {
-                                    func: f,
-                                    arg: arg,
-                                    typ: Type::Uninferred,
-                                    pos: pos.clone(),
-                                }))
+                func: f,
+                arg: arg,
+                typ: Type::Uninferred,
+                pos: pos.clone(),
+            }))
         });
 
         Call {
@@ -251,16 +258,18 @@ pub struct Lambda<'src> {
 }
 
 impl<'src> Lambda<'src> {
-    pub fn new_multary(mut params: Vec<Param<'src>>,
-                       params_pos: &SrcPos<'src>,
-                       body: Expr<'src>,
-                       pos: &SrcPos<'src>)
-                       -> Self {
+    pub fn new_multary(
+        mut params: Vec<Param<'src>>,
+        params_pos: &SrcPos<'src>,
+        body: Expr<'src>,
+        pos: &SrcPos<'src>,
+    ) -> Self {
         let innermost = Lambda {
-            param: params.pop()
-                         .unwrap_or_else(|| {
-                params_pos.error_exit("Empty parameter list. Functions can't be \
-                                       nullary, consider defining a constant instead")
+            param: params.pop().unwrap_or_else(|| {
+                params_pos.error_exit(
+                    "Empty parameter list. Functions can't be \
+                                       nullary, consider defining a constant instead",
+                )
             }),
             body: body,
             typ: Type::Uninferred,
