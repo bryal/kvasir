@@ -7,10 +7,12 @@
 
 
 
-;;; Unordered function call dependencies.
-
-;; To infer `main`, `id2` must be inferred, and to infer
-;; `id2`, `id` must be inferred.
+;;; Unordered function call dependencies and polymorphism
+;;;
+;;; To infer `main`, `id2` must be inferred, and to infer
+;;; `id2`, `id` must be inferred. `id2` must be inferred to
+;;; `(-> a a)` and instantiated to `(-> Int64 Int64)` at application
+;;; in `main`
 
 (define id2 (lambda (x) (id x)))
 
@@ -20,6 +22,144 @@
 ;;   (lambda (real-world)
 ;;     (cons (id2 1337) real-world)))
 
+
+
+;;; Polymorphic function and concrete function as argument
+;;; to polymorphic procedure. Instantiation of function
+;;; for arguments, and of arguments for function.
+;;;
+;;; `apply1` must be instantiated to
+;;; `(-> (-> Int64 Int64) Int64 Int64)` in `(apply1 inc 9)`,
+;;; and `id` must be instantiated to
+;;; `(-> Int64 Int64)` in `(apply1 id ...)`
+
+;; (-> (-> a b) a b)
+(define apply1
+  (lambda (f v)
+    (f v)))
+
+(define inc
+  (lambda (x)
+    (add-int64 x 1)))
+
+;; (define main
+;;   (lambda (real-world)
+;;     (cons (apply1 id (apply1 inc 9)) real-world)))
+
+;; Walkthrough of inference for above example
+;;
+;; Infer main to (-> RealWorld (Cons Int64 RealWorld))
+;;
+;; (: (lambda (real-world) (cons (apply1 id (apply1 inc 9)) real-world))
+;;    (->      RealWorld   (Cons Int64                      RealWorld)))
+;;
+;; Infer types for lambda arguments, and introduce type variables where unspecified in
+;; expected type (none in this case).
+;;
+;; Append real-world : RealWorld to var env
+;;
+;; Infer body to (Cons Int64 RealWorld)
+;;
+;; (: (cons (apply1 id (apply1 inc 9)) real-world)
+;;    (Cons Int64                      RealWorld))
+;;
+;; `cons` special form: solve expected type to kind `* -> *` with constructor `Cons`
+;; (success), then deconstruct expected type and infer first and second independently.
+;;
+;; Infer first to Int64
+;;
+;; (: (apply1 id (apply1 inc 9))
+;;    Int64)
+;;
+;; Application: Infer function to most general type permitted by type ascriptions,
+;; then do the same for the arguments. Then match function type to argument types
+;; and expected type of the application, and instantiate types to the most special
+;; alternative. If both sides are type schemes, raise an error that
+;; "Explicit type ascription needed to infer concrete type for argument"
+;;
+;; Definition of apply1         inferred to (forall (a b) (-> (-> a b) a b)).
+;; Definition of id             inferred to (forall (a)   (-> a a)).
+;; Expression    (apply1 inc 9) inferred to               Int64
+;;
+;; For application of `apply1` to arguments `id` and `(apply1 inc 9)`
+;; Matching (forall (a b) (-> (-> a b) a     b))
+;; with     (forall (a)   (-> (-> a a) Int64 Int64))
+;; to instantiate type schemes and gather constraints
+;;
+;; 0. Starting state
+;; fun: (forall (a b) (-> (-> a b) a     b))
+;; app: (forall (a)   (-> (-> a a) Int64 Int64))
+;;
+;; 1. Introduce type variables to env for quantified variables
+;; Introduce 3 new variables: a, b, and c to type variable env and substitute as follows:
+;; fun: (-> (-> a b) a     b)
+;; app: (-> (-> c c) Int64 Int64)
+;;
+;; 2. Match recursively and solve type equations from left to right (does order matter?)
+;; fun: (-> a b)
+;; app: (-> c c)
+;;
+;; fun: a
+;; app: c
+;;
+;; a = c => assign `c` to be equal to `a`
+;;
+;; fun: (-> a b)
+;; app: (-> a a)
+;;
+;; fun: b
+;; app: a
+;;
+;; b = a => assign `b` to be equal to `a`
+;;
+;; fun: (-> (-> a a) a     a)
+;; app: (-> (-> a a) Int64 Int64)
+;;
+;; fun: a
+;; app: Int64
+;;
+;; a = Int64 => assign `a` to be equal to `Int64`
+;;
+;; fun: (-> (-> Int64 Int64) Int64 Int64)
+;; app: (-> (-> Int64 Int64) Int64 Int64)
+;;
+;; fun: Int64
+;; app: Int64
+;;
+;; Int64 = Int64 => No problem, continue
+;;
+;; fun: (-> (-> Int64 Int64) Int64 Int64)
+;; app: (-> (-> Int64 Int64) Int64 Int64)
+;;
+;; Done! Remove temporarily introduced type variables
+;; a, b, and c from the type variable environment.
+;;
+;; type of fun = type of app = (-> (-> Int64 Int64) Int64 Int64)
+;;
+;; In environment, the temporarily introduced type variables have all been specialized to monotypes
+;; { a = Int64, b = a = Int64, c = a = Int64 }
+;; Now remove these from the environment.
+;;
+;; Substitute type variables in apply1 according to apply1 : (-> (-> Int64 Int64) Int64 Int64)
+;; and add this instantiation to map of instantiations for apply1.
+;;
+;; Substitute type variables in id according to id : (-> Int64 Int64)
+;; and add this instantiation to map of instantiations for id.
+;;
+;; Substitute type variables in (apply1 inc 9) according to (apply1 inc 9) : Int64
+;; and replace with this instantiation.
+;;
+;; AST of inferred expression is:
+;;
+;; (: ((: apply1 (-> (-> Int64 Int64) Int64 Int64))
+;;     (: id     (-> Int64 Int64))
+;;     (: ((: apply1 (-> (-> Int64 Int64) Int64 Int64))
+;;         (: inc    (-> Int64 Int64))
+;;         (: 9      Int64))
+;;        Int64))
+;;    Int64)
+;;
+;; And so the process continues until the whole tree has been inferred
 
 
 ;;; Direct recursion
