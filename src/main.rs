@@ -98,7 +98,7 @@ extern crate llvm;
 extern crate itertools;
 
 use getopts::Options;
-use lib::back::compile;
+//use lib::back::compile;
 use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
 use lib::front::parse::parse;
@@ -259,10 +259,9 @@ fn main() {
     // println!("TOKEN TREE{:#?}", csts);
 
     let mut ast = parse(&csts);
-    // println!("AST PARSED:\n{:#?}\n", ast);
+    //    println!("AST PARSED:\n{:#?}\n\n", ast);
 
     infer_types(&mut ast);
-    println!("AST INFERED:\n{:#?}\n", ast);
 
-    compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
+    // compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

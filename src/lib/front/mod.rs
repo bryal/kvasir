@@ -20,6 +20,18 @@ fn exit() -> ! {
     process::exit(0)
 }
 
+/// Print an error and exit the compilation
+pub fn error_exit<E: Display>(msg: E) -> ! {
+    let mut t = term::stdout().expect("Could not acquire access to stdout");
+
+    t.fg(color::BRIGHT_RED).ok();
+    print!("Error: ");
+    t.reset().ok();
+    println!("{}", msg);
+
+    exit()
+}
+
 /// A position or interval in a string of source code
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct SrcPos<'src> {

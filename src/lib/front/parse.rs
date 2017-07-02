@@ -4,14 +4,13 @@ use self::ParseErr::*;
 use super::SrcPos;
 use super::ast::*;
 use super::lex::CST;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 
-/// Represents an item, i.e. a use-statement or a definition or some such
-enum Item<'src> {
-    StaticDef(Ident<'src>, StaticDef<'src>),
-    ExternProcDecl(Ident<'src>, ExternProcDecl<'src>),
-    Expr(Expr<'src>),
+/// An item at the top-level. Either a global definition of an external declaration
+enum TopLevelItem<'src> {
+    GlobDef(Binding<'src>),
+    ExternDecl(ExternDecl<'src>),
 }
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
@@ -46,8 +45,8 @@ pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
             match app[0] {
                 CST::Ident("->", _) if app.len() < 3 => {
                     pos.error_exit(
-                        "Function type requires at least two arguments: \
-                                    one/multiple input(s) and an output",
+                        "Function type constructor requires at least two arguments: \
+                         one/multiple input type(s) and an output type",
                     )
                 }
                 CST::Ident("->", _) if app.len() == 3 => {
@@ -55,10 +54,10 @@ pub fn parse_type<'src>(tree: &CST<'src>) -> Type<'src> {
                 }
                 CST::Ident("->", _) => {
                     let last_fn = Type::new_func(
-                        parse_type(&app[app.len() - 3]),
                         parse_type(&app[app.len() - 2]),
+                        parse_type(&app[app.len() - 1]),
                     );
-                    app[1..app.len() - 3].iter().rev().fold(last_fn, |acc, t| {
+                    app[1..app.len() - 2].iter().rev().fold(last_fn, |acc, t| {
                         Type::new_func(parse_type(t), acc)
                     })
                 }
@@ -82,23 +81,17 @@ fn parse_ident<'src>(cst: &CST<'src>) -> Ident<'src> {
     }
 }
 
-/// Parse a list of `CST` as the parts of the definition of a static
-fn parse_static_def<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> (Ident<'src>, StaticDef<'src>) {
-    if let (Some(ident_cst), Some(body_cst)) = (csts.get(0), csts.get(1)) {
-        match *ident_cst {
-            CST::Ident(name, ref id_pos) => {
-                (
-                    Ident::new(name, id_pos.clone()),
-                    StaticDef {
-                        body: parse_expr(&body_cst),
-                        pos: pos,
-                    },
-                )
-            }
-            _ => ident_cst.pos().error_exit(Expected("identifier")),
-        }
-    } else {
+/// Parse a list of `CST` as the parts of the definition of a global variable
+fn parse_global<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Binding<'src> {
+    if csts.len() != 2 {
         pos.error_exit(ArityMis(2, csts.len()))
+    } else {
+        Binding {
+            ident: parse_ident(&csts[0]),
+            typ: Type::Uninferred,
+            val: parse_expr(&csts[1]),
+            pos: pos,
+        }
     }
 }
 
@@ -130,13 +123,6 @@ fn parse_if<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
     }
 }
 
-fn parse_param<'src>(cst: &CST<'src>) -> Param<'src> {
-    Param {
-        ident: parse_ident(cst),
-        typ: Type::Uninferred,
-    }
-}
-
 /// Parse a list of `CST`s as the parts of a `Lambda`
 fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
     if csts.len() != 2 {
@@ -145,7 +131,10 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
     match csts[0] {
         CST::SExpr(ref params_csts, ref params_pos) => {
             Lambda::new_multary(
-                params_csts.iter().map(parse_param).collect(),
+                params_csts
+                    .iter()
+                    .map(|param_cst| (parse_ident(param_cst), Type::Uninferred))
+                    .collect(),
                 params_pos,
                 parse_expr(&csts[1]),
                 pos,
@@ -157,12 +146,13 @@ fn parse_lambda<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
 
 /// Parse a `let` special form and return as an invocation of a lambda
 fn parse_let<'src>(csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
-    fn parse_binding<'src>(cst: &CST<'src>) -> LetBinding<'src> {
+    fn parse_binding<'src>(cst: &CST<'src>) -> Binding<'src> {
         match *cst {
             CST::SExpr(ref binding_pair, ref pos) => {
                 if binding_pair.len() == 2 {
-                    LetBinding {
-                        name: parse_param(&binding_pair[0]),
+                    Binding {
+                        ident: parse_ident(&binding_pair[0]),
+                        typ: Type::Uninferred,
                         val: parse_expr(&binding_pair[1]),
                         pos: pos.clone(),
                     }
@@ -248,7 +238,7 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
             })
         }
         CST::Ident(ident, ref pos) => {
-            Expr::Binding(Binding {
+            Expr::Variable(Variable {
                 ident: Ident::new(ident, pos.clone()),
                 typ: Type::Uninferred,
             })
@@ -270,14 +260,11 @@ pub fn parse_expr<'src>(cst: &CST<'src>) -> Expr<'src> {
     }
 }
 
-/// Parse a list of `CST`s as an external procedure declaration
-fn parse_extern_proc<'src>(
-    csts: &[CST<'src>],
-    pos: &SrcPos<'src>,
-) -> (Ident<'src>, ExternProcDecl<'src>) {
+/// Parse a list of `CST`s as an external variable declaration
+fn parse_extern<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src> {
     if csts.len() != 2 {
         pos.error_exit(
-            "Invalid external procedure declaration. Expected identifier and type",
+            "Invalid external variable declaration. Expected identifier and type",
         )
     } else {
         match csts[0] {
@@ -286,71 +273,82 @@ fn parse_extern_proc<'src>(
 
                 if !typ.is_fully_inferred() {
                     csts[1].pos().error_exit(
-                        "Type of external static must be fully specified",
+                        "Type of external variable must be fully specified",
                     )
                 }
 
-                let decl = ExternProcDecl {
+                ExternDecl {
+                    ident: Ident::new(name, id_pos.clone()),
                     typ: typ,
                     pos: pos.clone(),
-                };
-
-                (Ident::new(name, id_pos.clone()), decl)
+                }
             }
             _ => csts[0].pos().error_exit(Expected("identifier")),
         }
     }
 }
 
-/// Parse a `CST` as an item. Some items are actually compount items,
-/// so a single item tree may expand to multiple items.
-fn parse_item<'src>(cst: &CST<'src>) -> Vec<Item<'src>> {
+/// Parse a `CST` as an item
+fn parse_top_level_item<'src>(cst: &CST<'src>) -> TopLevelItem<'src> {
+    let pos = cst.pos();
     match *cst {
-        CST::SExpr(ref sexpr, ref pos) if !sexpr.is_empty() => {
+        CST::SExpr(ref sexpr, _) if !sexpr.is_empty() => {
             match sexpr[0] {
                 CST::Ident("define", _) => {
-                    let (id, def) = parse_static_def(&sexpr[1..], pos.clone());
-                    vec![Item::StaticDef(id, def)]
+                    let binding = parse_global(&sexpr[1..], pos.clone());
+                    return TopLevelItem::GlobDef(binding);
                 }
-                CST::Ident("extern-proc", _) => {
-                    let (id, decl) = parse_extern_proc(&sexpr[1..], pos);
-                    vec![Item::ExternProcDecl(id, decl)]
+                CST::Ident("extern", _) => {
+                    let ext = parse_extern(&sexpr[1..], pos);
+                    return TopLevelItem::ExternDecl(ext);
                 }
-                _ => vec![Item::Expr(parse_expr(cst))],
+                _ => (),
             }
         }
-        _ => vec![Item::Expr(parse_expr(cst))],
+        _ => (),
     }
+    pos.error_exit("Unexpected token-tree at top-level")
 }
 
 /// Parse a list of `CST`s as the items of a `Module`
 fn parse_module<'src>(csts: &[CST<'src>]) -> Module<'src> {
-    let (mut static_defs, mut extern_funcs) = (HashMap::new(), HashMap::new());
+    use self::TopLevelItem::*;
+    // Store globals in a Vec as order matters atm, but disallow
+    // multiple definitions. Use a set to keep track of defined globals
+    let mut defined_globals = HashSet::new();
+    let mut globals = Vec::new();
+    let mut externs = HashMap::new();
+    let mut main = None;
 
-    for item in csts.iter().flat_map(parse_item) {
+    for item in csts.iter().map(parse_top_level_item) {
         match item {
-            Item::StaticDef(id, def) => {
-                if let Some(def) = static_defs.insert(id.s, def) {
-                    def.pos.error_exit(
-                        format!("Duplicate static definition `{}`", id.s),
-                    )
-                }
-            }
-            Item::ExternProcDecl(id, decl) => {
-                if let Some(decl) = extern_funcs.insert(id.s, decl) {
-                    decl.pos.error_exit(format!(
-                        "Duplicate external procedure declaration `{}`",
-                        id.s
+            GlobDef(binding) => {
+                let id = binding.ident.s;
+                if id == "main" && main.is_none() {
+                    main = Some(binding)
+                } else if id != "main" && defined_globals.insert(binding.ident.s) {
+                    globals.push(binding)
+                } else {
+                    binding.pos.error_exit(format!(
+                        "Conflicting definition of variable `{}`",
+                        binding.ident.s
                     ))
                 }
             }
-            Item::Expr(expr) => expr.pos().error_exit("Expression at top level"),
+            ExternDecl(ext) => {
+                if let Some(ext) = externs.insert(ext.ident.s, ext) {
+                    ext.pos.error_exit(format!(
+                        "Duplicate declaration of external variable `{}`",
+                        ext.ident.s
+                    ))
+                }
+            }
         }
     }
-
     Module {
-        static_defs: static_defs,
-        extern_funcs: extern_funcs,
+        globals,
+        externs,
+        main,
     }
 }
 

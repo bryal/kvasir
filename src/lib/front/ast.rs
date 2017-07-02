@@ -1,18 +1,17 @@
 use super::SrcPos;
 use itertools::Itertools;
-use std::borrow;
 use std::collections::HashMap;
-use std::fmt;
-use std::hash;
+use std::{borrow, fmt, hash, mem};
 
+// TODO: Replace static with const to allow matching
 lazy_static!{
     pub static ref TYPE_UNINFERRED: Type<'static> = Type::Uninferred;
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil");
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool");
-    pub static ref TYPE_BYTE_SLICE: Type<'static> = Type::App("Slice", vec![Type::Const("UInt8")]);
+    pub static ref TYPE_STRING: Type<'static> = Type::Const("String");
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type<'src> {
     Uninferred,
     /// A type variable identified by an integer, bound in a type scheme
@@ -58,7 +57,7 @@ impl<'src> Type<'src> {
     }
 
     /// If the type is a function type signature, extract the parameter type and the return type.
-    pub fn get_func_sig(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+    pub fn get_func(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
             Type::App("->", ref ts) => {
                 assert_eq!(ts.len(), 2);
@@ -74,31 +73,13 @@ impl<'src> Type<'src> {
             _ => None,
         }
     }
-
-    /// Recursively infer all `Uninferred` by the `by` type.
-    /// If types are incompatible, e.g. `(Vec Inferred)` v. `(Option Int32)`, return `None`
-    pub fn infer_by(&self, by: &Self) -> Option<Self> {
-        match (self, by) {
-            (_, _) if self == by => Some(self.clone()),
-            (_, &Type::Uninferred) => Some(self.clone()),
-            (&Type::Uninferred, _) => Some(by.clone()),
-            (&Type::App(ref s1, ref as1), &Type::App(ref s2, ref as2)) if s1 == s2 => {
-                as1.iter()
-                    .zip(as2.iter())
-                    .map(|(a1, a2)| a1.infer_by(a2))
-                    .collect::<Option<_>>()
-                    .map(|args| Type::App(s1.clone(), args))
-            }
-            (_, _) => None,
-        }
-    }
 }
 
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Type::Uninferred => write!(f, "_"),
-            Type::Var(id) => write!(f, "<var {}>", id),
+            Type::Var(id) => write!(f, "${}", id),
             Type::Const(basic) => write!(f, "{}", basic),
             Type::App(constructor, ref args) => {
                 write!(
@@ -158,13 +139,8 @@ impl<'src> fmt::Display for Ident<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct StaticDef<'src> {
-    pub body: Expr<'src>,
-    pub pos: SrcPos<'src>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ExternProcDecl<'src> {
+pub struct ExternDecl<'src> {
+    pub ident: Ident<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
@@ -189,7 +165,7 @@ pub struct StrLit<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Binding<'src> {
+pub struct Variable<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
 }
@@ -242,16 +218,10 @@ pub struct If<'src> {
     pub pos: SrcPos<'src>,
 }
 
-// A parameter for a function/lambda/
-#[derive(Clone, Debug)]
-pub struct Param<'src> {
-    pub ident: Ident<'src>,
-    pub typ: Type<'src>,
-}
-
 #[derive(Clone, Debug)]
 pub struct Lambda<'src> {
-    pub param: Param<'src>,
+    pub param_ident: Ident<'src>,
+    pub param_type: Type<'src>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
@@ -259,18 +229,20 @@ pub struct Lambda<'src> {
 
 impl<'src> Lambda<'src> {
     pub fn new_multary(
-        mut params: Vec<Param<'src>>,
+        mut params: Vec<(Ident<'src>, Type<'src>)>,
         params_pos: &SrcPos<'src>,
         body: Expr<'src>,
         pos: &SrcPos<'src>,
     ) -> Self {
-        let innermost = Lambda {
-            param: params.pop().unwrap_or_else(|| {
-                params_pos.error_exit(
-                    "Empty parameter list. Functions can't be \
+        let last_param = params.pop().unwrap_or_else(|| {
+            params_pos.error_exit(
+                "Empty parameter list. Functions can't be \
                                        nullary, consider defining a constant instead",
-                )
-            }),
+            )
+        });
+        let innermost = Lambda {
+            param_ident: last_param.0,
+            param_type: last_param.1,
             body: body,
             typ: Type::Uninferred,
             pos: pos.clone(),
@@ -278,7 +250,8 @@ impl<'src> Lambda<'src> {
 
         params.into_iter().rev().fold(innermost, |inner, param| {
             Lambda {
-                param: param,
+                param_ident: param.0,
+                param_type: param.1,
                 body: Expr::Lambda(Box::new(inner)),
                 typ: Type::Uninferred,
                 pos: pos.clone(),
@@ -287,10 +260,11 @@ impl<'src> Lambda<'src> {
     }
 }
 
-/// A binding in a `let` special form
+/// A binding of a name to a value, i.e. a variable definition.
 #[derive(Clone, Debug)]
-pub struct LetBinding<'src> {
-    pub name: Param<'src>,
+pub struct Binding<'src> {
+    pub ident: Ident<'src>,
+    pub typ: Type<'src>,
     pub val: Expr<'src>,
     pub pos: SrcPos<'src>,
 }
@@ -298,7 +272,7 @@ pub struct LetBinding<'src> {
 /// A `let` special form
 #[derive(Clone, Debug)]
 pub struct Let<'src> {
-    pub bindings: Vec<LetBinding<'src>>,
+    pub bindings: Vec<Binding<'src>>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
@@ -328,7 +302,7 @@ pub enum Expr<'src> {
     NumLit(NumLit<'src>),
     StrLit(StrLit<'src>),
     Bool(Bool<'src>),
-    Binding(Binding<'src>),
+    Variable(Variable<'src>),
     Call(Box<Call<'src>>),
     If(Box<If<'src>>),
     Lambda(Box<Lambda<'src>>),
@@ -336,6 +310,7 @@ pub enum Expr<'src> {
     TypeAscript(Box<TypeAscript<'src>>),
     Cons(Box<Cons<'src>>),
 }
+
 impl<'src> Expr<'src> {
     pub fn pos(&self) -> &SrcPos<'src> {
         match *self {
@@ -343,7 +318,7 @@ impl<'src> Expr<'src> {
             Expr::NumLit(ref l) => &l.pos,
             Expr::StrLit(ref l) => &l.pos,
             Expr::Bool(ref b) => &b.pos,
-            Expr::Binding(ref bnd) => &bnd.ident.pos,
+            Expr::Variable(ref bnd) => &bnd.ident.pos,
             Expr::Call(ref call) => &call.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
@@ -359,7 +334,7 @@ impl<'src> Expr<'src> {
             Expr::NumLit(ref l) => &l.typ,
             Expr::StrLit(ref l) => &l.typ,
             Expr::Bool(_) => &TYPE_BOOL,
-            Expr::Binding(ref bnd) => &bnd.typ,
+            Expr::Variable(ref bnd) => &bnd.typ,
             Expr::Call(ref call) => &call.typ,
             Expr::If(ref cond) => &cond.typ,
             Expr::Lambda(ref lam) => &lam.typ,
@@ -370,10 +345,46 @@ impl<'src> Expr<'src> {
             Expr::Cons(ref c) => &c.typ,
         }
     }
+
+    /// Treat the expression as a possible `Let`
+    pub fn let_mut(&mut self) -> Option<&mut Let<'src>> {
+        match *self {
+            Expr::Let(ref mut l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// If `expr` refers to a type ascription, remove the ascription,
+    /// point `expr` to the inner, ascribed expression,
+    /// and return the ascribed type
+    ///
+    /// Returns `None` if `expr` is not a type ascription
+    pub fn remove_type_ascription(&mut self) -> Option<Type<'src>> {
+        let (t, inner) = if let Expr::TypeAscript(ref mut ascr) = *self {
+            // use dummy pos and replace with `Nil` to avoid unsafe.
+            // Will be deallocated immediately afterwards
+            let dummy_pos = super::SrcPos::new_pos("", 0);
+            let inner = mem::replace(&mut ascr.expr, Expr::Nil(Nil { pos: dummy_pos }));
+            (ascr.typ.clone(), inner)
+        } else {
+            return None;
+        };
+        *self = inner;
+        Some(t)
+    }
 }
 
+/// A module of definitions and declarations of functions and variables
 #[derive(Clone, Debug)]
 pub struct Module<'src> {
-    pub static_defs: HashMap<&'src str, StaticDef<'src>>,
-    pub extern_funcs: HashMap<&'src str, ExternProcDecl<'src>>,
+    /// External variable declarations
+    ///
+    /// May include declarations of external both functions and variables
+    pub externs: HashMap<&'src str, ExternDecl<'src>>,
+    /// Global variable definitions
+    ///
+    /// May include both top-level functions and global variables
+    pub globals: Vec<Binding<'src>>,
+    /// The entry point of the program for executable target
+    pub main: Option<Binding<'src>>,
 }
