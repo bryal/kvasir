@@ -1,9 +1,27 @@
 ;;; Program to test type inference
 
-(extern-proc add-int64 (-> Int64 Int64 Int64))
-(extern-proc sub-int64 (-> Int64 Int64 Int64))
-(extern-proc mul-int64 (-> Int64 Int64 Int64))
-(extern-proc eq-int64 (-> Int64 Int64 Bool))
+
+
+;; External declarations
+
+(extern add-int64 (-> Int64 Int64 Int64))
+(extern sub-int64 (-> Int64 Int64 Int64))
+(extern mul-int64 (-> Int64 Int64 Int64))
+(extern eq-int64 (-> Int64 Int64 Bool))
+
+
+
+;; TESTING
+
+(extern printInt (-> Int Nil))
+
+(define id (lambda (x) x))
+
+(define id2 (lambda (x) (id x)))
+
+(define main
+  (lambda (_)
+    (printInt (id2 1337))))
 
 
 
@@ -14,9 +32,9 @@
 ;;; `(-> a a)` and instantiated to `(-> Int64 Int64)` at application
 ;;; in `main`
 
-(define id2 (lambda (x) (id x)))
+;; (define id2 (lambda (x) (id x)))
 
-(define id (lambda (x) x))
+;; (define id (lambda (x) x))
 
 ;; (define main
 ;;   (lambda (real-world)
@@ -34,13 +52,13 @@
 ;;; `(-> Int64 Int64)` in `(apply1 id ...)`
 
 ;; (-> (-> a b) a b)
-(define apply1
-  (lambda (f v)
-    (f v)))
+;; (define apply1
+;;   (lambda (f v)
+;;     (f v)))
 
-(define inc
-  (lambda (x)
-    (add-int64 x 1)))
+;; (define inc
+;;   (lambda (x)
+;;     (add-int64 x 1)))
 
 ;; (define main
 ;;   (lambda (real-world)
@@ -53,10 +71,9 @@
 ;; (: (lambda (real-world) (cons (apply1 id (apply1 inc 9)) real-world))
 ;;    (->      RealWorld   (Cons Int64                      RealWorld)))
 ;;
-;; Infer types for lambda arguments, and introduce type variables where unspecified in
-;; expected type (none in this case).
-;;
-;; Append real-world : RealWorld to var env
+;; Introduce type variables where unspecified in expected type (none in this case).
+;; Infer types for lambda parameter.
+;; Append parameter (real-world : RealWorld) to var env
 ;;
 ;; Infer body to (Cons Int64 RealWorld)
 ;;
@@ -91,11 +108,13 @@
 ;; app: (forall (a)   (-> (-> a a) Int64 Int64))
 ;;
 ;; 1. Introduce type variables to env for quantified variables
-;; Introduce 3 new variables: a, b, and c to type variable env and substitute as follows:
+;; Introduce 3 new variables: a, b, and c to type variable env
+;; and substitute as follows:
 ;; fun: (-> (-> a b) a     b)
 ;; app: (-> (-> c c) Int64 Int64)
 ;;
-;; 2. Match recursively and solve type equations from left to right (does order matter?)
+;; 2. Match recursively and solve type equations from left to right
+;;    (does order matter?)
 ;; fun: (-> a b)
 ;; app: (-> c c)
 ;;
@@ -136,11 +155,13 @@
 ;;
 ;; type of fun = type of app = (-> (-> Int64 Int64) Int64 Int64)
 ;;
-;; In environment, the temporarily introduced type variables have all been specialized to monotypes
+;; In environment, the temporarily introduced type variables
+;; have all been specialized to monotypes
 ;; { a = Int64, b = a = Int64, c = a = Int64 }
 ;; Now remove these from the environment.
 ;;
-;; Substitute type variables in apply1 according to apply1 : (-> (-> Int64 Int64) Int64 Int64)
+;; Substitute type variables in apply1 according to
+;; apply1 : (-> (-> Int64 Int64) Int64 Int64)
 ;; and add this instantiation to map of instantiations for apply1.
 ;;
 ;; Substitute type variables in id according to id : (-> Int64 Int64)
@@ -162,13 +183,25 @@
 ;; And so the process continues until the whole tree has been inferred
 
 
+
+;; (define inc-fst
+;;   (lambda (x)
+;;     (add-int64 1 (fst x))))
+
+;; { a, b } | inc-fst : a -> b
+;; { a, b => int }
+;; { a => (cons c d), b => int, c, d }
+;; { a => (cons int d), b => int, c => int, d }
+
+
+
 ;;; Direct recursion
 
-(define fac
-  (lambda (n)
-    (if (eq-int64 n 0)
-        1
-        (mul-int64 n (fac (sub-int64 n 1))))))
+;; (define fac
+;;   (lambda (n)
+;;     (if (eq-int64 n 0)
+;;         1
+;;         (mul-int64 n (fac (sub-int64 n 1))))))
 
 ;; (define main
 ;;   (lambda (real-world)
@@ -178,15 +211,15 @@
 
 ;;; Indirect recursion (mutual recursion)
 
-(define indirect-1
-  (lambda (n)
-    (if (eq-int64 n 0)
-        1
-        (add-int64 1 (indirect-2 (sub-int64 n 1))))))
+;; (define indirect-1
+;;   (lambda (n)
+;;     (if (eq-int64 n 0)
+;;         1
+;;         (add-int64 1 (indirect-2 (sub-int64 n 1))))))
 
-(define indirect-2
-  (lambda (n)
-    (mul-int64 2 (indirect-1 n))))
+;; (define indirect-2
+;;   (lambda (n)
+;;     (mul-int64 2 (indirect-1 n))))
 
 ;; (define main
 ;;   (lambda (real-world)
@@ -196,15 +229,45 @@
 
 ;;; Mutual recursion and polymorphism in let
 
-(define main
-  (lambda (real-world)
-    (let ((id-1 (lambda (n x)
-                  (if (eq-int64 n 0)
-                      x
-                      (id-2 n x))))
-          (id-2 (lambda (n x)
-                  (let ((n1 (sub-int64 n 1)))
-                    (if (eq-int64 n 5)
-                        (id-2 n1 x)
-                        (id-1 n1 x))))))
-      (cons (id-2 10 1337) real-world))))
+;; (define main
+;;   (lambda (real-world)
+;;     (let ((id-1 (lambda (n x)
+;;                   (if (eq-int64 n 0)
+;;                       x
+;;                     (id-2 n x))))
+;;           (id-2 (lambda (n x)
+;;                   (let ((n1 (sub-int64 n 1)))
+;;                     (if (eq-int64 n 5)
+;;                         (id-2 n1 x)
+;;                       (id-1 n1 x))))))
+;;       (cons (id-2 10 1337) real-world))))
+
+;; (define id
+;;   (lambda (x)
+;;     (let ((f (lambda (x)
+;;                (lambda (n)
+;;                  (if (= n 0)
+;;                      x
+;;                    ((g (x)) (- n 1))))))
+;;           (g (lambda (x)
+;;                (lambda (n)
+;;                  ((f (- x 1)) n)))))
+;;       ((f x) 10))))
+
+;; id : a1
+;; a1 = a2 -> a3
+;;
+;; f : b1
+;; b1 = b2 -> b3
+;; b3 = b4 -> b5
+;; b4 = int
+;; b5 = b2
+;; g uninferred
+;; => f : b1 = b2 -> b3
+;;           = b2 -> (b4 -> b5)
+;;           = b2 -> (int -> b2)
+;;
+;; g : c1
+;; c1 = c2 -> c3
+;; c3 = c4 -> c5
+;; f :
