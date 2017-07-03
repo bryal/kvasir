@@ -14,6 +14,26 @@ pub mod ast;
 pub mod parse;
 pub mod inference;
 
+/// A generator of unique type variables
+pub struct TypeVarGen(u64);
+
+impl TypeVarGen {
+    pub fn new(n: u64) -> Self {
+        TypeVarGen(n)
+    }
+
+    /// Generates a new, unique type variable
+    pub fn gen<'src>(&mut self) -> u64 {
+        let n = self.0;
+        self.0 += 1;
+        n
+    }
+
+    pub fn gen_tv<'src>(&mut self) -> ast::Type<'src> {
+        ast::Type::Var(self.gen())
+    }
+}
+
 /// Exit compilation
 fn exit() -> ! {
     println!("\nError occured during compilation. Exiting\n");

@@ -258,10 +258,12 @@ fn main() {
 
     // println!("TOKEN TREE{:#?}", csts);
 
-    let mut ast = parse(&csts);
+    let mut type_var_generator = lib::front::TypeVarGen::new(0);
+
+    let mut ast = parse(&csts, &mut type_var_generator);
     //    println!("AST PARSED:\n{:#?}\n\n", ast);
 
-    infer_types(&mut ast);
+    infer_types(&mut ast, &mut type_var_generator);
 
     // compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }

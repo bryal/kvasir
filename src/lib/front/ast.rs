@@ -1,27 +1,59 @@
 use super::SrcPos;
 use itertools::Itertools;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{borrow, fmt, hash, mem};
 
 // TODO: Replace static with const to allow matching
 lazy_static!{
-    pub static ref TYPE_UNINFERRED: Type<'static> = Type::Uninferred;
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil");
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool");
     pub static ref TYPE_STRING: Type<'static> = Type::Const("String");
 }
 
+/// A polytype
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Poly<'src> {
+    pub params: Vec<u64>,
+    pub body: Type<'src>,
+}
+
+impl<'src> fmt::Display for Poly<'src> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let params_s = self.params
+            .iter()
+            .map(|id| format!("${}", id))
+            .intersperse(" ".to_string())
+            .collect::<String>();
+        write!(f, "(for ({}) {})", params_s, self.body)
+    }
+}
+
+/// A type function
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TypeFunc<'src> {
+    Const(&'src str),
+    Poly(Poly<'src>),
+}
+
+impl<'src> fmt::Display for TypeFunc<'src> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            TypeFunc::Const(s) => fmt::Display::fmt(s, f),
+            TypeFunc::Poly(ref p) => fmt::Display::fmt(p, f),
+        }
+    }
+}
+
+/// A type
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type<'src> {
-    Uninferred,
-    /// A type variable identified by an integer, bound in a type scheme
     Var(u64),
     /// A monotype constant, like `int`, or `string`
     Const(&'src str),
     /// An application of a type function over one/some/no monotype(s)
-    App(&'src str, Vec<Type<'src>>),
-    /// A polymorphic type scheme
-    Scheme(Vec<u64>, Box<Type<'src>>),
+    App(Box<TypeFunc<'src>>, Vec<Type<'src>>),
+    /// A polytype
+    Poly(Box<Poly<'src>>),
 }
 
 /// The tuple has the type constructor `*`, as it is a
@@ -29,27 +61,48 @@ pub enum Type<'src> {
 /// Nil is implemented as the empty tuple
 impl<'src> Type<'src> {
     pub fn new_func(arg: Type<'src>, ret: Type<'src>) -> Self {
-        Type::App("->", vec![arg, ret])
+        Type::App(Box::new(TypeFunc::Const("->")), vec![arg, ret])
     }
 
     pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
-        Type::App("Cons", vec![car_typ, cdr_typ])
+        Type::App(Box::new(TypeFunc::Const("Cons")), vec![car_typ, cdr_typ])
     }
 
-    pub fn is_known_monomorphic(&self) -> bool {
+    fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
         match *self {
-            Type::Uninferred => false,
-            Type::Var(_) => false,
+            Type::Var(ref n) => bound.contains(n),
             Type::Const(_) => true,
-            Type::App(_, ref args) => args.iter().all(Type::is_known_monomorphic),
-            Type::Scheme(ref is, ref u) => is.is_empty() && u.is_known_monomorphic(),
+            Type::App(ref f, ref args) => {
+                let all_args_mono = args.iter().all(|arg| arg.is_monomorphic_in_context(bound));
+                match **f {
+                    TypeFunc::Const(_) => all_args_mono,
+                    TypeFunc::Poly(ref p) => {
+                        let mut dup = HashSet::new();
+                        for param in &p.params {
+                            if !bound.insert(*param) {
+                                dup.insert(param);
+                            }
+                        }
+                        let body_is_mono = p.body.is_monomorphic_in_context(bound);
+                        for param in p.params.iter().filter(|param| !dup.contains(param)) {
+                            bound.remove(param);
+                        }
+                        all_args_mono && body_is_mono
+                    }
+                }
+            }
+            Type::Poly(ref p) => p.params.is_empty() && p.body.is_monomorphic_in_context(bound),
         }
     }
 
-    /// If the type is a function type signature, extract the parameter type and the return type.
-    pub fn get_func(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+    /// Returns whether type is completly monomorphic
+    pub fn is_monomorphic(&self) -> bool {
+        self.is_monomorphic_in_context(&mut HashSet::new())
+    }
+
+    fn get_bin(&self, con: &'src str) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
-            Type::App("->", ref ts) => {
+            Type::App(ref f, ref ts) if **f == TypeFunc::Const(con) => {
                 assert_eq!(ts.len(), 2);
                 Some((&ts[0], &ts[1]))
             }
@@ -57,41 +110,29 @@ impl<'src> Type<'src> {
         }
     }
 
+    /// If the type is a function type signature, extract the parameter type and the return type.
+    pub fn get_func(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+        self.get_bin("->")
+    }
+
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
-        match *self {
-            Type::App("Cons", ref ts) if ts.len() == 2 => Some((&ts[0], &ts[1])),
-            _ => None,
-        }
+        self.get_bin("Cons")
     }
 }
 
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Type::Uninferred => write!(f, "_"),
             Type::Var(id) => write!(f, "${}", id),
-            Type::Const(basic) => write!(f, "{}", basic),
-            Type::App(constructor, ref args) => {
-                write!(
-                    f,
-                    "({} {})",
-                    constructor,
-                    args.iter().fold(String::new(), |acc, arg| {
-                        format!("{} {}", acc, arg)
-                    })
-                )
+            Type::Const(s) => fmt::Display::fmt(s, f),
+            Type::App(ref con, ref args) => {
+                let args_s = args.iter()
+                    .map(ToString::to_string)
+                    .intersperse(" ".to_string())
+                    .collect::<String>();
+                write!(f, "({} {})", con, args_s)
             }
-            Type::Scheme(ref vars, ref body) => {
-                write!(
-                    f,
-                    "(forall ({}) {})",
-                    vars.iter()
-                        .map(|id| format!("${}", id))
-                        .intersperse(" ".to_string())
-                        .collect::<String>(),
-                    body
-                )
-            }
+            Type::Poly(ref p) => fmt::Display::fmt(p, f),
         }
     }
 }
@@ -167,35 +208,11 @@ pub struct Bool<'src> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Call<'src> {
+pub struct App<'src> {
     pub func: Expr<'src>,
     pub arg: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
-}
-
-impl<'src> Call<'src> {
-    pub fn new_multary(func: Expr<'src>, mut args: Vec<Expr<'src>>, pos: SrcPos<'src>) -> Self {
-        let last = args.pop().unwrap_or_else(|| {
-            pos.error_exit("Empty argument list. Function calls can't be nullary")
-        });
-
-        let calls = args.into_iter().fold(func, |f, arg| {
-            Expr::Call(Box::new(Call {
-                func: f,
-                arg: arg,
-                typ: Type::Uninferred,
-                pos: pos.clone(),
-            }))
-        });
-
-        Call {
-            func: calls,
-            arg: last,
-            typ: Type::Uninferred,
-            pos: pos,
-        }
-    }
 }
 
 /// if-then-else expression
@@ -217,45 +234,14 @@ pub struct Lambda<'src> {
     pub pos: SrcPos<'src>,
 }
 
-impl<'src> Lambda<'src> {
-    pub fn new_multary(
-        mut params: Vec<(Ident<'src>, Type<'src>)>,
-        params_pos: &SrcPos<'src>,
-        body: Expr<'src>,
-        pos: &SrcPos<'src>,
-    ) -> Self {
-        let last_param = params.pop().unwrap_or_else(|| {
-            params_pos.error_exit(
-                "Empty parameter list. Functions can't be \
-                                       nullary, consider defining a constant instead",
-            )
-        });
-        let innermost = Lambda {
-            param_ident: last_param.0,
-            param_type: last_param.1,
-            body: body,
-            typ: Type::Uninferred,
-            pos: pos.clone(),
-        };
-
-        params.into_iter().rev().fold(innermost, |inner, param| {
-            Lambda {
-                param_ident: param.0,
-                param_type: param.1,
-                body: Expr::Lambda(Box::new(inner)),
-                typ: Type::Uninferred,
-                pos: pos.clone(),
-            }
-        })
-    }
-}
-
 /// A binding of a name to a value, i.e. a variable definition.
 #[derive(Clone, Debug)]
 pub struct Binding<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
     pub val: Expr<'src>,
+    /// If this binding is polymorphic, here will be monomorphic instantiations of `val`
+    pub mono_insts: HashMap<Type<'src>, Expr<'src>>,
     pub pos: SrcPos<'src>,
 }
 
@@ -293,7 +279,7 @@ pub enum Expr<'src> {
     StrLit(StrLit<'src>),
     Bool(Bool<'src>),
     Variable(Variable<'src>),
-    Call(Box<Call<'src>>),
+    App(Box<App<'src>>),
     If(Box<If<'src>>),
     Lambda(Box<Lambda<'src>>),
     Let(Box<Let<'src>>),
@@ -309,38 +295,12 @@ impl<'src> Expr<'src> {
             Expr::StrLit(ref l) => &l.pos,
             Expr::Bool(ref b) => &b.pos,
             Expr::Variable(ref bnd) => &bnd.ident.pos,
-            Expr::Call(ref call) => &call.pos,
+            Expr::App(ref call) => &call.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
             Expr::Let(ref l) => &l.pos,
             Expr::TypeAscript(ref a) => &a.pos,
             Expr::Cons(ref c) => &c.pos,
-        }
-    }
-
-    pub fn get_type(&self) -> &Type<'src> {
-        match *self {
-            Expr::Nil(_) => &TYPE_NIL,
-            Expr::NumLit(ref l) => &l.typ,
-            Expr::StrLit(ref l) => &l.typ,
-            Expr::Bool(_) => &TYPE_BOOL,
-            Expr::Variable(ref bnd) => &bnd.typ,
-            Expr::Call(ref call) => &call.typ,
-            Expr::If(ref cond) => &cond.typ,
-            Expr::Lambda(ref lam) => &lam.typ,
-            Expr::Let(ref l) => &l.typ,
-            // The existance of a type ascription implies that the expression has not yet been
-            // inferred. As such, return type `Uninferred` to imply that inference is needed
-            Expr::TypeAscript(_) => &TYPE_UNINFERRED,
-            Expr::Cons(ref c) => &c.typ,
-        }
-    }
-
-    /// Treat the expression as a possible `Let`
-    pub fn let_mut(&mut self) -> Option<&mut Let<'src>> {
-        match *self {
-            Expr::Let(ref mut l) => Some(l),
-            _ => None,
         }
     }
 

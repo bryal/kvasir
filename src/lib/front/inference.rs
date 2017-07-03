@@ -15,13 +15,12 @@
 
 use self::InferenceErr::*;
 use lib::collections::ScopeStack;
-use lib::front::error_exit;
+use lib::front::*;
 use lib::front::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use std::mem::{replace, swap};
-use std::iter;
-use itertools::{zip, Itertools};
+use std::iter::{once, FromIterator};
+use itertools::{zip, repeat_call};
 
 enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
@@ -76,7 +75,27 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
     }
 }
 
-/// Apply substitutions in `s` to type variables in `t`
+fn subst_poly<'src>(p: &Poly<'src>, s: &mut HashMap<u64, Type<'src>>) -> Poly<'src> {
+    let shadowed_mappings = p.params
+        .iter()
+        .filter_map(|i| s.remove(i).map(|t| (*i, t)))
+        .collect::<Vec<_>>();
+    let substituted = subst(&p.body, s);
+    s.extend(shadowed_mappings);
+    Poly {
+        params: p.params.clone(),
+        body: substituted,
+    }
+}
+
+fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -> TypeFunc<'src> {
+    match *f {
+        TypeFunc::Const(c) => TypeFunc::Const(c),
+        TypeFunc::Poly(ref p) => TypeFunc::Poly(subst_poly(p, s)),
+    }
+}
+
+/// Apply substitutions in `s` to free type variables in `t`
 fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
     match *t {
         Type::Var(ref n) => {
@@ -84,15 +103,13 @@ fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
                 t.clone(),
             )
         }
-        Type::App(c, ref ts) => Type::App(c, ts.iter().map(|t2| subst(t2, s)).collect()),
-        Type::Scheme(ref is, ref u) => {
-            let shadowed_mappings = is.iter()
-                .filter_map(|i| s.remove(i).map(|t| (*i, t)))
-                .collect::<Vec<_>>();
-            let substituted = subst(u, s);
-            s.extend(shadowed_mappings);
-            Type::Scheme(is.clone(), Box::new(substituted))
+        Type::App(ref c, ref ts) => {
+            Type::App(
+                Box::new(subst_type_func(c, s)),
+                ts.iter().map(|t2| subst(t2, s)).collect(),
+            )
         }
+        Type::Poly(ref p) => Type::Poly(Box::new(subst_poly(p, s))),
         _ => t.clone(),
     }
 }
@@ -101,7 +118,7 @@ fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
 fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
     match *e {
         Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
-        Expr::Call(ref mut call) => {
+        Expr::App(ref mut call) => {
             subst_expr(&mut call.func, s);
             subst_expr(&mut call.arg, s);
             call.typ = subst(&call.typ, s);
@@ -158,35 +175,27 @@ fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
 //       If a LOCKED type variable needs to be specialized during inference,
 //       raise an error instead of adding substitution/constraint/redefinition.
 
-struct TypeVarGen(u64);
-
-impl TypeVarGen {
-    /// Generates a new, unique type variable
-    fn new_type_var<'src>(&mut self) -> Type<'src> {
-        let n = self.0;
-        self.0 += 1;
-        Type::Var(n)
-    }
-}
-
-struct Inferer<'exts, 'src: 'exts> {
+struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
     var_env: HashMap<&'src str, Vec<Type<'src>>>,
     /// Declarations of external variables
-    externs: &'exts HashMap<&'src str, ExternDecl<'src>>,
+    externs: &'a HashMap<&'src str, ExternDecl<'src>>,
     /// A map of free type variables to their instantiations
     type_var_map: HashMap<u64, Type<'src>>,
     /// Counter for generation of unique type variable ids
-    type_var_gen: TypeVarGen,
+    type_var_gen: &'a mut TypeVarGen,
 }
 
-impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
-    fn with_externs(externs: &'exts HashMap<&'src str, ExternDecl<'src>>) -> Self {
-        Inferer {
+impl<'a, 'src: 'a> Inferrer<'a, 'src> {
+    fn new(
+        externs: &'a HashMap<&'src str, ExternDecl<'src>>,
+        type_var_gen: &'a mut TypeVarGen,
+    ) -> Self {
+        Inferrer {
             var_env: HashMap::new(),
             externs: externs,
             type_var_map: HashMap::new(),
-            type_var_gen: TypeVarGen(0),
+            type_var_gen: type_var_gen,
         }
     }
 
@@ -202,10 +211,17 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
         self.var_env.get(id).and_then(|v| v.last())
     }
 
-    /// Returns an iterator of all type variables that occur in `t`
-    ///
-    /// May contain duplicates. Collect into a set or such for uniqueness
-    fn get_type_vars<'t>(&'t self, t: &'t Type<'src>) -> Box<Iterator<Item = u64> + 't> {
+    /// Returns an iterator of all free type variables that occur in `p`
+    fn free_type_vars_poly(&self, p: &Poly<'src>) -> HashSet<u64> {
+        let mut set = self.free_type_vars(&p.body);
+        for i in &p.params {
+            set.remove(i);
+        }
+        set
+    }
+
+    /// Returns an iterator of all free type variables that occur in `t`
+    fn free_type_vars(&self, t: &Type<'src>) -> HashSet<u64> {
         match *t {
             Type::Var(n) => {
                 self.type_var_map
@@ -215,20 +231,18 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
                             // NOTE: Shouldn't be able to happen if no bugs right?
                             panic!("ICE: in get_type_vars: t occurs in u")
                         } else {
-                            self.get_type_vars(u)
+                            self.free_type_vars(u)
                         }
                     })
-                    .unwrap_or(Box::new(iter::once(n)))
+                    .unwrap_or(HashSet::from_iter(once(n)))
             }
-            Type::App(_, ref ts) => Box::new(ts.iter().flat_map(move |t2| self.get_type_vars(t2))),
-            Type::Scheme(ref is, ref u) => {
-                let mut set = self.get_type_vars(u).collect::<HashSet<_>>();
-                for i in is {
-                    set.remove(i);
-                }
-                Box::new(set.into_iter())
+            Type::App(_, ref ts) => {
+                ts.iter()
+                    .flat_map(move |t2| self.free_type_vars(t2))
+                    .collect()
             }
-            _ => Box::new(iter::empty()),
+            Type::Poly(ref p) => self.free_type_vars_poly(p),
+            _ => HashSet::new(),
         }
     }
 
@@ -236,18 +250,11 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
     /// Instantiate a polymorphic value
     fn instantiate(&mut self, t: &Type<'src>) -> Type<'src> {
         match *t {
-            Type::Scheme(ref is, ref u) => {
-                let type_var_gen = &mut self.type_var_gen;
-                self.type_var_map.extend(
-                    is.iter()
-                        .map(|&i| (i, type_var_gen.new_type_var()))
-                        .collect::<Vec<_>>(),
-                );
-                let t_inst = subst(&u, &mut self.type_var_map);
-                for i in is {
-                    self.type_var_map.remove(i);
-                }
-                t_inst
+            Type::Poly(ref p) => {
+                let tvs = repeat_call(|| self.type_var_gen.gen_tv())
+                    .take(p.params.len())
+                    .collect::<Vec<_>>();
+                Type::App(Box::new(TypeFunc::Poly((**p).clone())), tvs)
             }
             _ => t.clone(),
         }
@@ -259,13 +266,21 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
         let env_type_vars = self.var_env
             .iter()
             .flat_map(|(_, v)| v.iter())
-            .flat_map(|v_t| self.get_type_vars(v_t))
+            .flat_map(|v_t| self.free_type_vars(v_t))
             .collect::<HashSet<_>>();
-        let t_type_vars = self.get_type_vars(t).unique();
+        let t_type_vars = self.free_type_vars(t);
         let unbounds = t_type_vars
+            .into_iter()
             .filter(|tv| !env_type_vars.contains(tv))
-            .collect();
-        Type::Scheme(unbounds, Box::new(t.clone()))
+            .collect::<Vec<_>>();
+        if unbounds.is_empty() {
+            t.clone()
+        } else {
+            Type::Poly(Box::new(Poly {
+                params: unbounds,
+                body: t.clone(),
+            }))
+        }
     }
 
     // TODO: Should this algorithm introduce type variables on `Uninferred`?
@@ -291,29 +306,44 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
                 self.unify(a, &b2)
             }
             (&Var(n), &Var(m)) if n == m => Ok(Var(n)),
-            (&Var(n), &App(c, ref ts)) => {
-                let news = (0..ts.len())
-                    .map(|_| self.type_var_gen.new_type_var())
-                    .collect();
-                self.type_var_map.insert(n, App(c, news));
-                self.unify(a, b)
+            (&Var(n), _) if occurs_in(n, b, &self.type_var_map) => {
+                panic!("ICE: unify: `{}` occurs in `{}`", n, b);
             }
-            (&Uninferred, _) => Ok(b.clone()),
-            (_, &Uninferred) => Ok(a.clone()),
             (&Var(n), _) => {
                 self.type_var_map.insert(n, b.clone());
                 Ok(b.clone())
             }
             (_, &Var(_)) => self.unify(b, a),
-            (&App(c1, ref ts1), &App(c2, ref ts2)) if c1 == c2 && ts1.len() == ts2.len() => {
-                zip(ts1, ts2)
-                    .map(|(t1, t2)| self.unify(t1, t2))
-                    .collect::<Result<_, _>>()
-                    .map(|us| App(c1, us))
+            (&App(ref f1, ref ts1), &App(ref f2, ref ts2)) => {
+                match (&**f1, &**f2) {
+                    (&TypeFunc::Poly(ref p), _) => {
+                        assert_eq!(p.params.len(), ts1.len());
+                        self.type_var_map.extend(
+                            zip(&p.params, ts1).map(|(param, t)| {
+                                (*param, t.clone())
+                            }),
+                        );
+                        let a2 = subst(&p.body, &mut self.type_var_map);
+                        for param in &p.params {
+                            self.type_var_map.remove(param);
+                        }
+                        self.unify(&a2, b)
+                    }
+                    (_, &TypeFunc::Poly(_)) => self.unify(b, a),
+                    (&TypeFunc::Const(c1), &TypeFunc::Const(c2))
+                        if c1 == c2 && ts1.len() == ts2.len() => {
+                        zip(ts1, ts2)
+                            .map(|(t1, t2)| self.unify(t1, t2))
+                            .collect::<Result<_, _>>()
+                            .map(|us| App(f1.clone(), us))
+                    }
+                    _ => Err((a.clone(), b.clone())),
+                }
             }
-            // TODO: Can this happen?
-            (&Scheme(_, _), _) |
-            (_, &Scheme(_, _)) => panic!("ICE: unifying type scheme: `{}` U `{}`", a, b),
+            (&Poly(_), _) | (_, &Poly(_)) => {
+                println!("unifying polytype: `{}` U `{}`", a, b);
+                unimplemented!()
+            }
             (_, _) if a == b => Ok(a.clone()),
             _ => Err((a.clone(), b.clone())),
         }
@@ -386,24 +416,38 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
     /// If the variable does not refer to an extern, instantiate the variable
     /// and unify with expected type. If it does refer to an extern,
     /// unify type of extern with expected type.
-    fn infer_variable<'v>(
+    fn infer_variable(
         &mut self,
-        var: &'v mut Variable<'src>,
+        var: &mut Variable<'src>,
         expected_type: &Type<'src>,
-    ) -> &'v Type<'src> {
+    ) -> Type<'src> {
         if let Some(typ) = self.get_var(var.ident.s).cloned() {
             // Either not an extern, or shadowing an extern. I.e. a lambda parameter or let binding
-            let instantiation = self.instantiate(&typ);
-            var.typ = self.unify(expected_type, &instantiation).unwrap_or_else(
-                |_| {
-                    var.ident.pos.error_exit(format!(
-                        "Variable of type `{}` cannot be instantiated to expected type `{}`",
-                        typ,
-                        expected_type
-                    ))
-                },
-            );
-            &var.typ
+
+            // Do not assign unified type to `var.typ`. If definition of var
+            // is polymorphic, the application arguments are essential as
+            // they may be used in the body of the definition but not show up
+            // in the resulting type of the application.
+
+            println!("UNINST: {} : {}", var.ident, typ);
+
+            var.typ = self.instantiate(&typ);
+
+            println!("INST: {} : {}", var.ident, var.typ);
+
+            let unif = self.unify(expected_type, &var.typ).unwrap_or_else(|_| {
+                var.ident.pos.error_exit(format!(
+                    "Variable of type `{}` cannot be instantiated to expected type `{}`",
+                    typ,
+                    expected_type
+                ))
+            });
+
+            println!("UNIF: {}", unif);
+
+            println!("INST AFTER UNIF: {} : {}\n", var.ident, var.typ);
+
+            unif
         } else if let Some(ext) = self.externs.get(var.ident.s) {
             // An extern. Check that type of extern is unifiable with expected type
             var.typ = self.unify(expected_type, &ext.typ).unwrap_or_else(
@@ -416,7 +460,7 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
                     })
                 },
             );
-            &var.typ
+            var.typ.clone()
         } else {
             var.ident.pos.error_exit(format!(
                 "`{}` not found in this scope",
@@ -433,21 +477,21 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
     /// Infer types in a function application
     fn infer_call<'c>(
         &mut self,
-        call: &'c mut Call<'src>,
+        call: &'c mut App<'src>,
         expected_type: &Type<'src>,
     ) -> &'c Type<'src> {
-        let func_type = self.infer_expr(
-            &mut call.func,
-            &Type::new_func(Type::Uninferred, Type::Uninferred),
-        );
-        let arg_type = self.infer_expr(&mut call.arg, &Type::Uninferred);
-        let (func_arg_type, func_ret_type) = func_type.get_func().expect(
+        let expected_func_type =
+            Type::new_func(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
+        let func_type = self.infer_expr(&mut call.func, &expected_func_type);
+        let expected_arg_type = self.type_var_gen.gen_tv();
+        let arg_type = self.infer_expr(&mut call.arg, &expected_arg_type);
+        let (func_param_type, func_ret_type) = func_type.get_func().expect(
             "ICE: func_type was not func type in infer_call",
         );
-        self.unify(func_arg_type, &arg_type).unwrap_or_else(
+        self.unify(func_param_type, &arg_type).unwrap_or_else(
             |(e, f)| {
                 call.arg.pos().error_exit(TypeMisSub {
-                    expected: func_arg_type,
+                    expected: func_param_type,
                     found: &arg_type,
                     sub_expected: &e,
                     sub_found: &f,
@@ -494,8 +538,8 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
         // Infer type of param by adding it to the environment and applying constraints based on
         // how it is used during inference of lambda body.
 
-        let param_type = self.type_var_gen.new_type_var();
-        let body_type = self.type_var_gen.new_type_var();
+        let param_type = self.type_var_gen.gen_tv();
+        let body_type = self.type_var_gen.gen_tv();
         let func_type = Type::new_func(param_type.clone(), body_type);
         let (expected_param_type, expected_body_type) = self.unify(expected_type, &func_type)
             .unwrap_or_else(|_| lam.pos.error_exit(TypeMis(expected_type, &func_type)))
@@ -517,23 +561,20 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
 
     // TODO: Add indirect recursion
     // TODO: Make order-independent
-    /// Infer types for bindings of a let-form and push them to the environment.
+    /// Infer types for global bindings or bindings of a let-form
+    /// and push them to the environment.
     fn infer_bindings(&mut self, bindings: &mut [Binding<'src>]) {
         for binding in bindings {
-            let ascribed_type = binding.val.remove_type_ascription().unwrap_or(
-                Type::Uninferred,
+            let expected_type = binding.val.remove_type_ascription().unwrap_or(
+                self.type_var_gen
+                    .gen_tv(),
             );
-            let val_type = self.type_var_gen.new_type_var();
-            let expected_type = self.unify(&val_type, &ascribed_type).unwrap();
-
             // Only allow recursion for functions. Stuff like `let a = a + 1`
             // can't be compiled correctly without laziness.
             if let Expr::Lambda(_) = binding.val {
                 // Add binding being inferred to env to allow recursion
                 self.push_var(binding.ident.s, expected_type.clone());
-
                 self.infer_expr(&mut binding.val, &expected_type);
-
                 // Remove binding from env to get only surrounding env
                 self.pop_var(binding.ident.s).unwrap_or_else(|| {
                     panic!("ICE: binding gone from var_env in infer_let_bindings")
@@ -541,7 +582,6 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
             } else {
                 self.infer_expr(&mut binding.val, &expected_type);
             }
-
             // For binding, create type scheme with type variables found in binding
             // body and not in surrounding environment as type parameters
             binding.typ = self.generalize(&expected_type);
@@ -592,7 +632,8 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
         cons: &'c mut Cons<'src>,
         expected_type: &Type<'src>,
     ) -> &'c Type<'src> {
-        let arbitrary_cons_type = Type::new_cons(Type::Uninferred, Type::Uninferred);
+        let arbitrary_cons_type =
+            Type::new_cons(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
         let expected_type2 = self.unify(expected_type, &arbitrary_cons_type)
             .unwrap_or_else(|_| {
                 cons.pos.error_exit(
@@ -616,7 +657,7 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
             Expr::Bool(ref mut b) => self.infer_bool(b, expected_type),
             Expr::NumLit(ref mut l) => self.infer_num_lit(l, expected_type).clone(),
             Expr::Variable(ref mut var) => self.infer_variable(var, expected_type).clone(),
-            Expr::Call(ref mut call) => self.infer_call(call, expected_type).clone(),
+            Expr::App(ref mut call) => self.infer_call(call, expected_type).clone(),
             Expr::If(ref mut cond) => self.infer_if(cond, expected_type).clone(),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, expected_type).clone(),
             Expr::Let(ref mut l) => self.infer_let(l, expected_type).clone(),
@@ -626,11 +667,11 @@ impl<'exts, 'src: 'exts> Inferer<'exts, 'src> {
     }
 }
 
-pub fn infer_types(module: &mut Module) {
+pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
     println!("EXTERNS:\n{:#?}\n\n", module.externs);
 
     if let Some(ref mut main) = module.main {
-        let mut inferrer = Inferer::with_externs(&mut module.externs);
+        let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
         inferrer.infer_bindings(&mut module.globals);
         let expected_main_type = Type::new_func(TYPE_NIL.clone(), TYPE_NIL.clone());
         // Add binding being inferred to env to allow recursion
