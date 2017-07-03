@@ -717,7 +717,7 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
                 // Recursively generate monomorphizations for now-monomorphic
                 // instantiations in `def_mono`
                 let h = env.get_height(var.ident.s).unwrap();
-                let above = env.split_off(h);
+                let above = env.split_off(h + 1);
                 monomorphize_defs_of_insts_in_expr(&mut def_mono, env);
                 env.extend(above);
 
