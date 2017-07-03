@@ -36,23 +36,13 @@ impl<'src> Type<'src> {
         Type::App("Cons", vec![car_typ, cdr_typ])
     }
 
-    pub fn is_unknown(&self) -> bool {
-        match *self {
-            Type::Uninferred => true,
-            _ => false,
-        }
-    }
-    pub fn is_partially_known(&self) -> bool {
-        !self.is_unknown()
-    }
-
-    pub fn is_fully_inferred(&self) -> bool {
+    pub fn is_known_monomorphic(&self) -> bool {
         match *self {
             Type::Uninferred => false,
-            Type::Var(_) => true,
+            Type::Var(_) => false,
             Type::Const(_) => true,
-            Type::App(_, ref args) => args.iter().all(Type::is_fully_inferred),
-            Type::Scheme(_, _) => unimplemented!(),
+            Type::App(_, ref args) => args.iter().all(Type::is_known_monomorphic),
+            Type::Scheme(ref is, ref u) => is.is_empty() && u.is_known_monomorphic(),
         }
     }
 

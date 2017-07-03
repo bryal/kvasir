@@ -271,7 +271,7 @@ fn parse_extern<'src>(csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src
             CST::Ident(name, ref id_pos) => {
                 let typ = parse_type(&csts[1]);
 
-                if !typ.is_fully_inferred() {
+                if !typ.is_known_monomorphic() {
                     csts[1].pos().error_exit(
                         "Type of external variable must be fully specified",
                     )
