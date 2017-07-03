@@ -20,6 +20,7 @@ use lib::front::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
+use std::mem::{replace, uninitialized};
 use itertools::{zip, repeat_call};
 
 enum InferenceErr<'p, 'src: 'p> {
@@ -118,10 +119,10 @@ fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
 fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
     match *e {
         Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
-        Expr::App(ref mut call) => {
-            subst_expr(&mut call.func, s);
-            subst_expr(&mut call.arg, s);
-            call.typ = subst(&call.typ, s);
+        Expr::App(ref mut app) => {
+            subst_expr(&mut app.func, s);
+            subst_expr(&mut app.arg, s);
+            app.typ = subst(&app.typ, s);
         }
         Expr::If(ref mut cond) => {
             subst_expr(&mut cond.predicate, s);
@@ -475,22 +476,22 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     //       How to write type ascriptions for such a function?
     //       Alt. force use of PhantomData<T> like inputs?
     /// Infer types in a function application
-    fn infer_call<'c>(
+    fn infer_app<'c>(
         &mut self,
-        call: &'c mut App<'src>,
+        app: &'c mut App<'src>,
         expected_type: &Type<'src>,
     ) -> &'c Type<'src> {
         let expected_func_type =
             Type::new_func(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
-        let func_type = self.infer_expr(&mut call.func, &expected_func_type);
+        let func_type = self.infer_expr(&mut app.func, &expected_func_type);
         let expected_arg_type = self.type_var_gen.gen_tv();
-        let arg_type = self.infer_expr(&mut call.arg, &expected_arg_type);
+        let arg_type = self.infer_expr(&mut app.arg, &expected_arg_type);
         let (func_param_type, func_ret_type) = func_type.get_func().expect(
-            "ICE: func_type was not func type in infer_call",
+            "ICE: func_type was not func type in infer_app",
         );
         self.unify(func_param_type, &arg_type).unwrap_or_else(
             |(e, f)| {
-                call.arg.pos().error_exit(TypeMisSub {
+                app.arg.pos().error_exit(TypeMisSub {
                     expected: func_param_type,
                     found: &arg_type,
                     sub_expected: &e,
@@ -500,7 +501,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         );
         let ret_unification = self.unify(expected_type, func_ret_type).unwrap_or_else(
             |(e, f)| {
-                call.pos.error_exit(TypeMisSub {
+                app.pos.error_exit(TypeMisSub {
                     expected: expected_type,
                     found: func_ret_type,
                     sub_expected: &e,
@@ -508,8 +509,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 })
             },
         );
-        call.typ = ret_unification;
-        &call.typ
+        app.typ = ret_unification;
+        &app.typ
     }
 
     fn infer_if<'i>(
@@ -657,7 +658,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Bool(ref mut b) => self.infer_bool(b, expected_type),
             Expr::NumLit(ref mut l) => self.infer_num_lit(l, expected_type).clone(),
             Expr::Variable(ref mut var) => self.infer_variable(var, expected_type).clone(),
-            Expr::App(ref mut call) => self.infer_call(call, expected_type).clone(),
+            Expr::App(ref mut app) => self.infer_app(app, expected_type).clone(),
             Expr::If(ref mut cond) => self.infer_if(cond, expected_type).clone(),
             Expr::Lambda(ref mut lam) => self.infer_lambda(lam, expected_type).clone(),
             Expr::Let(ref mut l) => self.infer_let(l, expected_type).clone(),
@@ -667,10 +668,151 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 }
 
+/// If `var` is an instantiation of a polymorphic value and monomorphization
+/// does not already exist for this instantiation type, generate a
+/// monomorphization and return the monomorphisized definition
+fn monomorphize_def_of_inst<'src>(
+    var: &Variable<'src>,
+    env: &mut ScopeStack<&str, Binding<'src>>,
+) -> Option<(Vec<Type<'src>>, Expr<'src>)> {
+    if let Type::App(ref f, ref ts) = var.typ {
+        assert!(ts.iter().all(|t| t.is_monomorphic()));
+        if let TypeFunc::Poly(ref p) = **f {
+            // An application of a polytype =>
+            //   it's an instantiation to generate monomorphization for
+            let b = env.get(var.ident.s).unwrap();
+            if !b.mono_insts.contains_key(ts) {
+                // The monomorphization does not already exist
+                let mut s = zip(&p.params, ts)
+                    .map(|(param, t)| (param.clone(), t.clone()))
+                    .collect();
+                let mut def_mono = b.val.clone();
+                subst_expr(&mut def_mono, &mut s);
+                return Some((ts.clone(), def_mono));
+            }
+        }
+    }
+    // Either definition is already monomorphic to begin with,
+    // or it is polymorphic, but monomorphization has already been generated
+    None
+}
+
+/// Monomorphize definitions for monomorphic instantiations of variables in `expr`
+fn monomorphize_defs_of_insts_in_expr<'src>(
+    e: &mut Expr<'src>,
+    env: &mut ScopeStack<&'src str, Binding<'src>>,
+) {
+    match *e {
+        Expr::Variable(ref var) => {
+            if let Some((arg_ts, mut def_mono)) = monomorphize_def_of_inst(var, env) {
+                // Insert dummy monomorphization as a tag to show that monomorphization
+                // already has been done, but we still need `def_mono` to continue
+                // our recursive monomorphization
+                {
+                    let dummy_expr = Expr::Nil(Nil { pos: SrcPos::new_pos("", 0) });
+                    let b = env.get_mut(var.ident.s).unwrap();
+                    b.mono_insts.insert(arg_ts.clone(), dummy_expr);
+                }
+
+                // Recursively generate monomorphizations for now-monomorphic
+                // instantiations in `def_mono`
+                let h = env.get_height(var.ident.s).unwrap();
+                let above = env.split_off(h);
+                monomorphize_defs_of_insts_in_expr(&mut def_mono, env);
+                env.extend(above);
+
+                let b = env.get_mut(var.ident.s).unwrap();
+                *b.mono_insts.get_mut(&arg_ts).unwrap() = def_mono;
+            }
+        }
+        Expr::App(ref mut app) => {
+            monomorphize_defs_of_insts_in_expr(&mut app.func, env);
+            monomorphize_defs_of_insts_in_expr(&mut app.arg, env);
+        }
+        Expr::If(ref mut cond) => {
+            monomorphize_defs_of_insts_in_expr(&mut cond.predicate, env);
+            monomorphize_defs_of_insts_in_expr(&mut cond.consequent, env);
+            monomorphize_defs_of_insts_in_expr(&mut cond.alternative, env);
+        }
+        Expr::Lambda(ref mut lam) => {
+            monomorphize_defs_of_insts_in_expr(&mut lam.body, env);
+        }
+        Expr::Let(ref mut l) => {
+            let mut bindings = replace(&mut l.bindings, Vec::new());
+            monomorphize_defs_of_insts_in_let(&mut bindings, &mut l.body, env);
+            l.bindings = bindings;
+        }
+        Expr::TypeAscript(_) => unreachable!(),
+        Expr::Cons(ref mut cons) => {
+            monomorphize_defs_of_insts_in_expr(&mut cons.car, env);
+            monomorphize_defs_of_insts_in_expr(&mut cons.cdr, env);
+        }
+        _ => (),
+    }
+}
+
+/// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
+fn monomorphize_defs_of_insts_in_let<'src>(
+    bindings: &mut Vec<Binding<'src>>,
+    body: &mut Expr<'src>,
+    env: &mut ScopeStack<&'src str, Binding<'src>>,
+) {
+    let bindings2 = replace(bindings, Vec::new());
+
+    let mut ids = Vec::new();
+    let mut monos = HashMap::new();
+    let mut local_bindings = HashMap::new();
+    for b in bindings2 {
+        ids.push(b.ident.s);
+        if b.typ.is_monomorphic() {
+            monos.insert(b.ident.s, b.val.clone());
+        }
+        local_bindings.insert(b.ident.s, b);
+    }
+    env.push(local_bindings);
+
+    for (_, mut def) in &mut monos {
+        monomorphize_defs_of_insts_in_expr(&mut def, env);
+    }
+    monomorphize_defs_of_insts_in_expr(body, env);
+
+    let mut local_bindings = env.pop().unwrap();
+    for id in ids {
+        let mut b = local_bindings.remove(id).unwrap();
+        if let Some(upd_def) = monos.remove(id) {
+            b.val = upd_def;
+        }
+        bindings.push(b)
+    }
+}
+
+/// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
+fn monomorphize_defs_of_insts<'a, 'src>(
+    globals: &'a mut Vec<Binding<'src>>,
+    main: &'a mut Binding<'src>,
+) where
+    'src: 'a,
+{
+    unsafe {
+        let mut bindings = globals
+            .iter_mut()
+            .map(|b| replace(b, uninitialized()))
+            .collect::<Vec<_>>();
+        bindings.push(replace(main, uninitialized()));
+
+        let mut dummy_body = Expr::Nil(Nil { pos: SrcPos::new_pos("", 0) });
+        monomorphize_defs_of_insts_in_let(&mut bindings, &mut dummy_body, &mut ScopeStack::new());
+
+        for (binding, dest) in zip(bindings, globals.iter_mut().chain(once(main))) {
+            ::std::ptr::write(dest, binding)
+        }
+    }
+}
+
 pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
     println!("EXTERNS:\n{:#?}\n\n", module.externs);
 
-    if let Some(ref mut main) = module.main {
+    if let Some(mut main) = module.main.as_mut() {
         let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
         inferrer.infer_bindings(&mut module.globals);
         let expected_main_type = Type::new_func(TYPE_NIL.clone(), TYPE_NIL.clone());
@@ -681,13 +823,16 @@ pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
         println!("BEFORE SUBST INFERRED GLOBALS:\n{:#?}\n", module.globals);
         println!("BEFORE SUBST INFERRED MAIN:\n{:#?}\n", main);
 
-        // Apply all substitutions to get rid of reduntant type variables
+        // Apply all substitutions recursively to get rid of reduntant, indirect type variables
         for binding in &mut module.globals {
             binding.typ = subst(&binding.typ, &mut inferrer.type_var_map);
             subst_expr(&mut binding.val, &mut inferrer.type_var_map);
         }
         main.typ = subst(&main.typ, &mut inferrer.type_var_map);
         subst_expr(&mut main.val, &mut inferrer.type_var_map);
+
+        // Map monomorphic instantiations of variables to monomorphization of definitions
+        monomorphize_defs_of_insts(&mut module.globals, &mut main);
 
         println!("AFTER SUBST INFERRED GLOBALS:\n{:#?}\n", module.globals);
         println!("AFTER SUBST INFERRED MAIN:\n{:#?}\n", main);

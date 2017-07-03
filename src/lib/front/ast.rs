@@ -240,8 +240,9 @@ pub struct Binding<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
     pub val: Expr<'src>,
-    /// If this binding is polymorphic, here will be monomorphic instantiations of `val`
-    pub mono_insts: HashMap<Type<'src>, Expr<'src>>,
+    /// If this binding is polymorphic, here will be mappings from
+    /// application arguments to monomorphic instantiation of `val`
+    pub mono_insts: HashMap<Vec<Type<'src>>, Expr<'src>>,
     pub pos: SrcPos<'src>,
 }
 
@@ -295,7 +296,7 @@ impl<'src> Expr<'src> {
             Expr::StrLit(ref l) => &l.pos,
             Expr::Bool(ref b) => &b.pos,
             Expr::Variable(ref bnd) => &bnd.ident.pos,
-            Expr::App(ref call) => &call.pos,
+            Expr::App(ref app) => &app.pos,
             Expr::If(ref cond) => &cond.pos,
             Expr::Lambda(ref l) => &l.pos,
             Expr::Let(ref l) => &l.pos,

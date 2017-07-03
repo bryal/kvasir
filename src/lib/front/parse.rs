@@ -117,9 +117,11 @@ impl<'tvg> Parser<'tvg> {
         pos: SrcPos<'src>,
     ) -> App<'src> {
         let last = args.pop().unwrap_or_else(|| {
-            pos.error_exit("Empty argument list. Function calls can't be nullary")
+            pos.error_exit(
+                "Empty argument list. Function applications can't be nullary",
+            )
         });
-        let calls = args.into_iter().fold(func, |f, arg| {
+        let apps = args.into_iter().fold(func, |f, arg| {
             Expr::App(Box::new(App {
                 func: f,
                 arg: arg,
@@ -128,7 +130,7 @@ impl<'tvg> Parser<'tvg> {
             }))
         });
         App {
-            func: calls,
+            func: apps,
             arg: last,
             typ: self.gen_type_var(),
             pos: pos,

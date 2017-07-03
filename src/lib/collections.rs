@@ -10,6 +10,7 @@ use std::hash::Hash;
 /// Used for ConstDef:s. Only one constant can be defined for a single name at any given moment.
 #[derive(Clone)]
 pub struct ScopeStack<K, V>(Vec<HashMap<K, V>>);
+
 impl<K: Hash + Eq, V> ScopeStack<K, V> {
     pub fn new() -> ScopeStack<K, V> {
         ScopeStack(Vec::new())
@@ -24,6 +25,14 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
 
     pub fn pop(&mut self) -> Option<HashMap<K, V>> {
         self.0.pop()
+    }
+
+    pub fn split_off(&mut self, at: usize) -> Vec<HashMap<K, V>> {
+        self.0.split_off(at)
+    }
+
+    pub fn extend(&mut self, xs: Vec<HashMap<K, V>>) {
+        self.0.extend(xs)
     }
 
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
