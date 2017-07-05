@@ -176,6 +176,311 @@ fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
 //       If a LOCKED type variable needs to be specialized during inference,
 //       raise an error instead of adding substitution/constraint/redefinition.
 
+/// A representation of let-bindings that describes the dependencies of the bindings to each other
+///
+/// In a set of simultaneously defined bindings (i.e. the bindings of a let-form), bindings may
+/// be defined in terms of each other. These relationships can be represented with a disjoint
+/// union of directed, acyclic graphs where a node is a cyclic graph of recursively defined
+/// bindings.
+///
+/// As the graphs are DAGs, the groups can be ordered topologically. Type inference is now simple.
+/// We start at the end of the topological order and infer types group-wise in reverse order.
+///
+/// Within a cyclical group, we begin inference in an arbitrary definition. If a variable referring
+/// to a binding within the group is encountered, recursively infer in the definition of that
+/// variable and record the jump. If a variable referring to a binding is encountered that is
+/// already in the jump stack, no more information can be gained from following the variable, so
+/// just get the current type of the variable. When done inferring in a definition, do not
+/// generalize the type. Only when the whole group has been inferred, generalize the types of the
+/// definitions as a group. I.e., all bindings will have take the same type arguments.
+///
+/// # Example
+///
+/// The following definitions together constitute a single DAG
+///
+/// ```lisp
+/// (define (id x)       ; Will be in a group on its own as no recursive definition in terms of
+///   x)                 ; anything else. The group it constitutes is a leaf node in it's
+///                      ; super-graph as it does not refer to anything n the same scope even
+///                      ; non-recursively.
+///
+/// (define (id2 x)      ; No recursion, group on its own. Refers to `id` in same scope, so not a
+///   (id x))            ; leaf group => higher in the topological order than group of `id`
+///
+/// (define (f n x)      ; `f` refers to `g` which refers to `f` and so on. They are mutually
+///   (if (= n 0)        ; recursive, and as such, together they constitute a group. `g` further
+///       x              ; refers to `id2` of the same scope, which implies that this group
+///     (g (- n 1) x)))  ; is higher in the topoligical order than id2.
+///
+/// (define (g n x)
+///   (id2 (f n x)))
+/// ```
+///
+/// To infer types, we no start at the bottom of the topological order. `id` does not refer to
+/// anything in the same scope, and is easily inferred to be of type `(for (t) (-> t t))`.
+///
+/// We move a step up in the order and get the group of `id2`. In `id2`, we simply instantiate
+/// `id`s type of `(for (t) (-> t t))` with fresh type variables, and we get `(:: id (u))`
+/// which implies `(: id (-> u u))`. `id2` is then generalized to `(for (u) (-> u u))`.
+///
+/// For the topmost group of `f` and `g`, we begin inference in `f`. We infer that the type of
+/// `n` is `Int`, and that the type of the second argument, `x`, is the same as the return type.
+/// Then we dive into `g`. Here we unify the parameter types of `(: f (-> Int a a))` with the types
+/// of `g`s parameters `n` and `x`, and together with the return type of `f` and an instantiation
+/// of `id2`, we get `(: g (-> Int a a))`. Finally, we return to `f` and then return from inference.
+/// Now that all bindings in group has been inferred, we generalize. The only free type variable is
+/// `a`. Both `f` and `g` are given the same type parameters, and the result is
+/// `(: f (for (a) (-> Int a a)))` and `(: g (for (a) (-> Int a a)))`.
+struct BindingsDependencyGraph<'src>(TopologicallyOrderedGroups<'src>);
+
+type TopologicallyOrderedGroups<'src> = Vec<Group<'src>>;
+
+/// Returns a set of all siblings being referred to in this expression
+fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> HashSet<&'src str> {
+    use self::Expr::*;
+    match *e {
+        Variable(ref v) => {
+            if siblings.contains(v.ident.s) {
+                once(v.ident.s).collect()
+            } else {
+                HashSet::new()
+            }
+        }
+        App(ref app) => {
+            [&app.func, &app.arg]
+                .iter()
+                .flat_map(|e2| sibling_refs(e2, siblings))
+                .collect()
+        }
+        If(ref cond) => {
+            [&cond.predicate, &cond.consequent, &cond.alternative]
+                .iter()
+                .flat_map(|e2| sibling_refs(e2, siblings))
+                .collect()
+        }
+        Lambda(ref l) => {
+            let shadowed = siblings.remove(l.param_ident.s);
+            let refs = sibling_refs(&l.body, siblings);
+            if shadowed {
+                siblings.insert(l.param_ident.s);
+            }
+            refs
+        }
+        Let(ref l) => {
+            let shadoweds = l.bindings
+                .iter()
+                .filter_map(|b| if siblings.remove(b.ident.s) {
+                    Some(b.ident.s)
+                } else {
+                    None
+                })
+                .collect::<Vec<_>>();
+            let refs = l.bindings
+                .iter()
+                .map(|b| &b.val)
+                .chain(once(&l.body))
+                .flat_map(|e2| sibling_refs(e2, siblings))
+                .collect();
+            for s in shadoweds {
+                siblings.insert(s);
+            }
+            refs
+        }
+        Cons(ref c) => {
+            [&c.car, &c.cdr]
+                .iter()
+                .flat_map(|e2| sibling_refs(e2, siblings))
+                .collect()
+        }
+        TypeAscript(_) => unreachable!(),
+        Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => HashSet::new(),
+    }
+}
+
+
+/// Returns whether `s` reached itself
+fn circular_def_members_<'src>(
+    s: &'src str,
+    siblings_out_refs: &HashMap<&str, HashSet<&'src str>>,
+    members: &mut HashSet<&'src str>,
+) -> bool {
+    if members.contains(s) {
+        true
+    } else {
+        members.insert(s);
+        let mut reached_self = false;
+        for &out_ref in &siblings_out_refs[s] {
+            reached_self |= circular_def_members_(out_ref, siblings_out_refs, members)
+        }
+        if reached_self {
+            true
+        } else {
+            members.remove(s);
+            false
+        }
+    }
+}
+
+/// Returns all members of the circular definition chain of `s`
+///
+/// If `s` is not a circular definition, return the empty set
+fn circular_def_members<'src>(
+    s: &'src str,
+    siblings_out_refs: &HashMap<&str, HashSet<&'src str>>,
+) -> HashSet<&'src str> {
+    let mut members = HashSet::new();
+    circular_def_members_(s, siblings_out_refs, &mut members);
+    members
+}
+
+enum Group<'src> {
+    Circular(HashMap<&'src str, Binding<'src>>),
+    Uncircular((&'src str, Binding<'src>)),
+}
+
+impl<'src> Group<'src> {
+    fn contains(&self, e: &str) -> bool {
+        match *self {
+            Group::Circular(ref xs) => xs.contains_key(e),
+            Group::Uncircular((x, _)) => e == x,
+        }
+    }
+
+    fn iter_keys<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
+        match *self {
+            Group::Circular(ref xs) => Box::new(xs.keys().map(|s| *s)),
+            Group::Uncircular((x, _)) => Box::new(once(x)),
+        }
+    }
+
+    fn into_iter(self) -> Box<Iterator<Item = (&'src str, Binding<'src>)> + 'src> {
+        match self {
+            Group::Circular(xs) => Box::new(xs.into_iter()),
+            Group::Uncircular(x) => Box::new(once(x)),
+        }
+    }
+}
+
+/// Group sets of circularly referencing bindings together, to make
+/// the inter-group relation acyclic.
+fn group_by_circularity<'src>(
+    mut bindings: HashMap<&'src str, Binding<'src>>,
+    siblings_out_refs: &HashMap<&'src str, HashSet<&'src str>>,
+) -> HashMap<usize, Group<'src>> {
+    let mut n = 0;
+    let mut groups = HashMap::<usize, Group>::new();
+    for sibling in siblings_out_refs.keys() {
+        if groups.values().any(|group| group.contains(sibling)) {
+            // Already part of a group of circular defs
+            continue;
+        } else {
+            let members = circular_def_members(sibling, &siblings_out_refs);
+            if members.is_empty() {
+                groups.insert(
+                    n,
+                    Group::Uncircular((sibling, bindings.remove(sibling).unwrap())),
+                );
+            } else {
+                let group = members
+                    .into_iter()
+                    .map(|s| (s, bindings.remove(s).unwrap()))
+                    .collect();
+                groups.insert(n, Group::Circular(group));
+            }
+            n += 1
+        }
+    }
+    groups
+}
+
+fn group_refs<'src>(
+    group_n: usize,
+    groups: &HashMap<usize, Group>,
+    siblings_out_refs: &HashMap<&str, HashSet<&str>>,
+) -> HashSet<usize> {
+    let group = &groups[&group_n];
+    group
+        .iter_keys()
+        .flat_map(|member| &siblings_out_refs[member])
+        .filter(|out_ref| !group.contains(out_ref))
+        .map(|out_ref| {
+            groups
+                .iter()
+                .find(|&(_, ref group2)| group2.contains(out_ref))
+                .map(|(n, _)| *n)
+                .unwrap()
+        })
+        .collect()
+}
+
+fn topological_sort<'src>(
+    mut groups: HashMap<usize, Group<'src>>,
+    groups_out_refs: &HashMap<usize, HashSet<usize>>,
+    mut groups_n_incoming: Vec<usize>,
+) -> Vec<Group<'src>> {
+    // Kahn's algorithm for topological sorting
+
+    // Empty list that will contain the sorted elements
+    let mut l = Vec::new();
+    // Set of all nodes (by index) with no incoming edge
+    let mut s = groups_n_incoming
+        .iter()
+        .enumerate()
+        .filter(|&(_, n)| *n == 0)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    while let Some(n) = s.pop() {
+        l.push(groups.remove(&n).unwrap());
+        for &m in &groups_out_refs[&n] {
+            groups_n_incoming[m] -= 1;
+            if groups_n_incoming[m] == 0 {
+                s.push(m)
+            }
+        }
+    }
+    // If graph has edges left
+    if groups_n_incoming.iter().any(|n| *n != 0) {
+        panic!("ICE: from_flat_set: graph has at least one cycle")
+    } else {
+        l
+    }
+}
+
+impl<'src> BindingsDependencyGraph<'src> {
+    /// Build the dependency graph from a flat set of bindings
+    fn from_flat_set(bindings: HashMap<&'src str, Binding<'src>>) -> Self {
+        let mut siblings: HashSet<_> = bindings.keys().cloned().collect();
+        let siblings_out_refs: HashMap<_, _> = bindings
+            .iter()
+            .map(|(s, b)| (*s, sibling_refs(&b.val, &mut siblings)))
+            .collect();
+
+        let mut groups = group_by_circularity(bindings, &siblings_out_refs);
+
+        // For each group, what other groups does it refer to (by index in `groups`)?
+        let groups_out_refs = groups
+            .keys()
+            .map(|&n| (n, group_refs(n, &groups, &siblings_out_refs)))
+            .collect::<HashMap<_, _>>();
+
+        // For each group (index), the number of incoming edges
+        let mut groups_n_incoming = vec![0; groups.len()];
+        for (_, group_out_refs) in &groups_out_refs {
+            for &out_ref in group_out_refs {
+                groups_n_incoming[out_ref] += 1;
+            }
+        }
+
+        let topo_ordered_groups = topological_sort(groups, &groups_out_refs, groups_n_incoming);
+
+        BindingsDependencyGraph(topo_ordered_groups)
+    }
+
+    /// Return the dependency graph into a flat set
+    fn into_flat_set(self) -> HashMap<&'src str, Binding<'src>> {
+        self.0.into_iter().flat_map(|g| g.into_iter()).collect()
+    }
+}
 struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
     var_env: HashMap<&'src str, Vec<Type<'src>>>,
@@ -846,3 +1151,15 @@ pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
         )
     }
 }
+
+// TODO: Mutual recursion.
+//       Dependencies of bindings in a scope of let-bindings can be
+//       represented as a disjoint union of directed, acyclic graphs (DAGs)
+//       where each node is a cyclic graph of mutually recursive definitions.
+//       Types can be inferred correctly (I think?) by inferring all
+//       definitions in a node as a group, not generalizing until
+//       the whole group is inferred. On reference to binding outside
+//       node, follow the edge. As each tree of groups is unidirected
+//       and acyclic, we will reach a leaf-group at some point.
+//       When this leaf-group is inferred, go back again.
+//       In the end, all groups will be inferred.
