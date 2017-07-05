@@ -213,34 +213,30 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Generates IR code for a function call. If the call is in a tail position and the call
     /// is a recursive call to the caller itself, make a tail call and return `Nothing`.
     /// Otherwise, make a normal call and return the result.
-    fn gen_call(
-        &self,
-        env: &mut Env<'src, 'ast, 'ctx>,
-        call: &'ast ast::Call<'src>,
-    ) -> &'ctx Value {
-        let func = Function::from_super(self.gen_expr(env, &call.func)).unwrap_or_else(|| {
-            call.func.pos().error_exit(ICE(
+    fn gen_app(&self, env: &mut Env<'src, 'ast, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
+        let func = Function::from_super(self.gen_expr(env, &app.func)).unwrap_or_else(|| {
+            app.func.pos().error_exit(ICE(
                 "expression in function pos is not a function"
                     .into(),
             ))
         });
 
-        let arg = self.gen_expr(env, &call.arg);
-        self.builder.build_call(func, &[arg])
+        let arg = self.gen_expr(env, &app.arg);
+        self.builder.build_app(func, &[arg])
     }
 
-    fn gen_tail_call(&self, env: &mut Env<'src, 'ast, 'ctx>, call: &'ast ast::Call<'src>) {
-        let func = Function::from_super(self.gen_expr(env, &call.func)).unwrap_or_else(|| {
-            call.func.pos().error_exit(ICE(
+    fn gen_tail_app(&self, env: &mut Env<'src, 'ast, 'ctx>, app: &'ast ast::App<'src>) {
+        let func = Function::from_super(self.gen_expr(env, &app.func)).unwrap_or_else(|| {
+            app.func.pos().error_exit(ICE(
                 "expression in function pos is not a function"
                     .into(),
             ))
         });
 
-        let arg = self.gen_expr(env, &call.arg);
-        let call = self.builder.build_tail_call(func, &[arg]);
+        let arg = self.gen_expr(env, &app.arg);
+        let app = self.builder.build_tail_app(func, &[arg]);
 
-        self.builder.build_ret(call);
+        self.builder.build_ret(app);
     }
 
     fn gen_if(
@@ -361,7 +357,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::StrLit(ref s) => self.gen_str(s),
             Expr::Bool(ref b) => self.gen_bool(b),
             Expr::Binding(ref bnd) => self.gen_r_binding(env, bnd),
-            Expr::Call(ref call) => self.gen_call(env, call),
+            Expr::App(ref app) => self.gen_app(env, app),
             Expr::If(ref cond) => self.gen_if(env, cond, &expr.get_type()),
             Expr::Lambda(ref lam) => self.gen_lambda(env, lam),
             Expr::Let(ref l) => unimplemented!(),
@@ -378,8 +374,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         expr: &'ast Expr<'src>,
     ) -> Option<&'ctx Value> {
         match *expr {
-            Expr::Call(ref call) => {
-                self.gen_tail_call(env, call);
+            Expr::App(ref app) => {
+                self.gen_tail_app(env, app);
                 None
             }
             Expr::If(ref cond) => self.gen_tail_if(env, cond, &expr.get_type()),

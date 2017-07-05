@@ -39,10 +39,6 @@
 // TODO: Compile time execution. By marking functions as pure,
 //       enable calculation of constants from these functions at compile time.
 // TODO: Higher Kinded Types. Like Functor which would provide map for a generic container
-// TODO: Formally prove that all type inference is correct using
-//       [Damas-Hindley-Miller](http://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system).
-//       [Good explanation]
-// (http://stackoverflow.com/questions/12532552/what-part-of-milner-hindley-do-you-not-understand)
 // TODO: Make symbols interned. Maybe at compile time, build a table of all symbols and substitute
 //       uses in code with references to this table.
 //       When comparing for equality, just test for reference equality
@@ -64,8 +60,6 @@
 //       for the language.
 //       Similar to how racker supports multiple source languages
 //       Also serves as a way to save keywords and such, e.g. core types, as associated constants
-// TODO: Make use of different brackets to discriminate between expressions and items/syntax sugar
-//       e.g: `(let [[a 3] [b 9]] (+ a b))`
 // TODO: Warn if a macro producing an expression is called using brackers, [], and vice versa
 // TODO: Tests. Maybe QuickCheck?
 // TODO: Add hooks for viewing of AST for 3rd party tools to use
@@ -73,7 +67,6 @@
 //       a user expression does.
 //       Lint for unnecessarily specific types in function signatures
 // TODO: Implement some of current warnings, and maybe errors, as lints.
-// TODO: 3 message categories. error, warning, hint. disabling hints disables lints
 // TODO: Optionally enabled used of `Coerce` trait to allow implicit coercion between
 //       'coerceable' type pairs. E.g. `Int32` to `UInt8`, or `
 // TODO: Add frontends for existing laanguages to easily port projects
@@ -98,7 +91,7 @@ extern crate llvm;
 extern crate itertools;
 
 use getopts::Options;
-//use lib::back::compile;
+use lib::back::compile;
 use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
 use lib::front::parse::parse;
@@ -255,15 +248,8 @@ fn main() {
         ));
 
     let csts = concrete_syntax_trees_from_src(&src_code);
-
-    // println!("TOKEN TREE{:#?}", csts);
-
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
-
     let mut ast = parse(&csts, &mut type_var_generator);
-    //    println!("AST PARSED:\n{:#?}\n\n", ast);
-
     infer_types(&mut ast, &mut type_var_generator);
-
-    // compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
+    compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 }
