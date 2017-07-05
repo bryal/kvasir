@@ -20,8 +20,8 @@ use lib::front::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
-use std::mem::{replace, uninitialized};
-use itertools::{zip, repeat_call};
+use std::mem::replace;
+use itertools::{zip, repeat_call, Itertools};
 
 enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
@@ -292,32 +292,36 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> Hash
                 .flat_map(|e2| sibling_refs(e2, siblings))
                 .collect()
         }
-        TypeAscript(_) => unreachable!(),
+        TypeAscript(ref a) => sibling_refs(&a.expr, siblings),
         Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => HashSet::new(),
     }
 }
 
-
-/// Returns whether `s` reached itself
 fn circular_def_members_<'src>(
-    s: &'src str,
+    start: &'src str,
+    current: &'src str,
     siblings_out_refs: &HashMap<&str, HashSet<&'src str>>,
-    members: &mut HashSet<&'src str>,
-) -> bool {
-    if members.contains(s) {
-        true
+    visited: &mut HashSet<&'src str>,
+) -> HashSet<&'src str> {
+    if current == start && visited.contains(current) {
+        once(current).collect()
+    } else if visited.contains(current) {
+        HashSet::new()
     } else {
-        members.insert(s);
-        let mut reached_self = false;
-        for &out_ref in &siblings_out_refs[s] {
-            reached_self |= circular_def_members_(out_ref, siblings_out_refs, members)
+        visited.insert(current);
+        let mut members = HashSet::new();
+        for next in &siblings_out_refs[current] {
+            members.extend(circular_def_members_(
+                start,
+                next,
+                siblings_out_refs,
+                visited,
+            ))
         }
-        if reached_self {
-            true
-        } else {
-            members.remove(s);
-            false
+        if !members.is_empty() {
+            members.insert(current);
         }
+        members
     }
 }
 
@@ -328,9 +332,8 @@ fn circular_def_members<'src>(
     s: &'src str,
     siblings_out_refs: &HashMap<&str, HashSet<&'src str>>,
 ) -> HashSet<&'src str> {
-    let mut members = HashSet::new();
-    circular_def_members_(s, siblings_out_refs, &mut members);
-    members
+    let mut visited = HashSet::new();
+    circular_def_members_(s, s, siblings_out_refs, &mut visited)
 }
 
 enum Group<'src> {
@@ -455,7 +458,7 @@ impl<'src> BindingsDependencyGraph<'src> {
             .map(|(s, b)| (*s, sibling_refs(&b.val, &mut siblings)))
             .collect();
 
-        let mut groups = group_by_circularity(bindings, &siblings_out_refs);
+        let groups = group_by_circularity(bindings, &siblings_out_refs);
 
         // For each group, what other groups does it refer to (by index in `groups`)?
         let groups_out_refs = groups
@@ -479,6 +482,22 @@ impl<'src> BindingsDependencyGraph<'src> {
     /// Return the dependency graph into a flat set
     fn into_flat_set(self) -> HashMap<&'src str, Binding<'src>> {
         self.0.into_iter().flat_map(|g| g.into_iter()).collect()
+    }
+}
+
+impl<'src> fmt::Debug for BindingsDependencyGraph<'src> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "[{}]",
+            self.0
+                .iter()
+                .map(|g| {
+                    format!("[{}]", g.iter_keys().intersperse(", ").collect::<String>())
+                })
+                .intersperse("\n ".to_string())
+                .collect::<String>()
+        )
     }
 }
 struct Inferrer<'a, 'src: 'a> {
