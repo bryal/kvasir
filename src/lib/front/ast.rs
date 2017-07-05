@@ -249,7 +249,7 @@ pub struct Binding<'src> {
 /// A `let` special form
 #[derive(Clone, Debug)]
 pub struct Let<'src> {
-    pub bindings: Vec<Binding<'src>>,
+    pub bindings: HashMap<&'src str, Binding<'src>>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
@@ -305,6 +305,14 @@ impl<'src> Expr<'src> {
         }
     }
 
+    pub fn first_non_type_ascr_is_lambda(&self) -> bool {
+        match *self {
+            Expr::Lambda(_) => true,
+            Expr::TypeAscript(ref a) => a.expr.first_non_type_ascr_is_lambda(),
+            _ => false,
+        }
+    }
+
     /// If `expr` refers to a type ascription, remove the ascription,
     /// point `expr` to the inner, ascribed expression,
     /// and return the ascribed type
@@ -335,7 +343,5 @@ pub struct Module<'src> {
     /// Global variable definitions
     ///
     /// May include both top-level functions and global variables
-    pub globals: Vec<Binding<'src>>,
-    /// The entry point of the program for executable target
-    pub main: Option<Binding<'src>>,
+    pub globals: HashMap<&'src str, Binding<'src>>,
 }

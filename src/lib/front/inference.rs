@@ -136,7 +136,7 @@ fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
             l.typ = subst(&l.typ, s);
         }
         Expr::Let(ref mut l) => {
-            for binding in &mut l.bindings {
+            for (_, binding) in &mut l.bindings {
                 binding.typ = subst(&binding.typ, s);
                 subst_expr(&mut binding.val, s);
             }
@@ -231,9 +231,7 @@ fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
 /// Now that all bindings in group has been inferred, we generalize. The only free type variable is
 /// `a`. Both `f` and `g` are given the same type parameters, and the result is
 /// `(: f (for (a) (-> Int a a)))` and `(: g (for (a) (-> Int a a)))`.
-struct BindingsDependencyGraph<'src>(TopologicallyOrderedGroups<'src>);
-
-type TopologicallyOrderedGroups<'src> = Vec<Group<'src>>;
+struct TopologicallyOrderedDependencyGroups<'src>(Vec<Group<'src>>);
 
 /// Returns a set of all siblings being referred to in this expression
 fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> HashSet<&'src str> {
@@ -268,15 +266,11 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> Hash
         }
         Let(ref l) => {
             let shadoweds = l.bindings
-                .iter()
-                .filter_map(|b| if siblings.remove(b.ident.s) {
-                    Some(b.ident.s)
-                } else {
-                    None
-                })
+                .keys()
+                .filter_map(|id| if siblings.remove(id) { Some(id) } else { None })
                 .collect::<Vec<_>>();
             let refs = l.bindings
-                .iter()
+                .values()
                 .map(|b| &b.val)
                 .chain(once(&l.body))
                 .flat_map(|e2| sibling_refs(e2, siblings))
@@ -338,28 +332,28 @@ fn circular_def_members<'src>(
 
 enum Group<'src> {
     Circular(HashMap<&'src str, Binding<'src>>),
-    Uncircular((&'src str, Binding<'src>)),
+    Uncircular(&'src str, Binding<'src>),
 }
 
 impl<'src> Group<'src> {
     fn contains(&self, e: &str) -> bool {
         match *self {
             Group::Circular(ref xs) => xs.contains_key(e),
-            Group::Uncircular((x, _)) => e == x,
+            Group::Uncircular(x, _) => e == x,
         }
     }
 
     fn iter_keys<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
         match *self {
             Group::Circular(ref xs) => Box::new(xs.keys().map(|s| *s)),
-            Group::Uncircular((x, _)) => Box::new(once(x)),
+            Group::Uncircular(x, _) => Box::new(once(x)),
         }
     }
 
     fn into_iter(self) -> Box<Iterator<Item = (&'src str, Binding<'src>)> + 'src> {
         match self {
             Group::Circular(xs) => Box::new(xs.into_iter()),
-            Group::Uncircular(x) => Box::new(once(x)),
+            Group::Uncircular(x, b) => Box::new(once((x, b))),
         }
     }
 }
@@ -381,7 +375,7 @@ fn group_by_circularity<'src>(
             if members.is_empty() {
                 groups.insert(
                     n,
-                    Group::Uncircular((sibling, bindings.remove(sibling).unwrap())),
+                    Group::Uncircular(sibling, bindings.remove(sibling).unwrap()),
                 );
             } else {
                 let group = members
@@ -449,7 +443,7 @@ fn topological_sort<'src>(
     }
 }
 
-impl<'src> BindingsDependencyGraph<'src> {
+impl<'src> TopologicallyOrderedDependencyGroups<'src> {
     /// Build the dependency graph from a flat set of bindings
     fn from_flat_set(bindings: HashMap<&'src str, Binding<'src>>) -> Self {
         let mut siblings: HashSet<_> = bindings.keys().cloned().collect();
@@ -476,16 +470,15 @@ impl<'src> BindingsDependencyGraph<'src> {
 
         let topo_ordered_groups = topological_sort(groups, &groups_out_refs, groups_n_incoming);
 
-        BindingsDependencyGraph(topo_ordered_groups)
+        TopologicallyOrderedDependencyGroups(topo_ordered_groups)
     }
 
-    /// Return the dependency graph into a flat set
-    fn into_flat_set(self) -> HashMap<&'src str, Binding<'src>> {
-        self.0.into_iter().flat_map(|g| g.into_iter()).collect()
+    fn into_iter(self) -> impl DoubleEndedIterator<Item = Group<'src>> {
+        self.0.into_iter()
     }
 }
 
-impl<'src> fmt::Debug for BindingsDependencyGraph<'src> {
+impl<'src> fmt::Debug for TopologicallyOrderedDependencyGroups<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -500,6 +493,65 @@ impl<'src> fmt::Debug for BindingsDependencyGraph<'src> {
         )
     }
 }
+
+fn wrap_vars_types_in_apps_<'src>(
+    e: &mut Expr<'src>,
+    vars: &mut HashMap<&'src str, Poly<'src>>,
+    app_args: &[Type<'src>],
+) {
+    let wrap = |p: &Poly<'src>| Type::App(Box::new(TypeFunc::Poly(p.clone())), app_args.to_vec());
+    match *e {
+        Expr::Variable(ref mut var) => {
+            match vars.get(var.ident.s) {
+                Some(p) => var.typ = wrap(p),
+                None => (),
+            }
+        }
+        Expr::App(ref mut app) => {
+            wrap_vars_types_in_apps_(&mut app.func, vars, app_args);
+            wrap_vars_types_in_apps_(&mut app.arg, vars, app_args);
+        }
+        Expr::If(ref mut cond) => {
+            wrap_vars_types_in_apps_(&mut cond.predicate, vars, app_args);
+            wrap_vars_types_in_apps_(&mut cond.consequent, vars, app_args);
+            wrap_vars_types_in_apps_(&mut cond.alternative, vars, app_args);
+        }
+        Expr::Lambda(ref mut l) => {
+            let shadowed = vars.remove(l.param_ident.s);
+            wrap_vars_types_in_apps_(&mut l.body, vars, app_args);
+            vars.extend(shadowed.into_iter().map(|p| (l.param_ident.s, p)))
+        }
+        Expr::Let(ref mut l) => {
+            let shadoweds = l.bindings
+                .keys()
+                .filter_map(|id| vars.remove(id).map(|p| (*id, p)))
+                .collect::<Vec<_>>();
+            for (_, binding) in &mut l.bindings {
+                wrap_vars_types_in_apps_(&mut binding.val, vars, app_args);
+            }
+            wrap_vars_types_in_apps_(&mut l.body, vars, app_args);
+            vars.extend(shadoweds)
+        }
+        Expr::TypeAscript(ref mut a) => wrap_vars_types_in_apps_(&mut a.expr, vars, app_args),
+        Expr::Cons(ref mut c) => {
+            wrap_vars_types_in_apps_(&mut c.car, vars, app_args);
+            wrap_vars_types_in_apps_(&mut c.cdr, vars, app_args);
+        }
+        Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
+    }
+}
+
+/// To correctly generate monomorphizations, wrap the type of a recursive
+/// variable in an application
+fn wrap_vars_types_in_apps<'src>(
+    e: &mut Expr<'src>,
+    vars: &mut HashMap<&'src str, Poly<'src>>,
+    app_args: &[u64],
+) {
+    let app_args_t = app_args.iter().map(|n| Type::Var(*n)).collect::<Vec<_>>();
+    wrap_vars_types_in_apps_(e, vars, &app_args_t)
+}
+
 struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
     var_env: HashMap<&'src str, Vec<Type<'src>>>,
@@ -571,6 +623,32 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         }
     }
 
+    /// Quantifying monotype variables in `t` that are not bound in the context
+    ///
+    /// Used for generalization.
+    fn free_type_vars_in_context(&self, t: &Type<'src>) -> HashSet<u64> {
+        let env_type_vars = self.var_env
+            .iter()
+            .flat_map(|(_, v)| v.iter())
+            .flat_map(|v_t| self.free_type_vars(v_t))
+            .collect::<HashSet<_>>();
+        let t_type_vars = self.free_type_vars(t);
+        t_type_vars.difference(&env_type_vars).cloned().collect()
+    }
+
+    /// Generalize type by quantifying monotype variables in `t` that are not bound in the context
+    fn generalize(&self, t: &Type<'src>) -> Type<'src> {
+        let frees = self.free_type_vars_in_context(t);
+        if frees.is_empty() {
+            t.clone()
+        } else {
+            Type::Poly(Box::new(Poly {
+                params: frees.into_iter().collect(),
+                body: t.clone(),
+            }))
+        }
+    }
+
     // TODO: Separate polytypes from normal types?
     /// Instantiate a polymorphic value
     fn instantiate(&mut self, t: &Type<'src>) -> Type<'src> {
@@ -582,29 +660,6 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 Type::App(Box::new(TypeFunc::Poly((**p).clone())), tvs)
             }
             _ => t.clone(),
-        }
-    }
-
-    /// Generalize `t` to a polytype by quantifying monotype variables
-    /// that are not bound in the context
-    fn generalize(&mut self, t: &Type<'src>) -> Type<'src> {
-        let env_type_vars = self.var_env
-            .iter()
-            .flat_map(|(_, v)| v.iter())
-            .flat_map(|v_t| self.free_type_vars(v_t))
-            .collect::<HashSet<_>>();
-        let t_type_vars = self.free_type_vars(t);
-        let unbounds = t_type_vars
-            .into_iter()
-            .filter(|tv| !env_type_vars.contains(tv))
-            .collect::<Vec<_>>();
-        if unbounds.is_empty() {
-            t.clone()
-        } else {
-            Type::Poly(Box::new(Poly {
-                params: unbounds,
-                body: t.clone(),
-            }))
         }
     }
 
@@ -753,13 +808,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             // is polymorphic, the application arguments are essential as
             // they may be used in the body of the definition but not show up
             // in the resulting type of the application.
-
-            println!("UNINST: {} : {}", var.ident, typ);
-
             var.typ = self.instantiate(&typ);
-
-            println!("INST: {} : {}", var.ident, var.typ);
-
             let unif = self.unify(expected_type, &var.typ).unwrap_or_else(|_| {
                 var.ident.pos.error_exit(format!(
                     "Variable of type `{}` cannot be instantiated to expected type `{}`",
@@ -767,11 +816,6 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     expected_type
                 ))
             });
-
-            println!("UNIF: {}", unif);
-
-            println!("INST AFTER UNIF: {} : {}\n", var.ident, var.typ);
-
             unif
         } else if let Some(ext) = self.externs.get(var.ident.s) {
             // An extern. Check that type of extern is unifiable with expected type
@@ -884,33 +928,96 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &lam.typ
     }
 
+    fn infer_recursive_binding(&mut self, binding: &mut Binding<'src>, bindings_ids: &[&'src str]) {
+        let id = binding.ident.s;
+        // Only allow recursion for functions. Stuff like `let a = a + 1`
+        // can't be compiled without laziness.
+        if binding.val.first_non_type_ascr_is_lambda() {
+            self.infer_expr(&mut binding.val, &binding.typ);
+        } else {
+            let refs_s = if bindings_ids.len() == 1 {
+                "itself".to_string()
+            } else {
+                let siblings_s = bindings_ids
+                    .iter()
+                    .filter(|s_id| **s_id != id)
+                    .map(|s_id| format!("`{}`", s_id))
+                    .intersperse(", ".to_string())
+                    .collect::<String>();
+                format!("itself through sibling bindings {{ {} }}", siblings_s)
+            };
+            binding.pos.error_exit(format!(
+                "Non-function value `{}` defined in terms of {}",
+                id,
+                refs_s
+            ))
+        }
+    }
+
+    /// Infer types for a group of mutually recursively defined bindings
+    fn infer_recursion_group(&mut self, group: &mut Group<'src>) {
+        match *group {
+            Group::Uncircular(id, ref mut binding) => {
+                self.infer_expr(&mut binding.val, &binding.typ);
+                binding.typ = self.generalize(&binding.typ);
+                self.push_var(id, binding.typ.clone());
+            }
+            Group::Circular(ref mut bindings) => {
+                let bindings_ids = bindings.keys().cloned().collect::<Vec<_>>();
+                // Add bindings being inferred to env to allow recursive refs.
+                for (id, binding) in bindings.iter() {
+                    self.push_var(*id, binding.typ.clone());
+                }
+                // Infer bindings
+                for (_, binding) in bindings.iter_mut() {
+                    self.infer_recursive_binding(binding, &bindings_ids)
+                }
+                // Remove bindings from env to get only surrounding env for generalization
+                for (id, _) in bindings.iter() {
+                    self.pop_var(id).unwrap_or_else(|| {
+                        panic!("ICE: infer_recursion_group: binding gone from var_env")
+                    });
+                }
+                // Because of mutual recursion, all bindings in group must have the
+                // same polytype arguments
+                let frees = bindings
+                    .values()
+                    .flat_map(|b| self.free_type_vars_in_context(&b.typ))
+                    .unique()
+                    .collect::<Vec<_>>();
+                if !frees.is_empty() {
+                    let mut vars_polys = HashMap::new();
+                    for (id, binding) in bindings.iter_mut() {
+                        let p = Poly {
+                            params: frees.clone(),
+                            body: binding.typ.clone(),
+                        };
+                        binding.typ = Type::Poly(Box::new(p.clone()));
+                        vars_polys.insert(*id, p);
+                    }
+                    for (_, binding) in bindings.iter_mut() {
+                        wrap_vars_types_in_apps(&mut binding.val, &mut vars_polys, &frees)
+                    }
+                }
+                // Push vars to env again to make available for the
+                // next group in the topological order
+                for (id, binding) in bindings.iter() {
+                    self.push_var(*id, binding.typ.clone())
+                }
+            }
+        }
+    }
+
     // TODO: Add indirect recursion
     // TODO: Make order-independent
     /// Infer types for global bindings or bindings of a let-form
     /// and push them to the environment.
-    fn infer_bindings(&mut self, bindings: &mut [Binding<'src>]) {
-        for binding in bindings {
-            let expected_type = binding.val.remove_type_ascription().unwrap_or(
-                self.type_var_gen
-                    .gen_tv(),
-            );
-            // Only allow recursion for functions. Stuff like `let a = a + 1`
-            // can't be compiled correctly without laziness.
-            if let Expr::Lambda(_) = binding.val {
-                // Add binding being inferred to env to allow recursion
-                self.push_var(binding.ident.s, expected_type.clone());
-                self.infer_expr(&mut binding.val, &expected_type);
-                // Remove binding from env to get only surrounding env
-                self.pop_var(binding.ident.s).unwrap_or_else(|| {
-                    panic!("ICE: binding gone from var_env in infer_let_bindings")
-                });
-            } else {
-                self.infer_expr(&mut binding.val, &expected_type);
-            }
-            // For binding, create type scheme with type variables found in binding
-            // body and not in surrounding environment as type parameters
-            binding.typ = self.generalize(&expected_type);
-            self.push_var(binding.ident.s, binding.typ.clone());
+    fn infer_bindings(&mut self, bindings: &mut HashMap<&'src str, Binding<'src>>) {
+        let bindings_owned = replace(bindings, HashMap::new());
+        let top_ord = TopologicallyOrderedDependencyGroups::from_flat_set(bindings_owned);
+        for mut recursion_group in top_ord.into_iter().rev() {
+            self.infer_recursion_group(&mut recursion_group);
+            bindings.extend(recursion_group.into_iter())
         }
     }
 
@@ -921,8 +1028,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     ) -> &'l Type<'src> {
         self.infer_bindings(&mut let_.bindings);
         let_.typ = self.infer_expr(&mut let_.body, expected_type).clone();
-
-        for name in let_.bindings.iter().map(|b| b.ident.s) {
+        for name in let_.bindings.keys() {
             self.pop_var(name).unwrap_or_else(|| {
                 panic!("ICE: binding gone from var_env in infer_let")
             });
@@ -1062,7 +1168,7 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
             monomorphize_defs_of_insts_in_expr(&mut lam.body, env);
         }
         Expr::Let(ref mut l) => {
-            let mut bindings = replace(&mut l.bindings, Vec::new());
+            let mut bindings = replace(&mut l.bindings, HashMap::new());
             monomorphize_defs_of_insts_in_let(&mut bindings, &mut l.body, env);
             l.bindings = bindings;
         }
@@ -1077,21 +1183,21 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
 
 /// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
 fn monomorphize_defs_of_insts_in_let<'src>(
-    bindings: &mut Vec<Binding<'src>>,
+    bindings: &mut HashMap<&'src str, Binding<'src>>,
     body: &mut Expr<'src>,
     env: &mut ScopeStack<&'src str, Binding<'src>>,
 ) {
-    let bindings2 = replace(bindings, Vec::new());
+    let bindings2 = replace(bindings, HashMap::new());
 
     let mut ids = Vec::new();
     let mut monos = HashMap::new();
     let mut local_bindings = HashMap::new();
-    for b in bindings2 {
-        ids.push(b.ident.s);
+    for (id, b) in bindings2 {
+        ids.push(id);
         if b.typ.is_monomorphic() {
-            monos.insert(b.ident.s, b.val.clone());
+            monos.insert(id, b.val.clone());
         }
-        local_bindings.insert(b.ident.s, b);
+        local_bindings.insert(id, b);
     }
     env.push(local_bindings);
 
@@ -1106,79 +1212,38 @@ fn monomorphize_defs_of_insts_in_let<'src>(
         if let Some(upd_def) = monos.remove(id) {
             b.val = upd_def;
         }
-        bindings.push(b)
+        bindings.insert(id, b);
     }
 }
 
 /// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
-fn monomorphize_defs_of_insts<'a, 'src>(
-    globals: &'a mut Vec<Binding<'src>>,
-    main: &'a mut Binding<'src>,
-) where
-    'src: 'a,
-{
-    unsafe {
-        let mut bindings = globals
-            .iter_mut()
-            .map(|b| replace(b, uninitialized()))
-            .collect::<Vec<_>>();
-        bindings.push(replace(main, uninitialized()));
-
-        let mut dummy_body = Expr::Nil(Nil { pos: SrcPos::new_pos("", 0) });
-        monomorphize_defs_of_insts_in_let(&mut bindings, &mut dummy_body, &mut ScopeStack::new());
-
-        for (binding, dest) in zip(bindings, globals.iter_mut().chain(once(main))) {
-            ::std::ptr::write(dest, binding)
-        }
-    }
+fn monomorphize_defs_of_insts<'src>(globals: &mut HashMap<&'src str, Binding<'src>>) {
+    let mut dummy_body = Expr::Nil(Nil { pos: SrcPos::new_pos("", 0) });
+    monomorphize_defs_of_insts_in_let(globals, &mut dummy_body, &mut ScopeStack::new());
 }
 
 pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
-    println!("EXTERNS:\n{:#?}\n\n", module.externs);
+    let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
 
-    if let Some(mut main) = module.main.as_mut() {
-        let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
-        inferrer.infer_bindings(&mut module.globals);
+    if let Some(mut main) = module.globals.remove("main") {
         let expected_main_type = Type::new_func(TYPE_NIL.clone(), TYPE_NIL.clone());
-        // Add binding being inferred to env to allow recursion
-        inferrer.push_var(main.ident.s, expected_main_type.clone());
-        main.typ = inferrer.infer_expr(&mut main.val, &expected_main_type);
-
-        println!("BEFORE SUBST INFERRED GLOBALS:\n{:#?}\n", module.globals);
-        println!("BEFORE SUBST INFERRED MAIN:\n{:#?}\n", main);
-
-        // Apply all substitutions recursively to get rid of reduntant, indirect type variables
-        for binding in &mut module.globals {
-            binding.typ = subst(&binding.typ, &mut inferrer.type_var_map);
-            subst_expr(&mut binding.val, &mut inferrer.type_var_map);
-        }
-        main.typ = subst(&main.typ, &mut inferrer.type_var_map);
-        subst_expr(&mut main.val, &mut inferrer.type_var_map);
-
-        // Map monomorphic instantiations of variables to monomorphization of definitions
-        monomorphize_defs_of_insts(&mut module.globals, &mut main);
-
-        println!("AFTER SUBST INFERRED GLOBALS:\n{:#?}\n", module.globals);
-        println!("AFTER SUBST INFERRED MAIN:\n{:#?}\n", main);
-
-        println!("TYPE VAR MAPPING:\n{:?}\n", inferrer.type_var_map);
-    } else {
-        // `main` required as entry point for executable target
-        error_exit(
-            "`main` function not found.\n\
-             A `main` function is required as entry point for executable target",
-        )
+        let type_ascribed = Expr::TypeAscript(Box::new(TypeAscript {
+            typ: expected_main_type,
+            expr: main.val,
+            pos: main.pos.clone(),
+        }));
+        main.val = type_ascribed;
+        module.globals.insert("main", main);
     }
-}
 
-// TODO: Mutual recursion.
-//       Dependencies of bindings in a scope of let-bindings can be
-//       represented as a disjoint union of directed, acyclic graphs (DAGs)
-//       where each node is a cyclic graph of mutually recursive definitions.
-//       Types can be inferred correctly (I think?) by inferring all
-//       definitions in a node as a group, not generalizing until
-//       the whole group is inferred. On reference to binding outside
-//       node, follow the edge. As each tree of groups is unidirected
-//       and acyclic, we will reach a leaf-group at some point.
-//       When this leaf-group is inferred, go back again.
-//       In the end, all groups will be inferred.
+    inferrer.infer_bindings(&mut module.globals);
+
+    // Apply all substitutions recursively to get rid of reduntant, indirect type variables
+    for (_, binding) in &mut module.globals {
+        binding.typ = subst(&binding.typ, &mut inferrer.type_var_map);
+        subst_expr(&mut binding.val, &mut inferrer.type_var_map);
+    }
+
+    // Map monomorphic instantiations of variables to monomorphization of definitions
+    monomorphize_defs_of_insts(&mut module.globals);
+}

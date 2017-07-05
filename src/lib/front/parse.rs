@@ -4,7 +4,7 @@ use self::ParseErr::*;
 use super::*;
 use super::ast::*;
 use super::lex::CST;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{self, Display};
 
 /// An item at the top-level. Either a global definition of an external declaration
@@ -248,7 +248,10 @@ impl<'tvg> Parser<'tvg> {
             CST::SExpr(ref bindings_csts, _) => Let {
                 bindings: bindings_csts
                     .iter()
-                    .map(|b| self.parse_binding(b))
+                    .map(|c| {
+                        let b = self.parse_binding(c);
+                        (b.ident.s, b)
+                    })
                     .collect(),
                 body: body,
                 typ: self.gen_type_var(),
@@ -402,23 +405,19 @@ impl<'tvg> Parser<'tvg> {
         use self::TopLevelItem::*;
         // Store globals in a Vec as order matters atm, but disallow
         // multiple definitions. Use a set to keep track of defined globals
-        let mut defined_globals = HashSet::new();
-        let mut globals = Vec::new();
+        let mut globals = HashMap::new();
         let mut externs = HashMap::new();
-        let mut main = None;
 
         for item in csts.iter().map(|c| self.parse_top_level_item(c)) {
             match item {
                 GlobDef(binding) => {
-                    let id = binding.ident.s;
-                    if id == "main" && main.is_none() {
-                        main = Some(binding)
-                    } else if id != "main" && defined_globals.insert(binding.ident.s) {
-                        globals.push(binding)
-                    } else {
-                        binding.pos.error_exit(format!(
-                            "Conflicting definition of variable `{}`",
-                            binding.ident.s
+                    let (new_id, new_pos) = (binding.ident.s, binding.pos.clone());
+                    if let Some(prev_binding) = globals.insert(new_id, binding) {
+                        new_pos.error_exit(format!(
+                            "Conflicting definition of variable `{}`\n\
+                             Previous definition here `{:?}`",
+                            new_id,
+                            prev_binding.pos
                         ))
                     }
                 }
@@ -432,11 +431,7 @@ impl<'tvg> Parser<'tvg> {
                 }
             }
         }
-        Module {
-            globals,
-            externs,
-            main,
-        }
+        Module { globals, externs }
     }
 }
 
