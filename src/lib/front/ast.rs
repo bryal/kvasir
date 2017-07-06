@@ -1,7 +1,8 @@
 use super::SrcPos;
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
-use std::{borrow, fmt, hash, mem};
+use std::{borrow, fmt, hash, mem, path};
+use std::iter::once;
 
 // TODO: Replace static with const to allow matching
 lazy_static!{
@@ -246,10 +247,144 @@ pub struct Binding<'src> {
     pub pos: SrcPos<'src>,
 }
 
+#[derive(Clone, Debug)]
+pub enum Group<'src> {
+    Circular(HashMap<&'src str, Binding<'src>>),
+    Uncircular(&'src str, Binding<'src>),
+}
+
+impl<'src> Group<'src> {
+    pub fn contains(&self, e: &str) -> bool {
+        match *self {
+            Group::Circular(ref xs) => xs.contains_key(e),
+            Group::Uncircular(x, _) => e == x,
+        }
+    }
+
+    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
+        match *self {
+            Group::Circular(ref xs) => Box::new(xs.keys().map(|s| *s)),
+            Group::Uncircular(x, _) => Box::new(once(x)),
+        }
+    }
+
+    pub fn bindings<'s>(&'s self) -> Box<Iterator<Item = &'s Binding<'src>> + 's> {
+        match *self {
+            Group::Circular(ref xs) => Box::new(xs.iter().map(|(_, b)| b)),
+            Group::Uncircular(_, ref b) => Box::new(once(b)),
+        }
+    }
+
+    pub fn bindings_mut<'s>(&'s mut self) -> Box<Iterator<Item = &'s mut Binding<'src>> + 's> {
+        match *self {
+            Group::Circular(ref mut xs) => Box::new(xs.iter_mut().map(|(_, b)| b)),
+            Group::Uncircular(_, ref mut b) => Box::new(once(b)),
+        }
+    }
+}
+
+/// A representation of let-bindings that describes the dependencies of the bindings to each other
+///
+/// In a set of simultaneously defined bindings (i.e. the bindings of a let-form), bindings may
+/// be defined in terms of each other. These relationships can be represented with a disjoint
+/// union of directed, acyclic graphs where a node is a cyclic graph of recursively defined
+/// bindings.
+///
+/// As the graphs are DAGs, the groups can be ordered topologically. Type inference is now simple.
+/// We start at the end of the topological order and infer types group-wise in reverse order.
+///
+/// Within a cyclical group, we begin inference in an arbitrary definition. If a variable referring
+/// to a binding within the group is encountered, recursively infer in the definition of that
+/// variable and record the jump. If a variable referring to a binding is encountered that is
+/// already in the jump stack, no more information can be gained from following the variable, so
+/// just get the current type of the variable. When done inferring in a definition, do not
+/// generalize the type. Only when the whole group has been inferred, generalize the types of the
+/// definitions as a group. I.e., all bindings will have take the same type arguments.
+///
+/// # Example
+///
+/// The following definitions together constitute a single DAG
+///
+/// ```lisp
+/// (define (id x)       ; Will be in a group on its own as no recursive definition in terms of
+///   x)                 ; anything else. The group it constitutes is a leaf node in it's
+///                      ; super-graph as it does not refer to anything n the same scope even
+///                      ; non-recursively.
+///
+/// (define (id2 x)      ; No recursion, group on its own. Refers to `id` in same scope, so not a
+///   (id x))            ; leaf group => higher in the topological order than group of `id`
+///
+/// (define (f n x)      ; `f` refers to `g` which refers to `f` and so on. They are mutually
+///   (if (= n 0)        ; recursive, and as such, together they constitute a group. `g` further
+///       x              ; refers to `id2` of the same scope, which implies that this group
+///     (g (- n 1) x)))  ; is higher in the topoligical order than id2.
+///
+/// (define (g n x)
+///   (id2 (f n x)))
+/// ```
+///
+/// To infer types, we no start at the bottom of the topological order. `id` does not refer to
+/// anything in the same scope, and is easily inferred to be of type `(for (t) (-> t t))`.
+///
+/// We move a step up in the order and get the group of `id2`. In `id2`, we simply instantiate
+/// `id`s type of `(for (t) (-> t t))` with fresh type variables, and we get `(:: id (u))`
+/// which implies `(: id (-> u u))`. `id2` is then generalized to `(for (u) (-> u u))`.
+///
+/// For the topmost group of `f` and `g`, we begin inference in `f`. We infer that the type of
+/// `n` is `Int`, and that the type of the second argument, `x`, is the same as the return type.
+/// Then we dive into `g`. Here we unify the parameter types of `(: f (-> Int a a))` with the types
+/// of `g`s parameters `n` and `x`, and together with the return type of `f` and an instantiation
+/// of `id2`, we get `(: g (-> Int a a))`. Finally, we return to `f` and then return from inference.
+/// Now that all bindings in group has been inferred, we generalize. The only free type variable is
+/// `a`. Both `f` and `g` are given the same type parameters, and the result is
+/// `(: f (for (a) (-> Int a a)))` and `(: g (for (a) (-> Int a a)))`.
+#[derive(Clone, Debug)]
+pub struct TopologicallyOrderedDependencyGroups<'src>(pub Vec<Group<'src>>);
+
+impl<'src> TopologicallyOrderedDependencyGroups<'src> {
+    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
+        Box::new(self.groups().flat_map(|g| g.ids()))
+    }
+
+    /// Returns an iterator of bindings from the root of the topological order
+    pub fn bindings<'s>(&'s self) -> Box<DoubleEndedIterator<Item = &'s Binding<'src>> + 's> {
+        Box::new(
+            self.groups()
+                .flat_map(|g| g.bindings())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
+    }
+
+    /// Returns an iterator bindings from the root of the topological order
+    pub fn bindings_mut<'s>(
+        &'s mut self,
+    ) -> Box<DoubleEndedIterator<Item = &'s mut Binding<'src>> + 's> {
+        Box::new(
+            self.groups_mut()
+                .flat_map(|g| g.bindings_mut())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
+    }
+
+    /// Returns an iterator of groups from the root of the topological order
+    pub fn groups<'s>(&'s self) -> Box<DoubleEndedIterator<Item = &'s Group<'src>> + 's> {
+        Box::new(self.0.iter())
+    }
+
+    /// Returns an iterator of groups from the root of the topological order
+    pub fn groups_mut<'s>(
+        &'s mut self,
+    ) -> Box<DoubleEndedIterator<Item = &'s mut Group<'src>> + 's> {
+        Box::new(self.0.iter_mut())
+    }
+}
+
 /// A `let` special form
 #[derive(Clone, Debug)]
 pub struct Let<'src> {
-    pub bindings: HashMap<&'src str, Binding<'src>>,
+    pub bindings: TopologicallyOrderedDependencyGroups<'src>,
     pub body: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
@@ -342,6 +477,8 @@ pub struct Module<'src> {
     pub externs: HashMap<&'src str, ExternDecl<'src>>,
     /// Global variable definitions
     ///
-    /// May include both top-level functions and global variables
-    pub globals: HashMap<&'src str, Binding<'src>>,
+    /// May include both top-level functions and global variables.
+    /// The bindings are grouped by circularity of definitions, and
+    /// the groups are ordered topologically by inter-group dependency.
+    pub globals: TopologicallyOrderedDependencyGroups<'src>,
 }
