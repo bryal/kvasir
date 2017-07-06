@@ -75,6 +75,13 @@ impl<'tvg> Parser<'tvg> {
                             Type::new_func(self.parse_type(t), acc)
                         })
                     }
+                    CST::Ident("Cons", _) if app.len() == 3 => {
+                        Type::new_cons(self.parse_type(&app[1]), self.parse_type(&app[2]))
+                    }
+                    CST::Ident("Cons", _) => pos.error_exit(ArityMis(2, app.len() - 1)),
+                    CST::Ident(c, ref c_pos) => {
+                        c_pos.error_exit(format!("Undefined type constructor `{}`", c))
+                    }
                     _ => app[0].pos().error_exit(Invalid("type constructor")),
                 }
             }

@@ -5,9 +5,11 @@
 
 use std::cmp::min;
 use std::fmt::{self, Display, Debug};
-use std::iter::repeat;
+use std::iter::{once, repeat};
 use std::process;
+use std::path::Path;
 use term::{self, color};
+use itertools::Itertools;
 
 pub mod lex;
 pub mod ast;
@@ -55,31 +57,32 @@ pub fn error_exit<E: Display>(msg: E) -> ! {
 /// A position or interval in a string of source code
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct SrcPos<'src> {
+    filename: &'src Path,
     src: &'src str,
     start: usize,
     end: Option<usize>,
-    in_expansion: Option<Box<SrcPos<'src>>>,
 }
 impl<'src> SrcPos<'src> {
     /// Construct a new `SrcPos` representing a position in `src`
-    fn new_pos(src: &'src str, pos: usize) -> Self {
+    fn new_pos(filename: &'src Path, src: &'src str, pos: usize) -> Self {
         SrcPos {
+            filename: filename,
             src: src,
             start: pos,
             end: None,
-            in_expansion: None,
         }
     }
     /// Construct a new `SrcPos` representing an interval in `src`
-    fn new_interval(src: &'src str, start: usize, end: usize) -> Self {
+    fn new_interval(filename: &'src Path, src: &'src str, start: usize, end: usize) -> Self {
         SrcPos {
+            filename: filename,
             src: src,
             start: start,
             end: Some(end),
-            in_expansion: None,
         }
     }
 
+    /// Note: for compatibility with tooling, columns are 1-indexed on print
     fn line_len_row_col(&self) -> (&'src str, usize, usize, usize) {
         let mut line_start = 0;
 
@@ -89,7 +92,7 @@ impl<'src> SrcPos<'src> {
             if line_start <= self.start && self.start < line_start + line_len {
                 let col = self.start - line_start;
 
-                return (line, line_len, row, col);
+                return (line, line_len, row, col + 1);
             }
             line_start += line_len;
         }
@@ -99,37 +102,6 @@ impl<'src> SrcPos<'src> {
             self,
             self.src.len()
         )
-    }
-
-    fn print_expansion(&self, t: &mut term::StdoutTerminal) {
-        if let Some(ref exp) = self.in_expansion {
-            exp.print_expansion(t);
-        }
-
-        let (line, line_len, row, col) = self.line_len_row_col();
-
-        print!("{}:{}: ", row, col);
-
-        t.fg(color::BRIGHT_MAGENTA).ok();
-        println!("In expansion");
-        t.reset().ok();
-
-        println!("{}: {}", row, line);
-
-        t.fg(color::BRIGHT_MAGENTA).ok();
-        println!(
-            "{}^{}",
-            repeat(' ')
-                .take(col + (row as f32).log10() as usize + 3)
-                .collect::<String>(),
-            repeat('~')
-                .take(min(
-                    self.end.unwrap_or(self.start + 1) - self.start - 1,
-                    line_len - col,
-                ))
-                .collect::<String>()
-        );
-        t.reset().ok();
     }
 
     /// Prints a message along with a marked section of the source where the error occured
@@ -150,26 +122,26 @@ impl<'src> SrcPos<'src> {
         let (line, line_len, row, col) = self.line_len_row_col();
         let mut t = term::stdout().expect("Could not acquire access to stdout");
 
-        if let Some(ref exp) = self.in_expansion {
-            exp.print_expansion(&mut *t);
-        }
-
-        print!("{}:{}: ", row, col);
-
         t.fg(color).ok();
         print!("{}: ", kind);
         t.reset().ok();
-
-        println!("{}", msg);
+        let nl_align = once('\n')
+            .chain(repeat(' ').take(kind.len() + 2))
+            .collect::<String>();
+        let aligned_msg = msg.to_string()
+            .lines()
+            .intersperse(&nl_align)
+            .collect::<String>();
+        println!("{}", aligned_msg);
+        println!("--> {}:{}:{}", self.filename.display(), row, col);
         println!("{}: {}", row, line);
-
         t.fg(color).ok();
         println!(
             "{}^{}",
             repeat(' ')
-                .take(col + (row as f32).log10() as usize + 3)
+                .take(col + (row as f32).log10() as usize + 2)
                 .collect::<String>(),
-            repeat('~')
+            repeat('^')
                 .take(min(
                     self.end.unwrap_or(self.start + 1) - self.start - 1,
                     line_len - col,

@@ -20,7 +20,7 @@ use lib::front::ast::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
-use std::mem::replace;
+use std::path;
 use itertools::{zip, repeat_call, Itertools};
 
 enum InferenceErr<'p, 'src: 'p> {
@@ -731,25 +731,29 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     /// Check that the expected type of a nil expression is unifiable with the nil type
     fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        self.unify(expected_type, &TYPE_NIL).unwrap_or_else(|_| {
-            nil.pos.error_exit(TypeMis(expected_type, &TYPE_NIL))
-        })
+        self.unify(expected_type, &TYPE_NIL).unwrap_or_else(
+            |(e, f)| {
+                nil.pos.error_exit(TypeMis(&e, &f))
+            },
+        )
     }
 
     /// Check that the expected type of a string literal is unifiable with the string type
     fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
         self.unify(expected_type, &TYPE_STRING).unwrap_or_else(
-            |_| {
-                lit.pos.error_exit(TypeMis(expected_type, &TYPE_STRING))
+            |(e, f)| {
+                lit.pos.error_exit(TypeMis(&e, &f))
             },
         )
     }
 
     /// Check that the expected type of a boolean literal is unifiable with the boolean type
     fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        self.unify(expected_type, &TYPE_BOOL).unwrap_or_else(|_| {
-            b.pos.error_exit(TypeMis(expected_type, &TYPE_BOOL))
-        })
+        self.unify(expected_type, &TYPE_BOOL).unwrap_or_else(
+            |(e, f)| {
+                b.pos.error_exit(TypeMis(&e, &f))
+            },
+        )
     }
 
     /// Infer the type of a numeric literal
@@ -822,7 +826,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             var.typ = self.unify(expected_type, &ext.typ).unwrap_or_else(
                 |(e, f)| {
                     var.ident.pos.error_exit(TypeMisSub {
-                        expected: expected_type,
+                        expected: &subst(expected_type, &mut self.type_var_map),
                         found: &ext.typ,
                         sub_expected: &e,
                         sub_found: &f,
@@ -860,8 +864,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         self.unify(func_param_type, &arg_type).unwrap_or_else(
             |(e, f)| {
                 app.arg.pos().error_exit(TypeMisSub {
-                    expected: func_param_type,
-                    found: &arg_type,
+                    expected: &subst(func_param_type, &mut self.type_var_map),
+                    found: &subst(&arg_type, &mut self.type_var_map),
+
                     sub_expected: &e,
                     sub_found: &f,
                 })
@@ -870,8 +875,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let ret_unification = self.unify(expected_type, func_ret_type).unwrap_or_else(
             |(e, f)| {
                 app.pos.error_exit(TypeMisSub {
-                    expected: expected_type,
-                    found: func_ret_type,
+                    expected: &subst(expected_type, &mut self.type_var_map),
+                    found: &subst(func_ret_type, &mut self.type_var_map),
                     sub_expected: &e,
                     sub_found: &f,
                 })
@@ -1139,7 +1144,8 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
                 // already has been done, but we still need `def_mono` to continue
                 // our recursive monomorphization
                 {
-                    let dummy_expr = Expr::Nil(Nil { pos: SrcPos::new_pos("", 0) });
+                    let dummy_expr =
+                        Expr::Nil(Nil { pos: SrcPos::new_pos(path::Path::new(""), "", 0) });
                     let b = env.get_mut(var.ident.s).unwrap();
                     b.mono_insts.insert(arg_ts.clone(), dummy_expr);
                 }

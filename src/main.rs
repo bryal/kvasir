@@ -205,6 +205,8 @@ fn main() {
         print_usage(&bin_name, opts);
         return;
     };
+    let canon_inp_file_name =
+        canonicalize(inp_file_name.as_path()).expect("Failed to canonicalize input filename");
 
     let out_file_name = matches
         .opt_str("o")
@@ -228,12 +230,7 @@ fn main() {
     let link_libs = matches.opt_strs("l");
     let lib_paths = matches.opt_strs("L");
 
-    println!(
-        "    Compiling {}",
-        canonicalize(inp_file_name.as_path())
-            .expect("Failed to canonicalize input filename")
-            .to_string_lossy()
-    );
+    println!("    Compiling {}", canon_inp_file_name.display());
 
     let mut src_code = String::with_capacity(4_000);
     File::open(&inp_file_name)
@@ -247,9 +244,10 @@ fn main() {
             inp_file_name.display()
         ));
 
-    let csts = concrete_syntax_trees_from_src(&src_code);
+    let csts = concrete_syntax_trees_from_src(&inp_file_name, &src_code);
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
     let mut ast = parse(&csts, &mut type_var_generator);
     infer_types(&mut ast, &mut type_var_generator);
     compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
+    println!("{:#?}", ast);
 }

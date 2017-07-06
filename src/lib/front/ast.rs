@@ -322,7 +322,7 @@ impl<'src> Expr<'src> {
         let (t, inner) = if let Expr::TypeAscript(ref mut ascr) = *self {
             // use dummy pos and replace with `Nil` to avoid unsafe.
             // Will be deallocated immediately afterwards
-            let dummy_pos = super::SrcPos::new_pos("", 0);
+            let dummy_pos = super::SrcPos::new_pos(path::Path::new(""), "", 0);
             let inner = mem::replace(&mut ascr.expr, Expr::Nil(Nil { pos: dummy_pos }));
             (ascr.typ.clone(), inner)
         } else {

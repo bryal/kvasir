@@ -8,6 +8,7 @@ use self::LexErr::*;
 use super::SrcPos;
 use itertools::Itertools;
 use std::borrow::Cow;
+use std::path::Path;
 use std::fmt;
 
 /// Common errors for various lexing actions
@@ -80,7 +81,7 @@ enum Token<'src> {
 /// Tokenize the string literal in `src` at `start`.
 /// Return the unescaped literal as a `Token` and it's length,
 /// including delimiting characters, in the source.
-fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
+fn tokenize_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let mut s = String::new();
 
     let mut chars = src[start + 1..].char_indices();
@@ -93,33 +94,33 @@ fn tokenize_str_lit(src: &str, start: usize) -> (Token, usize) {
                     if let Some(u) = unescape_char(e) {
                         s.push(u)
                     } else {
-                        SrcPos::new_pos(src, start + 1 + j).error_exit(UnknownEscape)
+                        SrcPos::new_pos(filename, src, start + 1 + j).error_exit(UnknownEscape)
                     }
                 } else {
-                    SrcPos::new_pos(src, start + 1 + i).error_exit(InvalidEscapeSeq)
+                    SrcPos::new_pos(filename, src, start + 1 + i).error_exit(InvalidEscapeSeq)
                 }
             }
             '"' => return (Token::Str(Cow::Owned(s)), i + 2),
             _ => s.push(c),
         }
     }
-    SrcPos::new_pos(src, start).error_exit(UntermStr)
+    SrcPos::new_pos(filename, src, start).error_exit(UntermStr)
 }
 
 /// Tokenize the raw string literal in `src` at `start`.
 /// Return the literal as a `Token` and it's length, including delimiting characters, in the source.
-fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
+fn tokenize_raw_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let str_src = &src[start + 1..];
     let n_delim_octos = str_src.chars().take_while(|&c| c == '#').count();
 
     if let Some(first_after_octos) = str_src[n_delim_octos..].chars().next() {
         if first_after_octos != '"' {
-            SrcPos::new_pos(src, start + 1 + n_delim_octos).error_exit(
-                InvalidRawStrDelim(first_after_octos),
-            )
+            SrcPos::new_pos(filename, src, start + 1 + n_delim_octos)
+                .error_exit(InvalidRawStrDelim(first_after_octos))
         }
     } else {
-        SrcPos::new_interval(src, start, start + 1 + n_delim_octos).error_exit(UntermRawStr)
+        SrcPos::new_interval(filename, src, start, start + 1 + n_delim_octos)
+            .error_exit(UntermRawStr)
     }
 
     let delim_octos = &str_src[..n_delim_octos];
@@ -133,12 +134,12 @@ fn tokenize_raw_str_lit(src: &str, start: usize) -> (Token, usize) {
             return (Token::Str(Cow::Borrowed(&str_body_src[..i])), literal_len);
         }
     }
-    SrcPos::new_pos(src, start).error_exit(UntermRawStr)
+    SrcPos::new_pos(filename, src, start).error_exit(UntermRawStr)
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
 /// Return the `Token` and it's length in the source.
-fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
+fn tokenize_num_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let src_num = &src[start..];
     let mut has_decimal_pt = false;
     let mut has_e = false;
@@ -163,7 +164,7 @@ fn tokenize_num_lit(src: &str, start: usize) -> (Token, usize) {
             prev_was_e = false;
         }
     }
-    SrcPos::new_pos(src, start).error_exit(InvalidNum)
+    SrcPos::new_pos(filename, src, start).error_exit(InvalidNum)
 }
 
 /// Whether `c` is a general delimiter, i.e. it delimits identifiers and numeric literals and such
@@ -186,7 +187,7 @@ fn is_ident_char(c: char) -> bool {
 
 /// Tokenize the numeric literal in `src` at `start`.
 /// Return the literal as a `Token` and it's length in the source.
-fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
+fn tokenize_ident<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let src_ident = &src[start..];
     for (i, c) in src_ident.char_indices() {
         if is_delim_char(c) {
@@ -195,25 +196,30 @@ fn tokenize_ident(src: &str, start: usize) -> (Token, usize) {
             break;
         }
     }
-    SrcPos::new_pos(src, start).error_exit(InvalidIdent)
+    SrcPos::new_pos(filename, src, start).error_exit(InvalidIdent)
 }
 
 /// An iterator over the `Token`s, and their positions, of some source code
 #[derive(Debug)]
-struct Tokens<'src> {
-    src: &'src str,
+struct Tokens<'s> {
+    filename: &'s Path,
+    src: &'s str,
     pos: usize,
 }
-impl<'src> Tokens<'src> {
+impl<'s> Tokens<'s> {
     /// Construct a new iterator over the `Token`s of `src`
-    fn new(src: &'src str) -> Self {
-        Tokens { src: src, pos: 0 }
+    fn new(filename: &'s Path, src: &'s str) -> Self {
+        Tokens {
+            filename: filename,
+            src: src,
+            pos: 0,
+        }
     }
 }
-impl<'src> Iterator for Tokens<'src> {
-    type Item = (Token<'src>, SrcPos<'src>);
+impl<'s> Iterator for Tokens<'s> {
+    type Item = (Token<'s>, SrcPos<'s>);
 
-    fn next(&mut self) -> Option<(Token<'src>, SrcPos<'src>)> {
+    fn next(&mut self) -> Option<(Token<'s>, SrcPos<'s>)> {
         let pos = self.pos;
         let mut chars = self.src[pos..].char_indices().map(|(n, c)| (pos + n, c));
 
@@ -231,17 +237,22 @@ impl<'src> Iterator for Tokens<'src> {
                 '\'' => (Token::Quote, 1),
                 '(' => (Token::LParen, 1),
                 ')' => (Token::RParen, 1),
-                '"' => tokenize_str_lit(self.src, i),
+                '"' => tokenize_str_lit(self.filename, self.src, i),
                 'r' if self.src[i + 1..].starts_with(|c: char| c == '"' || c == '#') => {
-                    tokenize_raw_str_lit(self.src, i)
+                    tokenize_raw_str_lit(self.filename, self.src, i)
                 }
-                _ if c.is_numeric() => tokenize_num_lit(self.src, i),
-                _ if is_ident_char(c) => tokenize_ident(self.src, i),
-                _ => SrcPos::new_pos(self.src, i).error_exit(Unexpected("character")),
+                _ if c.is_numeric() => tokenize_num_lit(self.filename, self.src, i),
+                _ if is_ident_char(c) => tokenize_ident(self.filename, self.src, i),
+                _ => {
+                    SrcPos::new_pos(self.filename, self.src, i).error_exit(Unexpected("character"))
+                }
             };
 
             self.pos = i + len;
-            return Some((token, SrcPos::new_interval(self.src, i, self.pos)));
+            return Some((
+                token,
+                SrcPos::new_interval(self.filename, self.src, i, self.pos),
+            ));
         }
         None
     }
@@ -249,18 +260,18 @@ impl<'src> Iterator for Tokens<'src> {
 
 /// A tree of syntax items (Concrete Syntax Tree),
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CST<'src> {
+pub enum CST<'s> {
     /// An S-Expression.
-    SExpr(Vec<CST<'src>>, SrcPos<'src>),
+    SExpr(Vec<CST<'s>>, SrcPos<'s>),
     /// An identifier.
-    Ident(&'src str, SrcPos<'src>),
+    Ident(&'s str, SrcPos<'s>),
     /// A numeric literal.
-    Num(&'src str, SrcPos<'src>),
+    Num(&'s str, SrcPos<'s>),
     /// A string literal.
-    Str(Cow<'src, str>, SrcPos<'src>),
+    Str(Cow<'s, str>, SrcPos<'s>),
 }
-impl<'src> CST<'src> {
-    pub fn pos(&self) -> &SrcPos<'src> {
+impl<'s> CST<'s> {
+    pub fn pos(&self) -> &SrcPos<'s> {
         match *self {
             CST::SExpr(_, ref p) |
             CST::Ident(_, ref p) |
@@ -270,7 +281,7 @@ impl<'src> CST<'src> {
     }
 
     /// Construct a new syntax tree from a token with a position, and the tokens following
-    fn from_token((token, mut pos): (Token<'src>, SrcPos<'src>), nexts: &mut Tokens<'src>) -> Self {
+    fn from_token((token, mut pos): (Token<'s>, SrcPos<'s>), nexts: &mut Tokens<'s>) -> Self {
         match token {
             Token::LParen => {
                 let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
@@ -298,7 +309,7 @@ impl<'src> CST<'src> {
         }
     }
 }
-impl<'src> fmt::Display for CST<'src> {
+impl<'s> fmt::Display for CST<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             CST::Ident(s, _) | CST::Num(s, _) => write!(f, "{}", s),
@@ -321,10 +332,10 @@ impl<'src> fmt::Display for CST<'src> {
 /// Construct trees from `tokens` until a lone `delim` is encountered.
 ///
 /// Returns trees and index of closing delimiter if one was supplied.
-fn tokens_to_trees_until<'src>(
-    tokens: &mut Tokens<'src>,
+fn tokens_to_trees_until<'s>(
+    tokens: &mut Tokens<'s>,
     start_and_delim: Option<(SrcPos, &Token)>,
-) -> (Vec<CST<'src>>, Option<usize>) {
+) -> (Vec<CST<'s>>, Option<usize>) {
     let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t))).unwrap_or(
         (None, None),
     );
@@ -345,8 +356,8 @@ fn tokens_to_trees_until<'src>(
 }
 
 /// Lex the source code as a Concrete Syntax Tree
-pub fn concrete_syntax_trees_from_src(src: &str) -> Vec<CST> {
-    tokens_to_trees_until(&mut Tokens::new(src), None).0
+pub fn concrete_syntax_trees_from_src<'s>(filename: &'s Path, src: &'s str) -> Vec<CST<'s>> {
+    tokens_to_trees_until(&mut Tokens::new(filename, src), None).0
 }
 
 #[cfg(test)]
