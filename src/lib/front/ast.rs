@@ -1,5 +1,5 @@
 use super::SrcPos;
-use itertools::Itertools;
+use itertools::{Itertools, zip};
 use std::collections::{HashMap, HashSet};
 use std::{borrow, fmt, hash, mem, path};
 use std::iter::once;
@@ -101,6 +101,43 @@ impl<'src> Type<'src> {
         self.is_monomorphic_in_context(&mut HashSet::new())
     }
 
+    pub fn canonicalize_in_context(&self, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
+        match *self {
+            Type::Const(_) => self.clone(),
+            Type::Var(ref n) => s.get(n).unwrap_or(self).clone(),
+            Type::App(box TypeFunc::Const(c), ref args) => {
+                Type::App(
+                    Box::new(TypeFunc::Const(c)),
+                    args.iter()
+                        .map(|arg| arg.canonicalize_in_context(s))
+                        .collect(),
+                )
+            }
+            Type::App(box TypeFunc::Poly(ref p), ref args) => {
+                let shadoweds = zip(&p.params, args)
+                    .filter_map(|(&param, arg)| {
+                        s.insert(param, arg.clone()).map(|shad| (param, shad))
+                    })
+                    .collect::<Vec<_>>();
+                let b = p.body.canonicalize_in_context(s);
+                s.extend(shadoweds);
+                b
+            }
+            Type::Poly(ref p) => Type::Poly(Box::new(Poly {
+                params: p.params.clone(),
+                body: p.body.canonicalize_in_context(s),
+            })),
+        }
+    }
+
+    /// Recursively apply applications to polytypes
+    ///
+    /// # Examples
+    /// `canonicalize (app (poly (t u) (-> t u)) Int Float) == (-> Int Float)`
+    pub fn canonicalize(&self) -> Type<'src> {
+        self.canonicalize_in_context(&mut HashMap::new())
+    }
+
     fn get_bin(&self, con: &'src str) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
             Type::App(ref f, ref ts) if **f == TypeFunc::Const(con) => {
@@ -173,6 +210,10 @@ impl<'src> fmt::Display for Ident<'src> {
 #[derive(Clone, Debug)]
 pub struct ExternDecl<'src> {
     pub ident: Ident<'src>,
+    /// The type of the external variable being declared.
+    ///
+    /// Guaranteed during parsing to be monomorphic and canonical
+    /// I.e. no type variables or polytype applications
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }

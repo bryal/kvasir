@@ -618,14 +618,13 @@ impl<'tvg> Parser<'tvg> {
         } else {
             match csts[0] {
                 CST::Ident(name, ref id_pos) => {
-                    let typ = self.parse_type(&csts[1]);
-
+                    // Type must be monomorphic canonical
+                    let typ = self.parse_type(&csts[1]).canonicalize();
                     if !typ.is_monomorphic() {
                         csts[1].pos().error_exit(
                             "Type of external variable must be fully specified",
                         )
                     }
-
                     ExternDecl {
                         ident: Ident::new(name, id_pos.clone()),
                         typ: typ,
