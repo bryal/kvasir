@@ -883,12 +883,14 @@ fn monomorphize_defs_of_insts_in_let<'src>(
     }
     monomorphize_defs_of_insts_in_expr(body, env);
 
-    env.pop().unwrap();
     for b in bindings.bindings_mut() {
         if let Some(upd_def) = monos.remove(b.ident.s) {
             b.val = upd_def;
+        } else if let Some(upd_bnd) = env.remove(b.ident.s) {
+            *b = upd_bnd
         }
     }
+    env.pop().unwrap();
 }
 
 /// Monomorphize definitions for monomorphic instantiations of variables in `bindings`

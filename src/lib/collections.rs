@@ -72,6 +72,19 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
         self.get_mut_with_height(key).map(|(v, _)| v)
     }
 
+    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        Q: Hash + Eq,
+        K: Borrow<Q>,
+    {
+        for scope in self.0.iter_mut().rev() {
+            if let Some(def) = scope.remove(key) {
+                return Some(def);
+            }
+        }
+        None
+    }
+
     pub fn get_with_height<Q: ?Sized>(&self, key: &Q) -> Option<(&V, usize)>
     where
         Q: Hash + Eq,
