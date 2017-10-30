@@ -10,5 +10,7 @@ getopts = "*"
 bitflags = "*"
 lazy_static = "*"
 term = "*"
-llvm-alt = { git = "https://github.com/TomBebb/llvm-rs", rev = "1aeff08637e22949c2e1f11eb29145473448ce89" }
+llvm-sys = { path = "llvm-sys.rs" }
 itertools = "*"
+cbox = "0.*"
+libc = "0.*"
