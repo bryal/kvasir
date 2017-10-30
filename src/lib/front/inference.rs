@@ -17,7 +17,7 @@ use self::InferenceErr::*;
 use lib::collections::ScopeStack;
 use lib::front::*;
 use lib::front::ast::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
 use std::path;
@@ -238,7 +238,7 @@ struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
     var_env: HashMap<&'src str, Vec<Type<'src>>>,
     /// Declarations of external variables
-    externs: &'a HashMap<&'src str, ExternDecl<'src>>,
+    externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
     /// A map of free type variables to their instantiations
     type_var_map: HashMap<u64, Type<'src>>,
     /// Counter for generation of unique type variable ids
@@ -247,7 +247,7 @@ struct Inferrer<'a, 'src: 'a> {
 
 impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn new(
-        externs: &'a HashMap<&'src str, ExternDecl<'src>>,
+        externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
         type_var_gen: &'a mut TypeVarGen,
     ) -> Self {
         Inferrer {
@@ -588,7 +588,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Infer types for a lambda
     fn infer_lambda<'l>(
         &mut self,
-        mut lam: &'l mut Lambda<'src>,
+        lam: &'l mut Lambda<'src>,
         expected_type: &Type<'src>,
     ) -> &'l Type<'src> {
         // Infer type of param by adding it to the environment and applying constraints based on
@@ -901,7 +901,6 @@ fn monomorphize_defs_of_insts<'src>(globals: &mut TopologicallyOrderedDependency
 
 pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
     let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
-
     inferrer.infer_bindings(&mut module.globals);
 
     // Apply all substitutions recursively to get rid of reduntant, indirect type variables

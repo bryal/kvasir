@@ -1,12 +1,13 @@
-use self::llvm::*;
+use self::llvm::{Context, Builder, Module};
+use self::codegen::*;
 use {Emission, FileName};
 use lib::front::ast;
-use llvm::{Context, Builder, Module};
 use std::fs;
 use std::io::Write;
 use std::process::Command;
 
 mod llvm;
+mod codegen;
 
 pub fn compile(
     ast: &ast::Module,
@@ -18,15 +19,11 @@ pub fn compile(
     let context = Context::new();
     let builder = Builder::new(&context);
     let module = Module::new("main", &context);
-    let codegenerator = CodeGenerator::new(&context, &builder, &module);
+    let mut codegenerator = CodeGenerator::new(&context, &builder, &module);
 
-    let mut env = Env::new();
+    codegenerator.gen_executable(&ast);
 
-    codegenerator.gen_extern_decls(&mut env, &ast.extern_funcs);
-
-    codegenerator.gen_static_defs(&mut env, &ast.static_defs);
-
-    //    println!("module: {:?}", codegenerator.module);
+    println!("module: {:?}", codegenerator.module);
 
     codegenerator.module.verify().unwrap_or_else(|e| {
         panic!("Verifying module failed\n{}", e)

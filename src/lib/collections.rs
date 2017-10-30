@@ -110,36 +110,6 @@ impl<K: Hash + Eq, V> ScopeStack<K, V> {
         }
         None
     }
-
-    /// Faster than `get` because only one level is searched in.
-    pub fn get_at_height<Q: ?Sized>(&self, key: &Q, height: usize) -> Option<&V>
-    where
-        Q: Hash + Eq,
-        K: Borrow<Q>,
-    {
-        self.0.get(height).and_then(|scope| scope.get(key))
-    }
-    pub fn get_at_height_mut<Q: ?Sized>(&mut self, key: &Q, height: usize) -> Option<&mut V>
-    where
-        Q: Hash + Eq,
-        K: Borrow<Q>,
-    {
-        self.0.get_mut(height).and_then(|scope| scope.get_mut(key))
-    }
-
-    pub fn update<Q: ?Sized>(&mut self, key: &Q, v: V) -> Option<V>
-    where
-        Q: Hash + Eq,
-        K: Borrow<Q>,
-    {
-        match self.get_mut(key) {
-            Some(entry) => {
-                *entry = v;
-                None
-            }
-            None => Some(v),
-        }
-    }
 }
 
 impl<K: Debug + Hash + Eq, V: Debug> Debug for ScopeStack<K, V> {

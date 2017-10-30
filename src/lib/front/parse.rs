@@ -4,7 +4,7 @@ use self::ParseErr::*;
 use super::*;
 use super::ast::*;
 use super::lex::CST;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::once;
 
@@ -639,8 +639,8 @@ impl<'tvg> Parser<'tvg> {
     fn parse_externs<'src>(
         &mut self,
         decls_csts: &[(&[CST<'src>], &SrcPos<'src>)],
-    ) -> HashMap<&'src str, ExternDecl<'src>> {
-        let mut externs = HashMap::new();
+    ) -> BTreeMap<&'src str, ExternDecl<'src>> {
+        let mut externs = BTreeMap::new();
         for &(decl_csts, pos) in decls_csts {
             let ext = self.parse_extern(decl_csts, pos);
             if let Some(ext) = externs.insert(ext.ident.s, ext) {

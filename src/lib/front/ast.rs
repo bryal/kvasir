@@ -1,6 +1,6 @@
 use super::SrcPos;
 use itertools::{Itertools, zip};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::{borrow, fmt, hash, mem, path};
 use std::iter::once;
 
@@ -12,7 +12,7 @@ lazy_static!{
 }
 
 /// A polytype
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Poly<'src> {
     pub params: Vec<u64>,
     pub body: Type<'src>,
@@ -30,7 +30,7 @@ impl<'src> fmt::Display for Poly<'src> {
 }
 
 /// A type function
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TypeFunc<'src> {
     Const(&'src str),
     Poly(Poly<'src>),
@@ -46,7 +46,7 @@ impl<'src> fmt::Display for TypeFunc<'src> {
 }
 
 /// A type
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Type<'src> {
     Var(u64),
     /// A monotype constant, like `int`, or `string`
@@ -55,6 +55,16 @@ pub enum Type<'src> {
     App(Box<TypeFunc<'src>>, Vec<Type<'src>>),
     /// A polytype
     Poly(Box<Poly<'src>>),
+}
+
+impl<'src> Type<'src> {
+    /// If this type is an instantiated polytype, return the instantiation args
+    pub fn get_inst_args(&self) -> Option<&[Type<'src>]> {
+        match *self {
+            Type::App(box TypeFunc::Poly(_), ref args) => Some(args),
+            _ => None,
+        }
+    }
 }
 
 /// The tuple has the type constructor `*`, as it is a
@@ -123,10 +133,12 @@ impl<'src> Type<'src> {
                 s.extend(shadoweds);
                 b
             }
-            Type::Poly(ref p) => Type::Poly(Box::new(Poly {
-                params: p.params.clone(),
-                body: p.body.canonicalize_in_context(s),
-            })),
+            Type::Poly(ref p) => {
+                Type::Poly(Box::new(Poly {
+                    params: p.params.clone(),
+                    body: p.body.canonicalize_in_context(s),
+                }))
+            }
         }
     }
 
@@ -481,6 +493,22 @@ impl<'src> Expr<'src> {
         }
     }
 
+    pub fn get_type(&self) -> &Type<'src> {
+        match *self {
+            Expr::Nil(_) => &TYPE_NIL,
+            Expr::NumLit(ref l) => &l.typ,
+            Expr::StrLit(_) => &TYPE_STRING,
+            Expr::Bool(_) => &TYPE_BOOL,
+            Expr::Variable(ref bnd) => &bnd.typ,
+            Expr::App(ref app) => &app.typ,
+            Expr::If(ref cond) => &cond.typ,
+            Expr::Lambda(ref l) => &l.typ,
+            Expr::Let(ref l) => &l.typ,
+            Expr::TypeAscript(ref a) => &a.typ,
+            Expr::Cons(ref c) => &c.typ,
+        }
+    }
+
     pub fn first_non_type_ascr_is_lambda(&self) -> bool {
         match *self {
             Expr::Lambda(_) => true,
@@ -515,7 +543,7 @@ pub struct Module<'src> {
     /// External variable declarations
     ///
     /// May include declarations of external both functions and variables
-    pub externs: HashMap<&'src str, ExternDecl<'src>>,
+    pub externs: BTreeMap<&'src str, ExternDecl<'src>>,
     /// Global variable definitions
     ///
     /// May include both top-level functions and global variables.

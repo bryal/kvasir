@@ -87,8 +87,10 @@ extern crate lazy_static;
 extern crate getopts;
 extern crate bitflags;
 extern crate term;
-extern crate llvm;
+extern crate llvm_sys;
 extern crate itertools;
+extern crate libc;
+extern crate cbox;
 
 use getopts::Options;
 use lib::back::compile;
