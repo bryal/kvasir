@@ -232,6 +232,7 @@ impl Module {
         Command::new("llc")
             .arg(&format!("-O={}", opt_level))
             .arg("-filetype=obj")
+            .arg("-relocation-model=pic")
             .arg("-o")
             .arg(path)
             .arg(mod_path)
