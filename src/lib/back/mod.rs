@@ -67,15 +67,15 @@ pub fn compile(
                 .wait()
                 .expect("Failed to wait on compilation child");
 
-            let mut gcc = Command::new("gcc");
-            gcc.arg(&obj_path).args(
+            let mut clang = Command::new("clang");
+            clang.arg(&obj_path).args(
                 &[
                     "-o",
                     &out_file_name.path().to_string_lossy(),
                 ],
             );
             // Add current dir to link dir paths by default
-            gcc.args(
+            clang.args(
                 &[
                     "-L",
                     current_dir()
@@ -85,20 +85,20 @@ pub fn compile(
                 ],
             );
             for path in lib_paths {
-                gcc.args(&["-L", path]);
+                clang.args(&["-L", path]);
             }
             for lib in link_libs {
-                gcc.args(&["-l", lib]);
+                clang.args(&["-l", lib]);
             }
 
-            let output = gcc.output().unwrap_or_else(|e| {
-                panic!("Failed to execute linking process: `{:?}`\n{}", gcc, e)
+            let output = clang.output().unwrap_or_else(|e| {
+                panic!("Failed to execute linking process: `{:?}`\n{}", clang, e)
             });
             fs::remove_file(obj_path).expect("Failed to remove intermediate obj file");
             if !output.status.success() {
                 panic!(
-                    "Error during linking using gcc\n`{:?}`\n{}\ngcc exited with: {}",
-                    gcc,
+                    "Error during linking using clang\n`{:?}`\n{}\nclang exited with: {}",
+                    clang,
                     String::from_utf8_lossy(&output.stderr),
                     output.status.code().unwrap_or(0)
                 );
