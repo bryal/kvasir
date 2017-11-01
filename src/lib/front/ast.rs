@@ -79,6 +79,10 @@ impl<'src> Type<'src> {
         Type::App(Box::new(TypeFunc::Const("Cons")), vec![car_typ, cdr_typ])
     }
 
+    pub fn new_ptr(typ: Type<'src>) -> Self {
+        Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
+    }
+
     fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
         match *self {
             Type::Var(ref n) => bound.contains(n),

@@ -212,3 +212,7 @@ compile_func!{A, B, C, D}
 compile_func!{A, B, C, D, E}
 compile_func!{A, B, C, D, E, F}
 compile_func!{A, B, C, D, E, F, G}
+
+pub fn null_byte_pointer<'a>(context: &'a Context) -> &'a Value {
+    unsafe { core::LLVMConstNull(PointerType::new(Type::get::<u8>(context)).into()).into() }
+}

@@ -206,6 +206,19 @@ impl Builder {
             ).into()
         }
     }
+    /// Build an instruction that extracts a subelement of an aggregate data structure.
+    ///
+    /// Like `build_gep`, but for values instead of pointers
+    pub fn build_extract_value(&self, structure: &Value, index: usize) -> &Value {
+        unsafe {
+            core::LLVMBuildExtractValue(
+                self.into(),
+                structure.into(),
+                index as c_uint,
+                NULL_NAME.as_ptr(),
+            ).into()
+        }
+    }
     /// Build an instruction that computes the address of a subelement of an aggregate data structure.
     ///
     /// Basically type-safe pointer arithmetic.
