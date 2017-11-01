@@ -514,7 +514,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Will call whatever function is bound to `--alloc`.
     /// Reasonably, this should be a light wrapper around a call to
     /// externally defined libc `malloc`.
-    fn gen_alloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
+    fn gen_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
         match env.get("malloc", &[]) {
             Some(Var::Func(f)) => self.builder.build_call(f, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => {
@@ -575,7 +575,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
         let captures_type = StructType::new(self.ctx, &captures_types, false);
         let captures_size = self.get_type_alloc_size(captures_type);
-        let captures_heap_ptr_generic = self.gen_alloc(env, captures_size);
+        let captures_heap_ptr_generic = self.gen_malloc(env, captures_size);
         let captures_heap_ptr = self.builder.build_bit_cast(
             captures_heap_ptr_generic,
             PointerType::new(captures_type),
