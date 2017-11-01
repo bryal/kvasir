@@ -5,6 +5,7 @@ use lib::front::ast;
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use std::env::current_dir;
 
 mod llvm;
 mod codegen;
@@ -22,8 +23,6 @@ pub fn compile(
     let mut codegenerator = CodeGenerator::new(&context, &builder, &module);
 
     codegenerator.gen_executable(&ast);
-
-    println!("module: {:?}", codegenerator.module);
 
     codegenerator.module.verify().unwrap_or_else(|e| {
         panic!("Verifying module failed\n{}", e)
@@ -54,34 +53,52 @@ pub fn compile(
             codegenerator
                 .module
                 .compile(&out_file_name.clone().unwrap_or_with_ext("o"), 0)
-                .unwrap();
+                .expect("Failed to compile module")
+                .wait()
+                .expect("Failed to wait on compilation child");
         }
-        Emission::Bin => {
+        Emission::Exe => {
             let obj_path = out_file_name.path().with_extension("o");
 
-            codegenerator.module.compile(&obj_path, 0).unwrap();
+            codegenerator
+                .module
+                .compile(&obj_path, 0)
+                .expect("Failed to compile module")
+                .wait()
+                .expect("Failed to wait on compilation child");
 
-            let mut clang = Command::new("clang");
-            clang.arg(obj_path).args(
+            let mut gcc = Command::new("gcc");
+            gcc.arg(&obj_path).args(
                 &[
                     "-o",
                     &out_file_name.path().to_string_lossy(),
                 ],
             );
+            // Add current dir to link dir paths by default
+            gcc.args(
+                &[
+                    "-L",
+                    current_dir()
+                        .expect("Invalid current working directory")
+                        .to_str()
+                        .expect("Path to current dir is not valid unicode"),
+                ],
+            );
             for path in lib_paths {
-                clang.args(&["-L", path]);
+                gcc.args(&["-L", path]);
             }
             for lib in link_libs {
-                clang.args(&["-l", lib]);
+                gcc.args(&["-l", lib]);
             }
 
-            let output = clang.output().unwrap_or_else(|e| {
-                panic!("Failed to execute linking process: `{:?}`\n{}", clang, e)
+            let output = gcc.output().unwrap_or_else(|e| {
+                panic!("Failed to execute linking process: `{:?}`\n{}", gcc, e)
             });
+            fs::remove_file(obj_path).expect("Failed to remove intermediate obj file");
             if !output.status.success() {
                 panic!(
-                    "Error during linking using clang\n`{:?}`\n{}\nclang exited with: {}",
-                    clang,
+                    "Error during linking using gcc\n`{:?}`\n{}\ngcc exited with: {}",
+                    gcc,
                     String::from_utf8_lossy(&output.stderr),
                     output.status.code().unwrap_or(0)
                 );

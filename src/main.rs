@@ -97,7 +97,7 @@ use lib::back::compile;
 use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
 use lib::front::parse::parse;
-use std::{env, fmt};
+use std::{env, fmt, time};
 use std::fs::{File, canonicalize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -113,7 +113,7 @@ pub enum Emission {
     /// Linkable object code
     Obj,
     /// An executable binary
-    Bin,
+    Exe,
 }
 impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
     fn from(s: S) -> Emission {
@@ -121,6 +121,7 @@ impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
             "llvm-ir" => Emission::LlvmAsm,
             "llvm-bc" => Emission::LlvmBc,
             "obj" => Emission::Obj,
+            "exe" => Emission::Exe,
             _ => panic!("Unknown emission type `{}`", s),
         }
     }
@@ -176,6 +177,8 @@ fn print_usage(program: &str, opts: Options) {
 }
 
 fn main() {
+    let start_time = time::Instant::now();
+
     let args: Vec<_> = env::args().collect();
     let bin_name = args[0].clone();
 
@@ -185,7 +188,7 @@ fn main() {
             "",
             "emit",
             "Specify the type of output for the compiler to emit",
-            "llvm-ir|llvm-bc|obj",
+            "llvm-ir|llvm-bc|obj|exe",
         )
         .optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
         .optmulti("L", "", "Add <PATH> to the library search path", "PATH")
@@ -226,7 +229,7 @@ fn main() {
         });
 
     let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(
-        Emission::Bin,
+        Emission::Exe,
     );
 
     let link_libs = matches.opt_strs("l");
@@ -251,5 +254,9 @@ fn main() {
     let mut ast = parse(&csts, &mut type_var_generator);
     infer_types(&mut ast, &mut type_var_generator);
     compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
-    println!("{:#?}", ast);
+
+    println!(
+        "    Finished building target in {} secs",
+        start_time.elapsed().as_secs()
+    )
 }
