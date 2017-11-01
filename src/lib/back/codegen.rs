@@ -688,7 +688,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.position_at_end(entry);
         *self.current_func.borrow_mut() = Some(main_wrapper);
         *self.current_block.borrow_mut() = Some(entry);
-        let global_bindings = module.globals.bindings().collect::<Vec<_>>();
+        let global_bindings = module.globals.bindings().rev().collect::<Vec<_>>();
         self.gen_bindings(&mut env, &global_bindings);
         let user_main = env.get_var("main", &[]).expect(
             "ICE: No user defined `main`",
