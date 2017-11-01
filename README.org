@@ -1,0 +1,127 @@
+#+TITLE: The Kvasir Programming Language
+
+NOTE: Kvasir is very much a WIP. Documentation is lacking and may be outdated at places.
+The project may be difficult to bubild and buggy to use./
+
+* About
+  Kvasir is a toy programming language, much inspired by Haskell, LISP/Scheme/Racket, and Rust.
+
+  Intended to, in the future, be used for, maybe, interactive and type-safe game programming.
+
+** Features
+   - LISP style, parenthesis based syntax.
+   - Strong, static typing
+   - Parametric polymorphism (will be upgraded with traits/interfaces/type classes some day)
+   - Global type inference
+   - Reference count garbage collection (lacking and broken at the moment)
+   - Efficient C bindings/ffi
+   - LLVM backend (should imply simple cross-compilation, but has not been tried yet)
+
+* Building from source
+  The following tools and packages are required to build:
+
+  - Nightly =rustc= and =cargo=, suggested to get via [[https://www.rustup.rs/][rustup]].
+  - LLVM 5.0 library (6.0 seems to work fine as well) and related =llc=
+  - =clang= (can easily be modded to use =gcc=, might make that a feature...)
+  - =git=
+
+** Nightly rust
+   A few nice, but not critical, unstable features are used, which implies the requirement of
+   nightly rust. Hopefully these features will be stabilized soon, otherwise, I could
+   probably remove them if there exists a demand for it.
+
+** llvm-sys
+   The rust crate [[https://bitbucket.org/tari/llvm-sys.rs][llvm-sys]] is used for interfacing with the LLVM C-interface.
+   Depending on your distribution and such, getting =llvm-sys= and LLVM to play nicely together
+   and in general can be troublesome.
+
+   A common problem seems to be that the command =llvm-cfg= incorrectly reports which
+   libraries are necessary to link with for applications using LLVM.
+   I've had problems with =libtinfo= and =libffi= not being included correctly myself.
+
+   The symptoms of this is that you get errors like
+
+   #+BEGIN_EXAMPLE
+error: linking with `cc` failed: exit code: 1
+  |
+  = note: "cc" "-Wl,--as-needed" "-Wl,-z,noexecstack" ...  "-l" "pthread" "-l" "util" "-l" "util"
+  = note: /home/.../libllvm_sys-b4b9c2e4bce947fe.rlib(ExternalFunctions.cpp.o): In
+function `llvm::Interpreter::callExternalFunction(llvm::Function*, llvm::ArrayRef<llvm::GenericValue>)':
+          ExternalFunctions.cpp:(.text._ZN4llvm11Interpreter20callExternalFunctionEPNS_8FunctionENS_8ArrayRefINS_12GenericValueEEE+
+0x3f3): undefined reference to `ffi_type_float'
+...
+          ExternalFunctions.cpp:(.text._ZN4llvm11Interpreter20callExternalFunctionEPNS_8FunctionENS_8ArrayRefINS_12GenericValueEEE+
+0x2408): undefined reference to `ffi_type_sint32'
+          collect2: error: ld returned 1 exit status
+
+
+error: aborting due to previous error
+
+error: Could not compile `kvasir-lang`.
+   #+END_EXAMPLE
+
+   To fix for =libffi= not linking, compile with environment variable ~LLVM_SYS_50_FFI_WORKAROUND=1~.
+   #+BEGIN_EXAMPLE
+LLVM_SYS_50_FFI_WORKAROUND=1 cargo build --release
+   #+END_EXAMPLE
+
+   To fix in general, for other libs than =ffi=, make sure that you have the newest compatible
+   version of LLVM (maybe try building from source?), and pray.
+
+** Building
+   Clone the repo:
+   #+BEGIN_EXAMPLE
+git clone https://github.com/bryal/kvasir
+cs kvasir
+   #+END_EXAMPLE
+
+   Build:
+   #+BEGIN_EXAMPLE
+cargo build --release
+   #+END_EXAMPLE
+
+   When the build is finished, the actual executable for the compiler can be found in
+   =target/release/kvasir=.
+   To install, place the executable somewhere in your PATH.
+
+** Core library
+   By itself, the compiler can't create very interesting programs. To actually get some functionality
+   you would have to call code from some external library that you link into your program.
+
+   You can compile a rudimentary core library by executing the script =build_core.sh=, which
+   will compile the C library =src/core.c= and the LLVM library =src/core.ll= into a new library
+   =libcore.a=, which can then be linked with your program with the =-l= flag.
+
+* Usage
+  #+BEGIN_EXAMPLE
+$ kvasir -l core examples/test.kvs
+$ ./examples/test.bin
+1337
+  #+END_EXAMPLE
+
+* Roadmap
+  - Comprehensive standard library
+  - Modules
+  - Ad hoc polymorphism a la ={(traits, Rust), (type classes, Haskell)}=
+  - Build system / package manager
+
+* Contributing
+  As this is a project for education and fun, I'm not much interested in outside help with implementation.
+  However, please do open issues for bugs and feature suggestions. I would certainly appreciate that!
+
+* License
+  Copyright (C) 2017 Johan Johansson
+
+  Licensed under the GPLv3
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  See [[LICENSE][LICENSE]]
