@@ -1,12 +1,11 @@
 #+TITLE: The Kvasir Programming Language
 
 /NOTE: Kvasir is very much a WIP. Documentation is lacking and may be outdated at places.
-The project may be difficult to bubild and buggy to use./
+The project may be difficult to build and buggy to use./
 
 ** About
    Kvasir is a toy programming language, much inspired by Haskell, LISP/Scheme/Racket, and Rust.
-
-   Intended to, in the future, be used for, maybe, interactive and type-safe game programming.
+   Kvasir is intended to in the future maybe be used for interactive and type-safe game programming.
 
 *** Features
     - LISP style, parenthesis based syntax.
@@ -89,7 +88,7 @@ cargo build --release
     you would have to call code from some external library that you link into your program.
 
     You can compile a rudimentary core library by executing the script =build_core.sh=, which
-    will compile the C library =src/core.c= and the LLVM library =src/core.ll= into a new library
+    will compile the C file =src/core.c= and the LLVM IR file =src/core.ll= into a new library
     =libcore.a=, which can then be linked with your program with the =-l= flag.
 
 ** Usage
