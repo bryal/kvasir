@@ -334,9 +334,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 let zero_refcount = 0usize.compile(self.ctx);
                 Value::new_struct(self.ctx, &[fp, null_captures, zero_refcount], false)
             }
-            Some(Var::Val(ptr)) => {
-                let v = self.builder.build_load(ptr);
-                v.set_name(&format!("{}_tmp", var.ident.s));
+            Some(Var::Val(v)) => {
+                println!("v: {:?}", v);
                 v
             }
             // Undefined variables are caught during type check/inference
