@@ -5,7 +5,7 @@ use llvm_sys::prelude::*;
 use llvm_sys::target::LLVMTargetDataRef;
 use std::{fmt, mem, cmp};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
 use std::iter::once;
 use super::llvm::*;
@@ -22,8 +22,29 @@ fn type_nil(ctx: &Context) -> &Type {
     StructType::new(ctx, &[], false)
 }
 
-fn type_captures(ctx: &Context) -> &Type {
+fn type_generic_ptr(ctx: &Context) -> &Type {
     PointerType::new(Type::get::<u8>(ctx))
+}
+
+/// The type of a reference counted pointer to `contents`
+///
+/// `{i64, contents}*`
+fn type_rc<'ctx>(ctx: &'ctx Context, contents: &'ctx Type) -> &'ctx Type {
+    PointerType::new(StructType::new(
+        ctx,
+        &[Type::get::<u64>(ctx), contents],
+        false,
+    ))
+}
+
+/// A generic reference counted pointer.
+///
+/// A pointer to the 64-bit reference count integer, and an `i8` to represent the
+/// following, variable sized contents
+///
+/// `{i64, i8}*`
+fn type_rc_generic<'ctx>(ctx: &'ctx Context) -> &'ctx Type {
+    type_rc(ctx, Type::get::<u8>(ctx))
 }
 
 /// Returns the unit set of the single element `x`
@@ -84,6 +105,17 @@ fn free_vars_in_lambda<'src>(lam: &ast::Lambda<'src>) -> FreeVarInsts<'src> {
     let mut free_vars = free_vars_in_expr(&lam.body);
     free_vars.remove(lam.param_ident.s);
     free_vars
+}
+
+/// Get free variables of `lam`, but filter out externs
+fn free_vars_in_lambda_filter_externs<'src, 'ctx>(
+    env: &Env<'src, 'ctx>,
+    lam: &ast::Lambda<'src>,
+) -> FreeVarInsts<'src> {
+    free_vars_in_lambda(&lam)
+        .into_iter()
+        .filter(|&(k, _)| env.vars.contains_key(k))
+        .collect::<FreeVarInsts>()
 }
 
 enum CodegenErr {
@@ -182,7 +214,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    fn get_type_alloc_size(&self, t: &Type) -> u64 {
+    fn size_of(&self, t: &Type) -> u64 {
         unsafe {
             let module_ref = mem::transmute::<&Module, LLVMModuleRef>(self.module);
             let target_data_layout = mem::transmute::<LLVMTargetDataRef, &TargetData>(
@@ -195,7 +227,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn gen_func_type(&self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
         FunctionType::new(
             self.gen_type(ret),
-            &[type_captures(self.ctx), self.gen_type(arg)],
+            &[type_generic_ptr(self.ctx), self.gen_type(arg)],
         )
     }
 
@@ -224,13 +256,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             PType::App(box ast::TypeFunc::Const(s), ref ts) => {
                 match s {
                     "->" => {
-                        // Represent a function as a tagged union of the function pointer of the
-                        // function or closure, casted to byte pointer, and refcounted captures.
-                        // If captures pointer is null, it's a plain function
                         let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
-                        let captures = type_captures(self.ctx);
-                        let refcount = Type::get::<usize>(self.ctx);
-                        StructType::new(self.ctx, &[fp, captures, refcount], false)
+                        let captures = type_rc_generic(self.ctx);
+                        StructType::new(self.ctx, &[fp, captures], false)
                     }
                     "Cons" => {
                         StructType::new(
@@ -245,6 +273,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             }
             _ => panic!("ICE: Type `{}` is not yet implemented", typ),
         }
+    }
+
+    /// Returns the type of the free variables when captured
+    fn captures_type_of_free_vars(&self, free_vars: &FreeVarInsts<'src>) -> &'ctx Type {
+        let mut captures_types = Vec::new();
+        for (_, insts) in free_vars {
+            for &(_, ref typ) in insts {
+                captures_types.push(self.gen_type(typ));
+            }
+        }
+        StructType::new(self.ctx, &captures_types, false)
     }
 
     fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
@@ -331,8 +370,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Some(Var::Func(fp)) => {
                 // Wrap function pointer in function+closure union
                 let null_captures = null_byte_pointer(self.ctx);
-                let zero_refcount = 0usize.compile(self.ctx);
-                Value::new_struct(self.ctx, &[fp, null_captures, zero_refcount], false)
+                Value::new_struct(self.ctx, &[fp, null_captures], false)
             }
             Some(Var::Val(v)) => {
                 println!("v: {:?}", v);
@@ -392,24 +430,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         ret_type: &'ctx Type,
     ) -> &'ctx Value {
         let func_ptr = self.builder.build_extract_value(closure, 0);
-        let captures_ptr = self.builder.build_extract_value(closure, 1);
-        captures_ptr.set_name("captures_ptr");
-        let captures_ptr_int = self.builder.build_ptr_to_int(
-            captures_ptr,
+        let captures_rc = self.builder.build_extract_value(closure, 1);
+        let captures_rc_int = self.builder.build_ptr_to_int(
+            captures_rc,
             Type::get::<usize>(self.ctx),
         );
         let is_closure = self.builder.build_cmp(
-            captures_ptr_int,
+            captures_rc_int,
             0usize.compile(self.ctx),
             Predicate::NotEqual,
         );
         is_closure.set_name("is_closure");
         let app_closure = |generator: &Self, _: &mut Env<'src, 'ctx>| {
+            let captures_ptr = self.build_get_rc_contents_generic_ptr(captures_rc);
             let func = generator.builder.build_bit_cast(
                 func_ptr,
                 PointerType::new(FunctionType::new(
                     ret_type,
-                    &[type_captures(self.ctx), arg_type],
+                    &[type_generic_ptr(self.ctx), arg_type],
                 )),
             );
             let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
@@ -426,10 +464,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.build_if(env, is_closure, app_closure, app_func)
     }
 
+    // TODO: Tail call optimization
     /// Generates IR code for a function application.
-    ///
-    /// If the call is in a tail position and the call is a recursive call to the caller itself,
-    /// make a tail call and return `Nothing`. Otherwise, make a normal call and return the result.
     fn gen_app(&self, env: &mut Env<'src, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
         let (at, rt) = app.func.get_type().get_func().unwrap();
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
@@ -441,7 +477,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.build_app(env, func, (arg, arg_type), ret_type)
     }
 
-    fn gen_lambda_func(
+    /// Generate the anonymous function of a closure
+    ///
+    /// A closure is represented as a structure of the environment it captures, and
+    /// a function to pass this environment to, together with the argument, when the closure
+    /// is applied to an argument.
+    fn gen_closure_anon_func(
         &self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
@@ -457,28 +498,28 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let entry = func.append("entry");
         self.builder.position_at_end(entry);
 
-        let mut captures_types = Vec::new();
-        for (_, insts) in free_vars {
-            for &(_, ref typ) in insts {
-                captures_types.push(self.gen_type(typ));
-            }
-        }
-        let captures_type = PointerType::new(StructType::new(self.ctx, &captures_types, false));
-        let captures_generic = &*func[0];
-        captures_generic.set_name("captures_generic");
-        let captures = self.builder.build_bit_cast(captures_generic, captures_type);
-        captures.set_name("captures");
+        let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
+        let captures_ptr_generic = &*func[0];
+        captures_ptr_generic.set_name("captures_generic");
+        let captures_ptr = self.builder.build_bit_cast(
+            captures_ptr_generic,
+            captures_ptr_type,
+        );
+        captures_ptr.set_name("captures");
         let param = &*func[1];
         param.set_name(lam.param_ident.s);
 
+        // Create function local environment of only parameter + captures
         let mut local_env = map_of(lam.param_ident.s, vec![map_of(vec![], param)]);
-        let mut i = 0;
+
+        // Extract individual free variable captures from captures pointer and add to local env
+        let mut i: usize = 0;
         for (fv_id, fv_insts) in free_vars.iter() {
             local_env.entry(fv_id).or_insert(vec![BTreeMap::new()]);
             for (fv_inst, _) in fv_insts.iter().cloned() {
                 let fv_ptr = self.builder.build_gep(
-                    captures,
-                    &[0.compile(self.ctx), i.compile(self.ctx)],
+                    captures_ptr,
+                    &[0usize.compile(self.ctx), i.compile(self.ctx)],
                 );
                 fv_ptr.set_name(&format!("capt_{}", fv_id));
                 let fv_loaded = self.builder.build_load(fv_ptr);
@@ -509,12 +550,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         func
     }
 
-    /// Generate a call to the allocator to allocate `n` bytes of (heap) memory
+    /// Generate a call to the heap allocator to allocate `n` bytes of heap memory.
     ///
-    /// Will call whatever function is bound to `--alloc`.
-    /// Reasonably, this should be a light wrapper around a call to
-    /// externally defined libc `malloc`.
-    fn gen_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
+    /// Returns a heap pointer of generic type `i8*`, analogous to the way
+    /// `malloc` in C returns a void pointer.
+    ///
+    /// Will call whatever function is bound to `malloc`.
+    fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
         match env.get("malloc", &[]) {
             Some(Var::Func(f)) => self.builder.build_call(f, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => {
@@ -529,18 +571,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    /// Store a structure of values `vals` at location
+    /// Generate a call to the heap allocator to allocate heap space for a value of type `typ`
     ///
-    /// Struct literals in LLVM may only consist of constants and globals.
-    /// Store the complex structure by storing each member in turn.
-    fn build_store_struct(&self, vals: &[&Value], dest: &Value) {
-        for (i, val) in vals.iter().enumerate() {
-            let sub_dest = self.builder.build_gep(
-                dest,
-                &[0usize.compile(self.ctx), (i as u32).compile(self.ctx)],
-            );
-            self.builder.build_store(val, sub_dest);
-        }
+    /// Returns a heap pointer of type pointer to `typ`.
+    fn build_malloc_of_type(&self, env: &mut Env<'src, 'ctx>, typ: &Type) -> &'ctx Value {
+        let type_size = self.size_of(typ);
+        let p = self.build_malloc(env, type_size);
+        self.builder.build_bit_cast(p, PointerType::new(typ))
+    }
+
+    /// Put a value on the heap
+    ///
+    /// Returns a pointer pointing to `val` on the heap
+    fn build_val_on_heap(&self, env: &mut Env<'src, 'ctx>, val: &Value) -> &'ctx Value {
+        let p = self.build_malloc_of_type(env, val.get_type());
+        self.builder.build_store(val, p);
+        p
     }
 
     /// Build a sequence of instructions that create a struct in register
@@ -558,73 +604,166 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         out_struct
     }
 
+    /// Build a reference counting pointer with contents `val`
+    ///
+    /// Count starts at 1
+    fn build_rc(&self, env: &mut Env<'src, 'ctx>, val: &'ctx Value) -> &'ctx Value {
+        let s = self.build_struct(&[1u64.compile(self.ctx), val]);
+        self.build_val_on_heap(env, s)
+    }
+
+    /// Get a generic pointer to the contents of a rc pointer
+    fn build_get_rc_contents_generic_ptr(&self, rc_generic: &Value) -> &'ctx Value {
+        let rc = self.builder.build_bit_cast(
+            rc_generic,
+            PointerType::new(StructType::new(
+                self.ctx,
+                &[Type::get::<u64>(self.ctx), Type::get::<u8>(self.ctx)],
+                false,
+            )),
+        );
+        self.builder.build_gep(
+            rc,
+            &[
+                0usize.compile(self.ctx),
+                1u32.compile(self.ctx),
+            ],
+        )
+    }
+
+    /// Build instructions to cast a pointer value to a generic pointer `i8*`
+    pub fn build_as_generic_ptr(&self, val: &Value) -> &'ctx Value {
+        self.builder.build_bit_cast(val, type_generic_ptr(self.ctx))
+    }
+
+    /// Capture the free variables `free_vars` of some lambda from the environment `env`
+    ///
+    /// Returns a LLVM structure of each captured variable
     fn gen_lambda_env_capture(
         &self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
     ) -> &'ctx Value {
-        let mut captures_types = Vec::new();
         let mut captures_vals = Vec::new();
         for (&fv, insts) in free_vars {
-            for &(ref inst, ref typ) in insts {
-                captures_types.push(self.gen_type(typ));
+            for &(ref inst, _) in insts {
                 captures_vals.push(env.get_var(fv, inst).expect(
                     "ICE: Free var not found in env",
                 ))
             }
         }
-        let captures_type = StructType::new(self.ctx, &captures_types, false);
-        let captures_size = self.get_type_alloc_size(captures_type);
-        let captures_heap_ptr_generic = self.gen_malloc(env, captures_size);
-        let captures_heap_ptr = self.builder.build_bit_cast(
-            captures_heap_ptr_generic,
-            PointerType::new(captures_type),
-        );
-        self.build_store_struct(&captures_vals, captures_heap_ptr);
-        captures_heap_ptr_generic
+        self.build_struct(&captures_vals)
     }
 
+    /// Generate the LLVM representation of a lambda expression, but with the contents
+    /// of the closure capture left as allocated, but undefined, space
+    ///
+    /// For use when generating bindings with recursive references
+    fn gen_lambda_no_capture(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        lam: &'ast ast::Lambda<'src>,
+        name: Option<&str>,
+    ) -> (&'ctx Value, FreeVarInsts<'src>) {
+        let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
+        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
+        let captures_type = self.captures_type_of_free_vars(&free_vars);
+        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type));
+        let undef_heap_captures_generic = self.build_as_generic_ptr(undef_heap_captures);
+        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic]);
+        (closure, free_vars)
+    }
+
+    /// For a closure that was created without environment capture,
+    /// capture free variables and insert into captures member of struct
+    ///
+    /// May supply map of the free variables of the lambda, if saved from previously,
+    /// to avoid unecessary recalculations.
+    fn closure_capture_env(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        closure: &Value,
+        lam: &'ast ast::Lambda<'src>,
+        free_vars: Option<FreeVarInsts<'src>>,
+    ) {
+        let free_vars = free_vars.unwrap_or_else(|| free_vars_in_lambda_filter_externs(&env, &lam));
+        let captures = self.gen_lambda_env_capture(env, &free_vars);
+        let closure_captures_rc_generic = self.builder.build_extract_value(closure, 1);
+        let closure_captures_rc = self.builder.build_bit_cast(
+            closure_captures_rc_generic,
+            type_rc(self.ctx, captures.get_type()),
+        );
+        let closure_captures_ptr = self.builder.build_gep(
+            closure_captures_rc,
+            &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
+        );
+        self.builder.build_store(captures, closure_captures_ptr);
+    }
+
+    /// Generate the LLVM representation of a lambda expression
     fn gen_lambda(
         &self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
         name: Option<&str>,
     ) -> &'ctx Value {
-        // Get free variables of `lam`, but filter out externs
-        let free_vars = free_vars_in_lambda(&lam)
-            .into_iter()
-            .filter(|&(k, _)| env.vars.contains_key(k))
-            .collect::<BTreeMap<_, _>>();
-        let func_ptr = self.gen_lambda_func(env, &free_vars, lam, name);
-        let captures_ptr = self.gen_lambda_env_capture(env, &free_vars);
-        let refcount = 1usize.compile(self.ctx);
-        self.build_struct(&[func_ptr, captures_ptr, refcount])
+        let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
+        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
+        let captures = self.gen_lambda_env_capture(env, &free_vars);
+        let captures_rc = self.build_rc(env, captures);
+        let captures_rc_generic = self.build_as_generic_ptr(captures_rc);
+        self.build_struct(&[func_ptr, captures_rc_generic])
     }
 
-    fn gen_bindings(&self, env: &mut Env<'src, 'ctx>, bs: &[&'ast ast::Binding<'src>]) {
-        // Before defining, declare all bindings to make them available for recursive definitions
-        let mut defs = Vec::new();
-        for b in bs {
-            env.push_var(b.ident.s, BTreeMap::new());
-            if b.mono_insts.is_empty() {
-                let typ = self.gen_type(&b.typ);
-                let var = self.builder.build_alloca(typ);
-                var.set_name(b.ident.s);
-                env.add_inst(b.ident.s, vec![], var);
-                defs.push((b.ident.s, var, &b.val))
+    /// Generate LLVM definitions for the variable/function bindings `bs`
+    ///
+    /// Assumes that the variable bindings in `bs` are in reverse topologically order
+    /// for the relation: "depends on".
+    fn gen_bindings(&self, env: &mut Env<'src, 'ctx>, bindings: &[&'ast ast::Binding<'src>]) {
+        // To solve the problem of recursive references in closure captures, e.g. two mutually
+        // recursive functions that need to capture each other: First create closures where
+        // captures are left as allocated, but undefined space. Second, fill in captures
+        // with all closures with pointers available to refer to.
+
+        let empty_vec = vec![];
+        // Flatten with regards to mono insts
+        let mut bindings_insts: Vec<(_, &Vec<ast::Type>, _)> = Vec::new();
+        for binding in bindings {
+            env.push_var(binding.ident.s, BTreeMap::new());
+            if binding.mono_insts.is_empty() {
+                bindings_insts.push((binding.ident.s, &empty_vec, &binding.val));
             } else {
-                for (inst_ts, val_inst) in &b.mono_insts {
-                    let typ = self.gen_type(&val_inst.get_type());
-                    let var = self.builder.build_alloca(typ);
-                    var.set_name(b.ident.s);
-                    env.add_inst(b.ident.s, inst_ts.clone(), var);
-                    defs.push((b.ident.s, var, val_inst))
+                for (inst_ts, val_inst) in &binding.mono_insts {
+                    bindings_insts.push((binding.ident.s, &inst_ts, val_inst));
                 }
             }
         }
-        for (id, var, expr) in defs {
-            let val = self.gen_expr(env, expr, Some(id));
-            self.builder.build_store(val, var);
+
+        let mut lambdas_free_vars = VecDeque::new();
+        for &(name, inst, val) in &bindings_insts {
+            match *val {
+                ast::Expr::Lambda(ref lam) => {
+                    let (closure, free_vars) = self.gen_lambda_no_capture(env, lam, Some(name));
+                    env.add_inst(name, inst.clone(), closure);
+                    lambdas_free_vars.push_back(free_vars);
+                }
+                _ => (),
+            }
+        }
+
+        for &(name, inst, val) in &bindings_insts {
+            match val {
+                &ast::Expr::Lambda(ref lam) => {
+                    let closure = env.get_var(name, &inst).expect("ICE: variable dissapeared");
+                    let free_vars = lambdas_free_vars.pop_front();
+                    self.closure_capture_env(env, closure, lam, free_vars);
+                }
+                expr => {
+                    let var = self.gen_expr(env, expr, Some(name));
+                    var.set_name(name);
+                    env.add_inst(name, inst.clone(), var);
+                }
+            }
         }
     }
 
@@ -640,13 +779,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
 
     fn gen_cons(&self, env: &mut Env<'src, 'ctx>, cons: &'ast ast::Cons<'src>) -> &'ctx Value {
-        Value::new_struct(
-            self.ctx,
+        self.build_struct(
             &[
-                self.gen_expr(env, &cons.car, None),
-                self.gen_expr(env, &cons.cdr, None),
+                self.gen_expr(env, &cons.car, Some("car")),
+                self.gen_expr(env, &cons.cdr, Some("cdr")),
             ],
-            false,
         )
     }
 
@@ -674,53 +811,58 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
-    /// Generate LLVM IR for the executable application defined in `module`
+    /// Generate LLVM IR for the executable application defined in `module`.
+    ///
+    /// Declare external functions, define global variabled and functions, and define
+    /// an entry-point that makes the program binary executable.
+    ///
+    /// To allow for run-time operations, e.g. heap allocation, in "constant" global definitions,
+    /// wrap the definitions in the entry-point function. This moves initialization to run-time,
+    /// whish in turn allows for these operations.
+    ///
+    /// Basically, transform this:
+    /// ```
+    /// (define foo ...)
+    /// (define bar ...)
+    /// (define (main) ...)
+    /// ```
+    /// to this:
+    /// ```
+    /// (define (main)
+    ///   (let ((foo ...)
+    ///         (bar ...)
+    ///         (main' ...))
+    ///     (main')))
+    /// ```
+    /// where `main'` is the user defined `main`, and `main` is a simple, C-abi compatible function.
     pub fn gen_executable(&mut self, module: &ast::Module) {
         let mut env = Env::new();
 
+        // Generate extern declarations
         self.gen_extern_decls(&mut env, &module.externs);
 
-        // Wrap `main` around global variable definitions to allow
-        // runtime initializations easily
+        // Create wrapping, entry-point `main` function
         let main_type = ast::Type::new_func(ast::TYPE_NIL.clone(), ast::TYPE_NIL.clone());
         let main_wrapper = self.gen_extern_func_decl("main", &main_type);
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
         *self.current_func.borrow_mut() = Some(main_wrapper);
         *self.current_block.borrow_mut() = Some(entry);
+
+        // Generate global definitions
         let global_bindings = module.globals.bindings().rev().collect::<Vec<_>>();
         self.gen_bindings(&mut env, &global_bindings);
+
+        // Call user defined `main`
         let user_main = env.get_var("main", &[]).expect(
             "ICE: No user defined `main`",
         );
-
-        let v = self.builder.build_load(user_main);
-        v.set_name("main_loaded");
         let r = self.build_app(
             &mut env,
-            v,
+            user_main,
             (val_nil(self.ctx), type_nil(self.ctx)),
             type_nil(self.ctx),
         );
         self.builder.build_ret(r);
     }
 }
-
-
-// TODO: About representation, storage, and applications of functions
-//
-// Represent the high-level function `(-> a b)` as some kind of union between simple function and
-// closure with environment. Store environment behind a refcounted void pointer to give the function
-// union the same size regardless of closure captures. A boxed closure (?). Cast captures struct
-// to correct type within the closure after
-//
-// Example implementation of low-level function:
-// ```
-// %rc-t = struct { i8* %ptr, isize %count }
-// %f-t = struct { i1 %is-closure, i8* %fp, %rc-t %env }
-// ```
-//
-// For e.g. external functions, set `%is-closure` to 0, and `%env` to `undef`.
-// To apply plain function: get `%fp`, cast it to plain function type (`RET (INP)*`),
-// and apply to arg. To apply closure: get `%fp`, cast it to closure type (`RET (ENV, INP)*`),
-// and apply to env and arg.
