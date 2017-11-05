@@ -24,7 +24,7 @@ mod util;
 pub use cbox::{CBox, CSemiBox};
 pub use self::builder::Builder;
 pub use self::block::BasicBlock;
-pub use self::compile::{Compile, null_byte_pointer};
+pub use self::compile::Compile;
 pub use self::context::{Context, GetContext};
 pub use self::engine::{JitEngine, JitOptions, Interpreter, ExecutionEngine, GenericValue,
                        GenericValueCast};

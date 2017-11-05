@@ -497,6 +497,13 @@ impl<'src> Expr<'src> {
         }
     }
 
+    pub fn as_var(&self) -> Option<&Variable<'src>> {
+        match *self {
+            Expr::Variable(ref bnd) => Some(bnd),
+            _ => None,
+        }
+    }
+
     pub fn get_type(&self) -> &Type<'src> {
         match *self {
             Expr::Nil(_) => &TYPE_NIL,

@@ -138,14 +138,24 @@ impl fmt::Display for CodegenErr {
     }
 }
 
+/// Naked version of extern is used for external linkage and to call if direct call to extern.
+/// If function is used as a value, e.g. put in a list together with arbitrary functions, we have
+/// to wrap it in a closure so that it can be called in the same way as any other function.
+#[derive(Debug, Clone, Copy)]
+struct Extern<'ctx> {
+    naked: &'ctx Function,
+    wrapped: &'ctx Function,
+}
+
+/// A variable in the environment. Either an extern, or not
 enum Var<'ctx> {
-    Func(&'ctx Function),
+    Extern(Extern<'ctx>),
     Val(&'ctx Value),
 }
 
 #[derive(Debug)]
 struct Env<'src, 'ctx> {
-    externs: BTreeMap<&'src str, &'ctx Function>,
+    externs: BTreeMap<&'src str, Extern<'ctx>>,
     vars: BTreeMap<&'src str, Vec<BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>>>,
 }
 
@@ -167,7 +177,7 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
 
     fn get(&self, s: &str, ts: &[ast::Type]) -> Option<Var<'ctx>> {
         let val = self.get_var(s, ts).map(Var::Val);
-        let ext = self.externs.get(s).map(|x| Var::Func(x));
+        let ext = self.externs.get(s).map(|&x| Var::Extern(x));
         val.or(ext)
     }
 
@@ -231,10 +241,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         )
     }
 
-    fn gen_extern_func_type(&self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
-        FunctionType::new(self.gen_type(ret), &[self.gen_type(arg)])
-    }
-
     fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
         use lib::front::ast::Type as PType;
         match *typ {
@@ -295,13 +301,33 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.module.add_function(id, func_typ)
     }
 
-    fn gen_extern_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
-        let (arg, ret) = typ.get_func().expect(&format!(
+    /// Generate an external function declaration and matching closure-wrapping
+    fn gen_extern_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> Extern<'ctx> {
+        assert!(
+            self.current_block.borrow().is_none(),
+            "ICE: External function declarations may only be generated first"
+        );
+        let (at, rt) = typ.get_func().expect(&format!(
             "ICE: Invalid function type `{}`",
             typ
         ));
-        let func_typ = self.gen_extern_func_type(arg, ret);
-        self.module.add_function(id, func_typ)
+        let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
+
+        let func_typ = FunctionType::new(ret_type, &[arg_type]);
+        let naked = self.module.add_function(id, func_typ);
+
+        let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
+        let wrapped = self.module.add_function(
+            &format!("{}_closure", id),
+            &clos_typ,
+        );
+        let entry = wrapped.append("entry");
+        self.builder.position_at_end(entry);
+        wrapped[0].set_name("_NO_CAPTURES");
+        let param = &*wrapped[1];
+        let r = self.builder.build_call(naked, &[param]);
+        self.builder.build_ret(r);
+        Extern { naked, wrapped }
     }
 
     fn gen_extern_decls(
@@ -317,7 +343,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             }
             env.externs.insert(
                 id,
-                self.gen_extern_func_decl(id, &decl.typ) as &_,
+                self.gen_extern_func_decl(id, &decl.typ),
             );
         }
     }
@@ -367,101 +393,60 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     ) -> &'ctx Value {
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
         match env.get(var.ident.s, inst) {
-            Some(Var::Func(fp)) => {
-                // Wrap function pointer in function+closure union
-                let null_captures = null_byte_pointer(self.ctx);
-                Value::new_struct(self.ctx, &[fp, null_captures], false)
-            }
-            Some(Var::Val(v)) => {
-                println!("v: {:?}", v);
-                v
-            }
+            Some(Var::Extern(e)) => e.wrapped,
+            Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
             None => unreachable!(),
         }
     }
 
-    fn build_if<F, G>(
-        &self,
-        mut env: &mut Env<'src, 'ctx>,
-        pred: &'ctx Value,
-        cons: F,
-        alt: G,
-    ) -> &'ctx Value
-    where
-        F: FnOnce(&Self, &mut Env<'src, 'ctx>) -> &'ctx Value,
-        G: FnOnce(&Self, &mut Env<'src, 'ctx>) -> &'ctx Value,
-    {
+    fn gen_if(&self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
         let parent_func = self.current_func.borrow().unwrap();
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
         let next_br = parent_func.append("cond_next");
+        let pred = self.gen_expr(env, &cond.predicate, None);
         self.builder.build_cond_br(pred, then_br, else_br);
         let mut phi_nodes = vec![];
-        self.builder.position_at_end(then_br);
-        let then_val = cons(self, &mut env);
-        phi_nodes.push((then_val, then_br));
-        self.builder.build_br(next_br);
-        self.builder.position_at_end(else_br);
-        let else_val = alt(self, &mut env);
-        phi_nodes.push((else_val, else_br));
-        self.builder.build_br(next_br);
-        self.builder.position_at_end(next_br);
-        self.builder.build_phi(then_val.get_type(), &phi_nodes)
-    }
 
-    fn gen_if(&self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
-        let pred = self.gen_expr(env, &cond.predicate, None);
-        let cons = |generator: &Self, env: &mut Env<'src, 'ctx>| {
-            generator.gen_expr(env, &cond.consequent, None)
-        };
-        let alt = |generator: &Self, env: &mut Env<'src, 'ctx>| {
-            generator.gen_expr(env, &cond.alternative, None)
-        };
-        self.build_if(env, pred, cons, alt)
+        self.builder.position_at_end(then_br);
+        *self.current_block.borrow_mut() = Some(then_br);
+        let then_val = self.gen_expr(env, &cond.consequent, None);
+        let then_last_block = self.current_block.borrow().unwrap();
+        phi_nodes.push((then_val, then_last_block));
+        self.builder.build_br(next_br);
+
+        self.builder.position_at_end(else_br);
+        *self.current_block.borrow_mut() = Some(else_br);
+        let else_val = self.gen_expr(env, &cond.alternative, None);
+        let else_last_block = self.current_block.borrow().unwrap();
+        phi_nodes.push((else_val, else_last_block));
+        self.builder.build_br(next_br);
+
+        self.builder.position_at_end(next_br);
+        *self.current_block.borrow_mut() = Some(next_br);
+        self.builder.build_phi(then_val.get_type(), &phi_nodes)
     }
 
     /// Build the application of a function to an argument
     fn build_app(
         &self,
-        env: &mut Env<'src, 'ctx>,
         closure: &'ctx Value,
         (arg, arg_type): (&'ctx Value, &'ctx Type),
         ret_type: &'ctx Type,
     ) -> &'ctx Value {
         let func_ptr = self.builder.build_extract_value(closure, 0);
         let captures_rc = self.builder.build_extract_value(closure, 1);
-        let captures_rc_int = self.builder.build_ptr_to_int(
-            captures_rc,
-            Type::get::<usize>(self.ctx),
+        let captures_ptr = self.build_get_rc_contents_generic_ptr(captures_rc);
+        let func = self.builder.build_bit_cast(
+            func_ptr,
+            PointerType::new(FunctionType::new(
+                ret_type,
+                &[type_generic_ptr(self.ctx), arg_type],
+            )),
         );
-        let is_closure = self.builder.build_cmp(
-            captures_rc_int,
-            0usize.compile(self.ctx),
-            Predicate::NotEqual,
-        );
-        is_closure.set_name("is_closure");
-        let app_closure = |generator: &Self, _: &mut Env<'src, 'ctx>| {
-            let captures_ptr = self.build_get_rc_contents_generic_ptr(captures_rc);
-            let func = generator.builder.build_bit_cast(
-                func_ptr,
-                PointerType::new(FunctionType::new(
-                    ret_type,
-                    &[type_generic_ptr(self.ctx), arg_type],
-                )),
-            );
-            let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
-            generator.builder.build_call(func, &[captures_ptr, arg])
-        };
-        let app_func = |generator: &Self, _: &mut Env<'src, 'ctx>| {
-            let func = generator.builder.build_bit_cast(
-                func_ptr,
-                PointerType::new(FunctionType::new(ret_type, &[arg_type])),
-            );
-            let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
-            generator.builder.build_call(func, &[arg])
-        };
-        self.build_if(env, is_closure, app_closure, app_func)
+        let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
+        self.builder.build_call(func, &[captures_ptr, arg])
     }
 
     // TODO: Tail call optimization
@@ -470,11 +455,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let (at, rt) = app.func.get_type().get_func().unwrap();
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let arg = self.gen_expr(env, &app.arg, None);
-        // The expression being called will compile to a union of either a plain function or a
-        // closure with a refcounted struct of captures. If the captures pointer is null, it's a
-        // plain function. Otherwise, treat it as a closure
-        let func = self.gen_expr(env, &app.func, None);
-        self.build_app(env, func, (arg, arg_type), ret_type)
+
+        // If it's a direct application of an extern, call it as a function,
+        // otherwise call it as a closure
+        if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, &[])) {
+            self.builder.build_call(ext.naked, &[arg])
+        } else {
+            let func = self.gen_expr(env, &app.func, None);
+            self.build_app(func, (arg, arg_type), ret_type)
+        }
     }
 
     /// Generate the anonymous function of a closure
@@ -496,6 +485,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let func = self.gen_func_decl(&lambda_name, &lam.typ);
         let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
         let entry = func.append("entry");
+        let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
         self.builder.position_at_end(entry);
 
         let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
@@ -513,7 +503,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let mut local_env = map_of(lam.param_ident.s, vec![map_of(vec![], param)]);
 
         // Extract individual free variable captures from captures pointer and add to local env
-        let mut i: usize = 0;
+        let mut i: u32 = 0;
         for (fv_id, fv_insts) in free_vars.iter() {
             local_env.entry(fv_id).or_insert(vec![BTreeMap::new()]);
             for (fv_inst, _) in fv_insts.iter().cloned() {
@@ -521,7 +511,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                     captures_ptr,
                     &[0usize.compile(self.ctx), i.compile(self.ctx)],
                 );
-                fv_ptr.set_name(&format!("capt_{}", fv_id));
+                fv_ptr.set_name(&format!("capture_{}", fv_id));
                 let fv_loaded = self.builder.build_load(fv_ptr);
                 fv_loaded.set_name(fv_id);
                 local_env
@@ -541,6 +531,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         // Restore state of code generator
         env.vars = old_vars;
         *self.current_func.borrow_mut() = parent_func;
+        *self.current_block.borrow_mut() = parent_block;
         self.builder.position_at_end(
             self.current_block.borrow().expect(
                 "ICE: no current_block",
@@ -558,10 +549,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Will call whatever function is bound to `malloc`.
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
         match env.get("malloc", &[]) {
-            Some(Var::Func(f)) => self.builder.build_call(f, &[n.compile(self.ctx)]),
+            Some(Var::Extern(ext)) => self.builder.build_call(ext.naked, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => {
                 self.build_app(
-                    env,
                     v,
                     (n.compile(self.ctx), Type::get::<usize>(self.ctx)),
                     PointerType::new(Type::get::<u8>(self.ctx)),
@@ -842,8 +832,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.gen_extern_decls(&mut env, &module.externs);
 
         // Create wrapping, entry-point `main` function
-        let main_type = ast::Type::new_func(ast::TYPE_NIL.clone(), ast::TYPE_NIL.clone());
-        let main_wrapper = self.gen_extern_func_decl("main", &main_type);
+        let main_type = FunctionType::new(type_nil(self.ctx), &[type_nil(self.ctx)]);
+        let main_wrapper = self.module.add_function("main", &main_type);
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
         *self.current_func.borrow_mut() = Some(main_wrapper);
@@ -858,7 +848,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             "ICE: No user defined `main`",
         );
         let r = self.build_app(
-            &mut env,
             user_main,
             (val_nil(self.ctx), type_nil(self.ctx)),
             type_nil(self.ctx),
