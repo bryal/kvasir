@@ -1,4 +1,4 @@
-use lib::front::SrcPos;
+use lib::front::{SrcPos, error_exit, exit};
 use lib::front::ast::{self, Expr};
 use llvm_sys;
 use llvm_sys::prelude::*;
@@ -138,9 +138,10 @@ impl fmt::Display for CodegenErr {
     }
 }
 
-/// Naked function version of extern is used for external linkage and to call if direct call to extern.
-/// If function is used as a value, e.g. put in a list together with arbitrary functions, we have
-/// to wrap it in a closure so that it can be called in the same way as any other function.
+/// Naked function version of extern is used for external linkage and to call if direct call
+/// to extern. If function is used as a value, e.g. put in a list together with arbitrary
+/// functions, we have to wrap it in a closure so that it can be called in the same way as
+/// any other function.
 #[derive(Debug, Clone, Copy)]
 struct Extern<'ctx> {
     func: &'ctx Function,
@@ -167,12 +168,12 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
         }
     }
 
+    fn get_var_insts(&self, s: &str) -> Option<&BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>> {
+        self.vars.get(s).and_then(|l| l.last())
+    }
+
     fn get_var(&self, s: &str, ts: &[ast::Type]) -> Option<&'ctx Value> {
-        self.vars
-            .get(s)
-            .and_then(|l| l.last())
-            .and_then(|is| is.get(ts))
-            .map(|&x| x)
+        self.get_var_insts(s).and_then(|is| is.get(ts)).map(|&x| x)
     }
 
     fn get(&self, s: &str, ts: &[ast::Type]) -> Option<Var<'ctx>> {
@@ -459,13 +460,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     // TODO: Tail call optimization
     /// Generates IR code for a function application.
     fn gen_app(&self, env: &mut Env<'src, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
-        let (at, rt) = app.func.get_type().get_func().unwrap();
+        let typ = app.func.get_type();
+        let inst = typ.get_inst_args().unwrap_or(&[]);
+        let canon = typ.canonicalize();
+        let (at, rt) = canon.get_func().expect(&format!(
+                "ICE: Invalid function type `{}`",
+                app.func.get_type(),
+            ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let arg = self.gen_expr(env, &app.arg, None);
 
         // If it's a direct application of an extern, call it as a function,
         // otherwise call it as a closure
-        if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, &[])) {
+        if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, inst)) {
             self.builder.build_call(ext.func, &[arg])
         } else {
             let func = self.gen_expr(env, &app.func, None);
@@ -730,7 +737,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let mut bindings_insts: Vec<(_, &Vec<ast::Type>, _)> = Vec::new();
         for binding in bindings {
             env.push_var(binding.ident.s, BTreeMap::new());
-            if binding.mono_insts.is_empty() {
+            if binding.typ.is_monomorphic() {
                 bindings_insts.push((binding.ident.s, &empty_vec, &binding.val));
             } else {
                 for (inst_ts, val_inst) in &binding.mono_insts {
@@ -767,6 +774,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
     }
 
+    /// Generate LLVM IR for a `let` special form
     fn gen_let(&self, env: &mut Env<'src, 'ctx>, l: &'ast ast::Let<'src>) -> &'ctx Value {
         let bindings = l.bindings.bindings().rev().collect::<Vec<_>>();
         self.gen_bindings(env, &bindings);
@@ -836,6 +844,31 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// ```
     /// where `main'` is the user defined `main`, and `main` is a simple, C-abi compatible function.
     pub fn gen_executable(&mut self, module: &ast::Module) {
+        // Assert that `main` exists and is monomorphic of type `(-> Nil Nil)`
+        {
+            let main = module
+                .globals
+                .bindings()
+                .find(|b| b.ident.s == "main")
+                .unwrap_or_else(|| error_exit("main function not found"));
+            let expect = ast::Type::new_func(ast::TYPE_NIL.clone(), ast::TYPE_NIL.clone());
+            if main.typ != expect {
+                let error_msg = format!(
+                    "main function has wrong type. Expected type `{}`, found type `{}`",
+                    expect,
+                    main.typ
+                );
+                if main.typ.is_monomorphic() {
+                    main.pos.error_exit(error_msg)
+                } else {
+                    main.pos.error(error_msg);
+                    main.pos.help("Try adding type annotations to enforce correct type during type-checking.\n\
+                                   E.g. `(define main (: (lambda (_) ...) (-> Nil Nil)))`");
+                    exit()
+                }
+            }
+        }
+
         let mut env = Env::new();
 
         // Generate extern declarations
@@ -855,7 +888,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
         // Call user defined `main`
         let user_main = env.get_var("main", &[]).expect(
-            "ICE: No user defined `main`",
+            "ICE: No monomorphic user defined `main`",
         );
         let r = self.build_app(
             user_main,

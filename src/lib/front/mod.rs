@@ -37,7 +37,7 @@ impl TypeVarGen {
 }
 
 /// Exit compilation
-fn exit() -> ! {
+pub fn exit() -> ! {
     println!("\nError occured during compilation. Exiting\n");
     process::exit(0)
 }

@@ -57,16 +57,6 @@ pub enum Type<'src> {
     Poly(Box<Poly<'src>>),
 }
 
-impl<'src> Type<'src> {
-    /// If this type is an instantiated polytype, return the instantiation args
-    pub fn get_inst_args(&self) -> Option<&[Type<'src>]> {
-        match *self {
-            Type::App(box TypeFunc::Poly(_), ref args) => Some(args),
-            _ => None,
-        }
-    }
-}
-
 /// The tuple has the type constructor `*`, as it is a
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
@@ -81,6 +71,14 @@ impl<'src> Type<'src> {
 
     pub fn new_ptr(typ: Type<'src>) -> Self {
         Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
+    }
+
+    /// If this type is an instantiated polytype, return the instantiation args
+    pub fn get_inst_args(&self) -> Option<&[Type<'src>]> {
+        match *self {
+            Type::App(box TypeFunc::Poly(_), ref args) => Some(args),
+            _ => None,
+        }
     }
 
     fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
