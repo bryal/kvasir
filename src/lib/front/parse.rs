@@ -61,6 +61,8 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> Hash
                 .flat_map(|e2| sibling_refs(e2, siblings))
                 .collect()
         }
+        Car(ref c) => sibling_refs(&c.expr, siblings),
+        Cdr(ref c) => sibling_refs(&c.expr, siblings),
         TypeAscript(ref a) => sibling_refs(&a.expr, siblings),
         Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => HashSet::new(),
     }
@@ -244,6 +246,16 @@ impl Display for ParseErr {
     }
 }
 
+/// A binding pattern
+///
+/// Patterns are used in variable bindings as a sort of syntax sugar
+enum Pattern<'src> {
+    /// Just an identifier
+    Var(Ident<'src>),
+    /// A function-binding pattern. E.g. `(inc x)`
+    Func(Ident<'src>, (Vec<Ident<'src>>, SrcPos<'src>)),
+}
+
 struct Parser<'tvg> {
     /// Counter for generation of unique type variable ids
     type_var_gen: &'tvg mut TypeVarGen,
@@ -309,7 +321,27 @@ impl<'tvg> Parser<'tvg> {
     fn parse_ident<'src>(&mut self, cst: &CST<'src>) -> Ident<'src> {
         match *cst {
             CST::Ident(ident, ref pos) => Ident::new(ident, pos.clone()),
-            _ => cst.pos().error_exit(Invalid("binding")),
+            _ => cst.pos().error_exit(Invalid("identifier")),
+        }
+    }
+
+    /// Parse a syntax tree as a Pattern
+    fn parse_pattern<'src>(&mut self, cst: &CST<'src>) -> Pattern<'src> {
+        match *cst {
+            CST::Ident(ident, ref pos) => Pattern::Var(Ident::new(ident, pos.clone())),
+            CST::SExpr(ref app, _) if app.len() > 1 => {
+                let f_id = self.parse_ident(&app[0]);
+                let params_ids = app[1..]
+                    .iter()
+                    .map(|a| self.parse_ident(a))
+                    .collect::<Vec<_>>();
+                let params_pos = params_ids[0].pos.to(&params_ids.last().unwrap().pos);
+                Pattern::Func(f_id, (params_ids, params_pos))
+            }
+            CST::SExpr(ref app, ref pos) if app.len() == 1 => {
+                pos.error_exit("Function binding pattern requires at least one parameter")
+            }
+            _ => cst.pos().error_exit(Invalid("pattern")),
         }
     }
 
@@ -420,17 +452,53 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
+    /// Parse a list of syntax trees as a variable binding
+    ///
+    /// A binding consists of a pattern and a definition.
+    /// Used for parsing both the contents of a `define` special form, and the bindings of a
+    /// `let` special form.
+    ///
+    /// # Examples
+    /// Following are some example bindings
+    /// ```
+    /// (define num 1)
+    /// (define id (lambda (x) x)) ; { These two are equivalent.
+    /// (define (id2        x) x)  ;   Just syntax sugar }
+    /// (let ((num 1)
+    ///       (id (lambda (x) x))
+    ///       ((id2        x) x))
+    ///   ...)
+    /// ```
     fn parse_binding<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Binding<'src> {
         if csts.len() == 2 {
-            Binding {
-                ident: self.parse_ident(&csts[0]),
-                typ: self.gen_type_var(),
-                val: self.parse_expr(&csts[1]),
-                mono_insts: HashMap::new(),
-                pos: pos.clone(),
+            match self.parse_pattern(&csts[0]) {
+                Pattern::Var(ident) => Binding {
+                    ident: ident,
+                    typ: self.gen_type_var(),
+                    val: self.parse_expr(&csts[1]),
+                    mono_insts: HashMap::new(),
+                    pos: pos.clone(),
+                },
+                Pattern::Func(f_id, (params_ids, params_pos)) => {
+                    let params = params_ids
+                        .into_iter()
+                        .map(|id| (id, self.gen_type_var()))
+                        .collect::<Vec<_>>();
+                    let body = self.parse_expr(&csts[1]);
+                    Binding {
+                        ident: f_id,
+                        typ: self.gen_type_var(),
+                        val: Expr::Lambda(Box::new(
+                            self.new_multary_lambda(params, &params_pos, body, pos),
+                        )),
+                        mono_insts: HashMap::new(),
+                        pos: pos.clone(),
+                    }
+                }
             }
+
         } else {
-            pos.error_exit(Expected("pair of variable name and value"))
+            pos.error_exit(Expected("pair of binding pattern and definition"))
         }
     }
 
@@ -524,6 +592,30 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
+    /// Parse a list of `CST`s as a `car` operation
+    fn parse_car<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Car<'src> {
+        if csts.len() != 1 {
+            pos.error_exit(ArityMis(1, csts.len()))
+        }
+        Car {
+            typ: self.gen_type_var(),
+            expr: self.parse_expr(&csts[0]),
+            pos: pos,
+        }
+    }
+
+    /// Parse a list of `CST`s as a `cdr` operation
+    fn parse_cdr<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cdr<'src> {
+        if csts.len() != 1 {
+            pos.error_exit(ArityMis(1, csts.len()))
+        }
+        Cdr {
+            typ: self.gen_type_var(),
+            expr: self.parse_expr(&csts[0]),
+            pos: pos,
+        }
+    }
+
     /// Parse a `CST` as an `Expr`
     fn parse_expr<'src>(&mut self, cst: &CST<'src>) -> Expr<'src> {
         match *cst {
@@ -542,6 +634,12 @@ impl<'tvg> Parser<'tvg> {
                         }
                         CST::Ident("cons", _) => Expr::Cons(
                             Box::new(self.parse_cons(tail, pos.clone())),
+                        ),
+                        CST::Ident("car", _) => Expr::Car(
+                            Box::new(self.parse_car(tail, pos.clone())),
+                        ),
+                        CST::Ident("cdr", _) => Expr::Cdr(
+                            Box::new(self.parse_cdr(tail, pos.clone())),
                         ),
                         _ => Expr::App(Box::new(self.parse_app(&sexpr[0], tail, pos.clone()))),
                     }

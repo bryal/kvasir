@@ -9,6 +9,7 @@ lazy_static!{
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil");
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool");
     pub static ref TYPE_STRING: Type<'static> = Type::Const("String");
+    pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld");
 }
 
 /// A polytype
@@ -63,6 +64,13 @@ pub enum Type<'src> {
 impl<'src> Type<'src> {
     pub fn new_func(arg: Type<'src>, ret: Type<'src>) -> Self {
         Type::App(Box::new(TypeFunc::Const("->")), vec![arg, ret])
+    }
+
+    pub fn new_io(ret: Type<'src>) -> Self {
+        Type::new_func(
+            TYPE_REALWORLD.clone(),
+            Type::new_cons(ret, TYPE_REALWORLD.clone()),
+        )
     }
 
     pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
@@ -464,6 +472,20 @@ pub struct Cons<'src> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Car<'src> {
+    pub typ: Type<'src>,
+    pub expr: Expr<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Cdr<'src> {
+    pub typ: Type<'src>,
+    pub expr: Expr<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -476,6 +498,8 @@ pub enum Expr<'src> {
     Let(Box<Let<'src>>),
     TypeAscript(Box<TypeAscript<'src>>),
     Cons(Box<Cons<'src>>),
+    Car(Box<Car<'src>>),
+    Cdr(Box<Cdr<'src>>),
 }
 
 impl<'src> Expr<'src> {
@@ -492,6 +516,8 @@ impl<'src> Expr<'src> {
             Expr::Let(ref l) => &l.pos,
             Expr::TypeAscript(ref a) => &a.pos,
             Expr::Cons(ref c) => &c.pos,
+            Expr::Car(ref c) => &c.pos,
+            Expr::Cdr(ref c) => &c.pos,
         }
     }
 
@@ -515,6 +541,8 @@ impl<'src> Expr<'src> {
             Expr::Let(ref l) => &l.typ,
             Expr::TypeAscript(ref a) => &a.typ,
             Expr::Cons(ref c) => &c.typ,
+            Expr::Car(ref c) => &c.typ,
+            Expr::Cdr(ref c) => &c.typ,
         }
     }
 

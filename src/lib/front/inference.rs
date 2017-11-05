@@ -152,6 +152,14 @@ fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
             subst_expr(&mut c.car, s);
             subst_expr(&mut c.cdr, s);
         }
+        Expr::Car(ref mut c) => {
+            c.typ = subst(&c.typ, s);
+            subst_expr(&mut c.expr, s);
+        }
+        Expr::Cdr(ref mut c) => {
+            c.typ = subst(&c.typ, s);
+            subst_expr(&mut c.expr, s);
+        }
         _ => (),
     }
 }
@@ -218,6 +226,12 @@ fn wrap_vars_types_in_apps_<'src>(
         Expr::Cons(ref mut c) => {
             wrap_vars_types_in_apps_(&mut c.car, vars, app_args);
             wrap_vars_types_in_apps_(&mut c.cdr, vars, app_args);
+        }
+        Expr::Car(ref mut c) => {
+            wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
+        }
+        Expr::Cdr(ref mut c) => {
+            wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
         }
         Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
@@ -762,6 +776,36 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &cons.typ
     }
 
+    fn infer_car<'c>(
+        &mut self,
+        car: &'c mut Car<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'c Type<'src> {
+        let expected_cons_type = Type::new_cons(expected_type.clone(), self.type_var_gen.gen_tv());
+        let cons_type = self.infer_expr(&mut car.expr, &expected_cons_type);
+        car.typ = cons_type
+            .get_cons()
+            .expect("ICE: inner type type not cons in infer_car")
+            .0
+            .clone();
+        &car.typ
+    }
+
+    fn infer_cdr<'c>(
+        &mut self,
+        cdr: &'c mut Cdr<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'c Type<'src> {
+        let expected_cons_type = Type::new_cons(self.type_var_gen.gen_tv(), expected_type.clone());
+        let cons_type = self.infer_expr(&mut cdr.expr, &expected_cons_type);
+        cdr.typ = cons_type
+            .get_cons()
+            .expect("ICE: inner type type not cons in infer_cdr")
+            .1
+            .clone();
+        &cdr.typ
+    }
+
     // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
         match *expr {
@@ -776,6 +820,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Let(ref mut l) => self.infer_let(l, expected_type).clone(),
             Expr::TypeAscript(_) => self.infer_type_ascription(expr, expected_type),
             Expr::Cons(ref mut cons) => self.infer_cons(cons, expected_type).clone(),
+            Expr::Car(ref mut c) => self.infer_car(c, expected_type).clone(),
+            Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
         }
     }
 }
@@ -857,6 +903,12 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
         Expr::Cons(ref mut cons) => {
             monomorphize_defs_of_insts_in_expr(&mut cons.car, env);
             monomorphize_defs_of_insts_in_expr(&mut cons.cdr, env);
+        }
+        Expr::Car(ref mut c) => {
+            monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
+        }
+        Expr::Cdr(ref mut c) => {
+            monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
         }
         _ => (),
     }

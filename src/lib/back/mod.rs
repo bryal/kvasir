@@ -25,7 +25,11 @@ pub fn compile(
     codegenerator.gen_executable(&ast);
 
     codegenerator.module.verify().unwrap_or_else(|e| {
-        panic!("Verifying module failed\n{}", e)
+        panic!(
+            "Verifying module failed\nmodule: {:?}\nerror: {}",
+            codegenerator.module,
+            e
+        )
     });
 
     match emission {

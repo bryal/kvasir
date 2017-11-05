@@ -14,14 +14,6 @@ use self::CodegenErr::*;
 type Instantiations<'src> = BTreeSet<(Vec<ast::Type<'src>>, ast::Type<'src>)>;
 type FreeVarInsts<'src> = BTreeMap<&'src str, Instantiations<'src>>;
 
-fn val_nil(ctx: &Context) -> &Value {
-    Value::new_struct(ctx, &[], false)
-}
-
-fn type_nil(ctx: &Context) -> &Type {
-    StructType::new(ctx, &[], false)
-}
-
 fn type_generic_ptr(ctx: &Context) -> &Type {
     PointerType::new(Type::get::<u8>(ctx))
 }
@@ -96,6 +88,8 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         }
         TypeAscript(_) => panic!("free_vars_in_expr encountered TypeAscript"),
         Cons(box ref c) => free_vars_in_exprs(&[&c.car, &c.cdr]),
+        Car(box ref c) => free_vars_in_expr(&c.expr),
+        Cdr(box ref c) => free_vars_in_expr(&c.expr),
     }
 }
 
@@ -205,6 +199,11 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
     }
 }
 
+struct NamedTypes<'ctx> {
+    nil: &'ctx Type,
+    real_world: &'ctx Type,
+}
+
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
 pub struct CodeGenerator<'ctx> {
     ctx: &'ctx Context,
@@ -213,16 +212,26 @@ pub struct CodeGenerator<'ctx> {
     /// The function currently being built
     current_func: RefCell<Option<&'ctx Function>>,
     current_block: RefCell<Option<&'ctx BasicBlock>>,
+    named_types: NamedTypes<'ctx>,
 }
 impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     pub fn new(ctx: &'ctx Context, builder: &'ctx Builder, module: &'ctx Module) -> Self {
+        let named_types = NamedTypes {
+            real_world: StructType::new_named(ctx, "RealWorld", &[], false),
+            nil: StructType::new_named(ctx, "Nil", &[], false),
+        };
         CodeGenerator {
             ctx: ctx,
             module: module,
             builder: builder,
             current_func: RefCell::new(None),
             current_block: RefCell::new(None),
+            named_types: named_types,
         }
+    }
+
+    fn new_nil_val(&self) -> &'ctx Value {
+        Value::new_undef(self.named_types.nil)
     }
 
     fn size_of(&self, t: &Type) -> u64 {
@@ -259,7 +268,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             PType::Const("Bool") => Type::get::<bool>(self.ctx),
             PType::Const("Float32") => Type::get::<f32>(self.ctx),
             PType::Const("Float64") => Type::get::<f64>(self.ctx),
-            PType::Const("Nil") => type_nil(self.ctx),
+            PType::Const("Nil") => self.named_types.nil,
+            PType::Const("RealWorld") => self.named_types.real_world,
             PType::App(box ast::TypeFunc::Const(s), ref ts) => {
                 match s {
                     "->" => {
@@ -635,9 +645,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         )
     }
 
-    /// Build instructions to cast a pointer value to a generic pointer `i8*`
-    pub fn build_as_generic_ptr(&self, val: &Value) -> &'ctx Value {
-        self.builder.build_bit_cast(val, type_generic_ptr(self.ctx))
+    /// Build instructions to cast a pointer value to a generic reference counted pointer `{i64, i8}*`
+    pub fn build_as_generic_rc(&self, val: &Value) -> &'ctx Value {
+        self.builder.build_bit_cast(val, type_rc_generic(self.ctx))
     }
 
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
@@ -673,8 +683,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
         let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type));
-        let undef_heap_captures_generic = self.build_as_generic_ptr(undef_heap_captures);
-        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic]);
+        let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
+        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
         (closure, free_vars)
     }
 
@@ -785,7 +795,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         v
     }
 
-
+    /// Generate LLVM IR for the construction of a `cons` pair
     fn gen_cons(&self, env: &mut Env<'src, 'ctx>, cons: &'ast ast::Cons<'src>) -> &'ctx Value {
         self.build_struct(
             &[
@@ -793,6 +803,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 self.gen_expr(env, &cons.cdr, Some("cdr")),
             ],
         )
+    }
+
+    /// Generate LLVM IR for the extraction of the first element of a `cons` pair
+    fn gen_car(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Car<'src>) -> &'ctx Value {
+        let cons = self.gen_expr(env, &c.expr, Some("cons"));
+        self.builder.build_extract_value(cons, 0)
+    }
+
+    /// Generate LLVM IR for the extraction of the second element of a `cons` pair
+    fn gen_cdr(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cdr<'src>) -> &'ctx Value {
+        let cons = self.gen_expr(env, &c.expr, Some("cons"));
+        self.builder.build_extract_value(cons, 1)
     }
 
     /// Generate llvm code for an expression and return its llvm Value.
@@ -804,7 +826,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     ) -> &'ctx Value {
         match *expr {
             // Represent Nil as the empty struct, unit
-            Expr::Nil(_) => val_nil(self.ctx),
+            Expr::Nil(_) => self.new_nil_val(),
             Expr::NumLit(ref n) => self.gen_num(n),
             Expr::StrLit(ref s) => self.gen_str(s),
             Expr::Bool(ref b) => b.val.compile(self.ctx),
@@ -816,6 +838,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
             Expr::Cons(ref c) => self.gen_cons(env, c),
+            Expr::Car(ref c) => self.gen_car(env, c),
+            Expr::Cdr(ref c) => self.gen_cdr(env, c),
         }
     }
 
@@ -851,7 +875,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 .bindings()
                 .find(|b| b.ident.s == "main")
                 .unwrap_or_else(|| error_exit("main function not found"));
-            let expect = ast::Type::new_func(ast::TYPE_NIL.clone(), ast::TYPE_NIL.clone());
+            let expect = ast::Type::new_io(ast::TYPE_NIL.clone());
             if main.typ != expect {
                 let error_msg = format!(
                     "main function has wrong type. Expected type `{}`, found type `{}`",
@@ -875,7 +899,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.gen_extern_decls(&mut env, &module.externs);
 
         // Create wrapping, entry-point `main` function
-        let main_type = FunctionType::new(type_nil(self.ctx), &[type_nil(self.ctx)]);
+        let main_type = FunctionType::new(self.named_types.nil, &[self.named_types.nil]);
         let main_wrapper = self.module.add_function("main", &main_type);
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
@@ -892,8 +916,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         );
         let r = self.build_app(
             user_main,
-            (val_nil(self.ctx), type_nil(self.ctx)),
-            type_nil(self.ctx),
+            (self.new_nil_val(), self.named_types.nil),
+            self.named_types.nil,
         );
         self.builder.build_ret(r);
     }

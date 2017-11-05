@@ -38,7 +38,7 @@ impl TypeVarGen {
 
 /// Exit compilation
 pub fn exit() -> ! {
-    println!("\nError occured during compilation. Exiting\n");
+    println!("\nError occured during compilation. Exiting");
     process::exit(0)
 }
 
@@ -72,6 +72,7 @@ impl<'src> SrcPos<'src> {
             end: None,
         }
     }
+
     /// Construct a new `SrcPos` representing an interval in `src`
     fn new_interval(filename: &'src Path, src: &'src str, start: usize, end: usize) -> Self {
         SrcPos {
@@ -79,6 +80,20 @@ impl<'src> SrcPos<'src> {
             src: src,
             start: start,
             end: Some(end),
+        }
+    }
+
+    fn to(&self, other: &Self) -> Self {
+        assert_eq!(
+            self.filename,
+            other.filename,
+            "ICE: Trying to construct position interval between positions in different files"
+        );
+        SrcPos {
+            filename: self.filename,
+            src: self.src,
+            start: self.start,
+            end: Some(other.end.unwrap_or(other.start)),
         }
     }
 
