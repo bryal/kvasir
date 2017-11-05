@@ -138,13 +138,13 @@ impl fmt::Display for CodegenErr {
     }
 }
 
-/// Naked version of extern is used for external linkage and to call if direct call to extern.
+/// Naked function version of extern is used for external linkage and to call if direct call to extern.
 /// If function is used as a value, e.g. put in a list together with arbitrary functions, we have
 /// to wrap it in a closure so that it can be called in the same way as any other function.
 #[derive(Debug, Clone, Copy)]
 struct Extern<'ctx> {
-    naked: &'ctx Function,
-    wrapped: &'ctx Function,
+    func: &'ctx Function,
+    closure: &'ctx Function,
 }
 
 /// A variable in the environment. Either an extern, or not
@@ -314,20 +314,21 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
 
         let func_typ = FunctionType::new(ret_type, &[arg_type]);
-        let naked = self.module.add_function(id, func_typ);
+        let func = self.module.add_function(id, func_typ);
 
         let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
-        let wrapped = self.module.add_function(
+        let closure = self.module.add_function(
             &format!("{}_closure", id),
             &clos_typ,
         );
-        let entry = wrapped.append("entry");
+        let entry = closure.append("entry");
         self.builder.position_at_end(entry);
-        wrapped[0].set_name("_NO_CAPTURES");
-        let param = &*wrapped[1];
-        let r = self.builder.build_call(naked, &[param]);
+        closure[0].set_name("_NO_CAPTURES");
+        let param = &*closure[1];
+        let r = self.builder.build_call(func, &[param]);
         self.builder.build_ret(r);
-        Extern { naked, wrapped }
+
+        Extern { func, closure }
     }
 
     fn gen_extern_decls(
@@ -393,7 +394,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     ) -> &'ctx Value {
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
         match env.get(var.ident.s, inst) {
-            Some(Var::Extern(e)) => e.wrapped,
+            Some(Var::Extern(e)) => {
+                Value::new_struct(
+                    self.ctx,
+                    &[e.closure, Value::new_undef(type_rc_generic(self.ctx))],
+                    false,
+                )
+            }
             Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
             None => unreachable!(),
@@ -459,7 +466,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         // If it's a direct application of an extern, call it as a function,
         // otherwise call it as a closure
         if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, &[])) {
-            self.builder.build_call(ext.naked, &[arg])
+            self.builder.build_call(ext.func, &[arg])
         } else {
             let func = self.gen_expr(env, &app.func, None);
             self.build_app(func, (arg, arg_type), ret_type)
@@ -549,7 +556,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Will call whatever function is bound to `malloc`.
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
         match env.get("malloc", &[]) {
-            Some(Var::Extern(ext)) => self.builder.build_call(ext.naked, &[n.compile(self.ctx)]),
+            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => {
                 self.build_app(
                     v,
@@ -701,7 +708,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures = self.gen_lambda_env_capture(env, &free_vars);
         let captures_rc = self.build_rc(env, captures);
-        let captures_rc_generic = self.build_as_generic_ptr(captures_rc);
+        let captures_rc_generic = self.builder.build_bit_cast(
+            captures_rc,
+            type_rc_generic(self.ctx),
+        );
         self.build_struct(&[func_ptr, captures_rc_generic])
     }
 
