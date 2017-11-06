@@ -99,8 +99,8 @@ fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -
 /// Apply substitutions in `s` to free type variables in `t`
 fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
     match *t {
-        Type::Var(ref n) => {
-            s.get(n).cloned().map(|t2| subst(&t2, s)).unwrap_or(
+        Type::Var { ref id, .. } => {
+            s.get(id).cloned().map(|t2| subst(&t2, s)).unwrap_or(
                 t.clone(),
             )
         }
@@ -118,6 +118,7 @@ fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
 /// Apply substitutions in `s` to type variables in types in `e`
 fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
     match *e {
+        Expr::NumLit(ref mut n) => n.typ = subst(&n.typ, s),
         Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
         Expr::App(ref mut app) => {
             subst_expr(&mut app.func, s);
@@ -169,8 +170,8 @@ fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
 /// Useful to check for circular type variable mappings
 fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
     match *u {
-        Type::Var(n) if t == n => true,
-        Type::Var(n) => s.get(&n).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
+        Type::Var { id, .. } if t == id => true,
+        Type::Var { ref id, .. } => s.get(id).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
 
         Type::App(_, ref us) => us.iter().any(|u2| occurs_in(t, u2, s)),
         // TODO: Verify that this is correct
@@ -244,7 +245,15 @@ fn wrap_vars_types_in_apps<'src>(
     vars: &mut HashMap<&'src str, Poly<'src>>,
     app_args: &[u64],
 ) {
-    let app_args_t = app_args.iter().map(|n| Type::Var(*n)).collect::<Vec<_>>();
+    let app_args_t = app_args
+        .iter()
+        .map(|&id| {
+            Type::Var {
+                id,
+                constraints: BTreeSet::new(),
+            }
+        })
+        .collect::<Vec<_>>();
     wrap_vars_types_in_apps_(e, vars, &app_args_t)
 }
 
@@ -296,18 +305,18 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Returns an iterator of all free type variables that occur in `t`
     fn free_type_vars(&self, t: &Type<'src>) -> HashSet<u64> {
         match *t {
-            Type::Var(n) => {
+            Type::Var { ref id, .. } => {
                 self.type_var_map
-                    .get(&n)
+                    .get(id)
                     .map(|u| {
-                        if occurs_in(n, u, &self.type_var_map) {
+                        if occurs_in(*id, u, &self.type_var_map) {
                             // NOTE: Shouldn't be able to happen if no bugs right?
                             panic!("ICE: in get_type_vars: t occurs in u")
                         } else {
                             self.free_type_vars(u)
                         }
                     })
-                    .unwrap_or(HashSet::from_iter(once(n)))
+                    .unwrap_or(HashSet::from_iter(once(*id)))
             }
             Type::App(_, ref ts) => {
                 ts.iter()
@@ -373,23 +382,38 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
         use self::Type::*;
         match (a, b) {
-            (&Var(ref n), _) if self.type_var_map.contains_key(n) => {
-                let a2 = self.type_var_map[n].clone();
+            (&Var { ref id, .. }, _) if self.type_var_map.contains_key(id) => {
+                let a2 = self.type_var_map[id].clone();
                 self.unify(&a2, b)
             }
-            (_, &Var(ref m)) if self.type_var_map.contains_key(m) => {
-                let b2 = self.type_var_map[m].clone();
+            (_, &Var { ref id, .. }) if self.type_var_map.contains_key(id) => {
+                let b2 = self.type_var_map[id].clone();
                 self.unify(a, &b2)
             }
-            (&Var(n), &Var(m)) if n == m => Ok(Var(n)),
-            (&Var(n), _) if occurs_in(n, b, &self.type_var_map) => {
-                panic!("ICE: unify: `{}` occurs in `{}`", n, b);
+            (&Var { id, .. }, &Var { id: id2, .. }) if id == id2 => Ok(a.clone()),
+            (&Var { id, .. }, _) if occurs_in(id, b, &self.type_var_map) => {
+                panic!("ICE: unify: `{}` occurs in `{}`", id, b);
             }
-            (&Var(n), _) => {
-                self.type_var_map.insert(n, b.clone());
+            (&Var {
+                 id,
+                 constraints: ref cs,
+             },
+             &Var {
+                 id: _,
+                 constraints: ref cs2,
+             }) if cs == cs2 => {
+                self.type_var_map.insert(id, b.clone());
                 Ok(b.clone())
             }
-            (_, &Var(_)) => self.unify(b, a),
+            (&Var {
+                 id,
+                 ref constraints,
+             },
+             _) if b.fulfills_constraints(constraints) => {
+                self.type_var_map.insert(id, b.clone());
+                Ok(b.clone())
+            }
+            (_, &Var { .. }) => self.unify(b, a),
             (&App(ref f1, ref ts1), &App(ref f2, ref ts2)) => {
                 match (&**f1, &**f2) {
                     (&TypeFunc::Poly(ref p), _) => {
@@ -460,33 +484,18 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         lit: &'n mut NumLit<'src>,
         expected_type: &Type<'src>,
     ) -> &'n Type<'src> {
-        let num_type = [
-            // Int must be highest since it is the "default" and should match first,
-            // if expected type is type variable or somesuch
-            "Int",
-            "Int64",
-            "Int32",
-            "Int16",
-            "Int8",
-            "UInt",
-            "UInt64",
-            "UInt32",
-            "UInt16",
-            "UInt8",
-            "Float64",
-            "Float32",
-        ].iter()
-            .map(|s| self.unify(expected_type, &Type::Const(s)))
-            .filter(Result::is_ok)
-            .next()
-            .unwrap_or_else(|| {
-                lit.pos.error_exit(format!(
-                    "Type mismatch. Expected `{}`, found numeric literal",
-                    expected_type
-                ))
-            })
-            .unwrap();
-
+        let mut num_constraint = BTreeSet::new();
+        num_constraint.insert("Num");
+        let tv_num = Type::Var {
+            id: self.type_var_gen.gen(),
+            constraints: num_constraint,
+        };
+        let num_type = self.unify(expected_type, &tv_num).unwrap_or_else(|_| {
+            lit.pos.error_exit(format!(
+                "Type mismatch. Expected `{}`, found numeric literal",
+                expected_type
+            ))
+        });
         lit.typ = num_type;
         &lit.typ
     }

@@ -1,6 +1,6 @@
 use super::SrcPos;
 use itertools::{Itertools, zip};
-use std::collections::{HashMap, BTreeMap, HashSet};
+use std::collections::{HashMap, BTreeMap, BTreeSet, HashSet};
 use std::{borrow, fmt, hash, mem, path};
 use std::iter::once;
 
@@ -49,7 +49,12 @@ impl<'src> fmt::Display for TypeFunc<'src> {
 /// A type
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Type<'src> {
-    Var(u64),
+    /// A type variable uniquely identified by an integer id
+    /// and constrained by a set of type classes
+    Var {
+        id: u64,
+        constraints: BTreeSet<&'src str>,
+    },
     /// A monotype constant, like `int`, or `string`
     Const(&'src str),
     /// An application of a type function over one/some/no monotype(s)
@@ -91,7 +96,7 @@ impl<'src> Type<'src> {
 
     fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
         match *self {
-            Type::Var(ref n) => bound.contains(n),
+            Type::Var { ref id, .. } => bound.contains(id),
             Type::Const(_) => true,
             Type::App(ref f, ref args) => {
                 let all_args_mono = args.iter().all(|arg| arg.is_monomorphic_in_context(bound));
@@ -124,7 +129,7 @@ impl<'src> Type<'src> {
     pub fn canonicalize_in_context(&self, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
         match *self {
             Type::Const(_) => self.clone(),
-            Type::Var(ref n) => s.get(n).unwrap_or(self).clone(),
+            Type::Var { ref id, .. } => s.get(id).unwrap_or(self).clone(),
             Type::App(box TypeFunc::Const(c), ref args) => {
                 Type::App(
                     Box::new(TypeFunc::Const(c)),
@@ -178,12 +183,46 @@ impl<'src> Type<'src> {
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         self.get_bin("Cons")
     }
+
+    pub fn fulfills_constraints(&self, cs: &BTreeSet<&str>) -> bool {
+        use self::Type::*;
+        cs.iter().all(|c| match *c {
+            "Num" => {
+                match *self {
+                    Const("Int8") | Const("Int16") | Const("Int32") | Const("Int64") |
+                    Const("Int") | Const("UInt8") | Const("UInt16") | Const("UInt32") |
+                    Const("UInt64") | Const("UInt") | Const("Bool") | Const("Float32") |
+                    Const("Float64") => true,
+                    _ => false,
+                }
+            }
+            _ => unimplemented!(),
+        })
+    }
 }
 
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Type::Var(id) => write!(f, "${}", id),
+            Type::Var {
+                id,
+                ref constraints,
+            } if constraints.is_empty() => write!(f, "${}", id),
+            Type::Var {
+                id,
+                ref constraints,
+            } => {
+                write!(
+                    f,
+                    "(: ${} {})",
+                    id,
+                    constraints
+                        .iter()
+                        .cloned()
+                        .intersperse(" ")
+                        .collect::<String>()
+                )
+            }
             Type::Const(s) => fmt::Display::fmt(s, f),
             Type::App(ref con, ref args) => {
                 let args_s = args.iter()

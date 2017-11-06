@@ -10,3 +10,7 @@ uintptr_t read_int(void) {
 void print_int(uintptr_t n) {
     printf("%" PRIuPTR "\n", n);
 }
+
+void print_f64(double x) {
+    printf("%f\n", x);
+}

@@ -8,6 +8,7 @@ use std::fmt::{self, Display, Debug};
 use std::iter::{once, repeat};
 use std::process;
 use std::path::Path;
+use std::collections::BTreeSet;
 use term::{self, color};
 use itertools::Itertools;
 
@@ -32,7 +33,10 @@ impl TypeVarGen {
     }
 
     pub fn gen_tv<'src>(&mut self) -> ast::Type<'src> {
-        ast::Type::Var(self.gen())
+        ast::Type::Var {
+            id: self.gen(),
+            constraints: BTreeSet::new(),
+        }
     }
 }
 

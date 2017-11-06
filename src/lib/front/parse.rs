@@ -267,7 +267,10 @@ impl<'tvg> Parser<'tvg> {
     }
 
     fn gen_type_var<'src>(&mut self) -> Type<'src> {
-        Type::Var(self.type_var_gen.gen())
+        Type::Var {
+            id: self.type_var_gen.gen(),
+            constraints: BTreeSet::new(),
+        }
     }
 
     /// Parse a `CST` as a `Type`
