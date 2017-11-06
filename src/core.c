@@ -7,10 +7,10 @@ uintptr_t read_int(void) {
     return n;
 }
 
-void print_int(uintptr_t n) {
-    printf("%" PRIuPTR "\n", n);
+void print_int64(int64_t n) {
+    printf("%" PRIi64 "\n", n);
 }
 
-void print_f64(double x) {
+void print_float64(double x) {
     printf("%f\n", x);
 }
