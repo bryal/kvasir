@@ -53,7 +53,7 @@ pub enum Type<'src> {
     /// and constrained by a set of type classes
     Var {
         id: u64,
-        constraints: BTreeSet<&'src str>,
+        constrs: BTreeSet<&'src str>,
     },
     /// A monotype constant, like `int`, or `string`
     Const(&'src str, Option<SrcPos<'src>>),
@@ -216,11 +216,11 @@ impl<'src> PartialEq for Type<'src> {
         match (self, other) {
             (&Var {
                  id: n,
-                 constraints: ref c,
+                 constrs: ref c,
              },
              &Var {
                  id: m,
-                 constraints: ref d,
+                 constrs: ref d,
              }) => n == m && c == d,
             (&Const(t, _), &Const(u, _)) => t == u,
             (&App(ref f, ref v), &App(ref g, ref w)) => f == g && v == w,
@@ -235,23 +235,13 @@ impl<'src> Eq for Type<'src> {}
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Type::Var {
-                id,
-                ref constraints,
-            } if constraints.is_empty() => write!(f, "${}", id),
-            Type::Var {
-                id,
-                ref constraints,
-            } => {
+            Type::Var { id, ref constrs } if constrs.is_empty() => write!(f, "${}", id),
+            Type::Var { id, ref constrs } => {
                 write!(
                     f,
                     "(: ${} {})",
                     id,
-                    constraints
-                        .iter()
-                        .cloned()
-                        .intersperse(" ")
-                        .collect::<String>()
+                    constrs.iter().cloned().intersperse(" ").collect::<String>()
                 )
             }
             Type::Const(s, _) => fmt::Display::fmt(s, f),

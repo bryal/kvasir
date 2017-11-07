@@ -35,7 +35,7 @@ impl TypeVarGen {
     pub fn gen_tv<'src>(&mut self) -> ast::Type<'src> {
         ast::Type::Var {
             id: self.gen(),
-            constraints: BTreeSet::new(),
+            constrs: BTreeSet::new(),
         }
     }
 }

@@ -250,7 +250,7 @@ fn wrap_vars_types_in_apps<'src>(
         .map(|&id| {
             Type::Var {
                 id,
-                constraints: BTreeSet::new(),
+                constrs: BTreeSet::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -399,7 +399,6 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         }
     }
 
-    // TODO: Should this algorithm introduce type variables on `Uninferred`?
     // TODO: Instantiation of circular type. Can it happen?
     /// Unify two types
     ///
@@ -427,20 +426,16 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             }
             (&Var {
                  id,
-                 constraints: ref cs,
+                 constrs: ref cs,
              },
              &Var {
                  id: _,
-                 constraints: ref cs2,
+                 constrs: ref cs2,
              }) if cs == cs2 => {
                 self.type_var_map.insert(id, b.clone());
                 Ok(b.clone())
             }
-            (&Var {
-                 id,
-                 ref constraints,
-             },
-             _) if b.fulfills_constraints(constraints) => {
+            (&Var { id, ref constrs }, _) if b.fulfills_constraints(constrs) => {
                 self.type_var_map.insert(id, b.clone());
                 Ok(b.clone())
             }
@@ -525,7 +520,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         num_constraint.insert("Num");
         let tv_num = Type::Var {
             id: self.type_var_gen.gen(),
-            constraints: num_constraint,
+            constrs: num_constraint,
         };
         let num_type = self.unify(expected_type, &tv_num).unwrap_or_else(|_| {
             lit.pos.error_exit(format!(
