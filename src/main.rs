@@ -91,6 +91,8 @@ extern crate llvm_sys;
 extern crate itertools;
 extern crate libc;
 extern crate cbox;
+#[macro_use]
+extern crate maplit;
 
 use getopts::Options;
 use lib::back::compile;

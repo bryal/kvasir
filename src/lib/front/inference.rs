@@ -257,6 +257,15 @@ fn wrap_vars_types_in_apps<'src>(
     wrap_vars_types_in_apps_(e, vars, &app_args_t)
 }
 
+/// The definition of a type name
+enum TypeDef {
+    /// It's a core type that can be handled by the code generation backend. E.g. the numeric
+    /// types `Int32`, `Float64`, etc.
+    Core,
+    // TODO: Type alias
+    // TODO: Algebraic datatype
+}
+
 struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
     var_env: HashMap<&'src str, Vec<Type<'src>>>,
@@ -266,6 +275,10 @@ struct Inferrer<'a, 'src: 'a> {
     type_var_map: HashMap<u64, Type<'src>>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'a mut TypeVarGen,
+    /// A map of core types and used defined types
+    ///
+    /// Numeric types, cons, (TODO) type aliases, (TODO) data type definitions
+    type_defs: HashMap<&'src str, TypeDef>,
 }
 
 impl<'a, 'src: 'a> Inferrer<'a, 'src> {
@@ -273,11 +286,29 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
         type_var_gen: &'a mut TypeVarGen,
     ) -> Self {
+        use self::TypeDef::*;
         Inferrer {
             var_env: HashMap::new(),
             externs: externs,
             type_var_map: HashMap::new(),
             type_var_gen: type_var_gen,
+            type_defs: hashmap! {
+                "Int8" => Core,
+                "Int16" => Core,
+                "Int32" => Core,
+                "Int64" => Core,
+                "Int" => Core,
+                "UInt8" => Core,
+                "UInt16" => Core,
+                "UInt32" => Core,
+                "UInt64" => Core,
+                "UInt" => Core,
+                "Bool" => Core,
+                "Float32" => Core,
+                "Float64" => Core,
+                "Nil" => Core,
+                "RealWorld" => Core,
+            },
         }
     }
 
@@ -443,6 +474,12 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             (&Poly(_), _) | (_, &Poly(_)) => {
                 println!("unifying polytype: `{}` U `{}`", a, b);
                 unimplemented!()
+            }
+            (&Const(t, ref pos), _) |
+            (_, &Const(t, ref pos)) if !self.type_defs.contains_key(t) => {
+                pos.as_ref()
+                    .expect("ICE: undefined type has no position")
+                    .error_exit(format!("Type `{}` not found in this scope", t))
             }
             (_, _) if a == b => Ok(a.clone()),
             _ => Err((a.clone(), b.clone())),

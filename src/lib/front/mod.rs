@@ -59,7 +59,7 @@ pub fn error_exit<E: Display>(msg: E) -> ! {
 }
 
 /// A position or interval in a string of source code
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SrcPos<'src> {
     filename: &'src Path,
     src: &'src str,

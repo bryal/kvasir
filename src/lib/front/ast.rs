@@ -6,10 +6,10 @@ use std::iter::once;
 
 // TODO: Replace static with const to allow matching
 lazy_static!{
-    pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil");
-    pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool");
-    pub static ref TYPE_STRING: Type<'static> = Type::Const("String");
-    pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld");
+    pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil", None);
+    pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool", None);
+    pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
+    pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld", None);
 }
 
 /// A polytype
@@ -47,7 +47,7 @@ impl<'src> fmt::Display for TypeFunc<'src> {
 }
 
 /// A type
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialOrd, Ord, Hash)]
 pub enum Type<'src> {
     /// A type variable uniquely identified by an integer id
     /// and constrained by a set of type classes
@@ -56,7 +56,7 @@ pub enum Type<'src> {
         constraints: BTreeSet<&'src str>,
     },
     /// A monotype constant, like `int`, or `string`
-    Const(&'src str),
+    Const(&'src str, Option<SrcPos<'src>>),
     /// An application of a type function over one/some/no monotype(s)
     App(Box<TypeFunc<'src>>, Vec<Type<'src>>),
     /// A polytype
@@ -97,7 +97,7 @@ impl<'src> Type<'src> {
     fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
         match *self {
             Type::Var { ref id, .. } => bound.contains(id),
-            Type::Const(_) => true,
+            Type::Const(_, _) => true,
             Type::App(ref f, ref args) => {
                 let all_args_mono = args.iter().all(|arg| arg.is_monomorphic_in_context(bound));
                 match **f {
@@ -128,7 +128,7 @@ impl<'src> Type<'src> {
 
     pub fn canonicalize_in_context(&self, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
         match *self {
-            Type::Const(_) => self.clone(),
+            Type::Const(_, _) => self.clone(),
             Type::Var { ref id, .. } => s.get(id).unwrap_or(self).clone(),
             Type::App(box TypeFunc::Const(c), ref args) => {
                 Type::App(
@@ -189,10 +189,19 @@ impl<'src> Type<'src> {
         cs.iter().all(|c| match *c {
             "Num" => {
                 match *self {
-                    Const("Int8") | Const("Int16") | Const("Int32") | Const("Int64") |
-                    Const("Int") | Const("UInt8") | Const("UInt16") | Const("UInt32") |
-                    Const("UInt64") | Const("UInt") | Const("Bool") | Const("Float32") |
-                    Const("Float64") => true,
+                    Const("Int8", _) |
+                    Const("Int16", _) |
+                    Const("Int32", _) |
+                    Const("Int64", _) |
+                    Const("Int", _) |
+                    Const("UInt8", _) |
+                    Const("UInt16", _) |
+                    Const("UInt32", _) |
+                    Const("UInt64", _) |
+                    Const("UInt", _) |
+                    Const("Bool", _) |
+                    Const("Float32", _) |
+                    Const("Float64", _) => true,
                     _ => false,
                 }
             }
@@ -200,6 +209,28 @@ impl<'src> Type<'src> {
         })
     }
 }
+
+impl<'src> PartialEq for Type<'src> {
+    fn eq(&self, other: &Self) -> bool {
+        use self::Type::*;
+        match (self, other) {
+            (&Var {
+                 id: n,
+                 constraints: ref c,
+             },
+             &Var {
+                 id: m,
+                 constraints: ref d,
+             }) => n == m && c == d,
+            (&Const(t, _), &Const(u, _)) => t == u,
+            (&App(ref f, ref v), &App(ref g, ref w)) => f == g && v == w,
+            (&Poly(ref p), &Poly(ref q)) => p == q,
+            _ => false,
+        }
+    }
+}
+
+impl<'src> Eq for Type<'src> {}
 
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -223,7 +254,7 @@ impl<'src> fmt::Display for Type<'src> {
                         .collect::<String>()
                 )
             }
-            Type::Const(s) => fmt::Display::fmt(s, f),
+            Type::Const(s, _) => fmt::Display::fmt(s, f),
             Type::App(ref con, ref args) => {
                 let args_s = args.iter()
                     .map(ToString::to_string)

@@ -314,7 +314,7 @@ impl<'tvg> Parser<'tvg> {
             CST::SExpr(_, ref pos) => pos.error_exit("Empty type application"),
             CST::Ident("_", _) => self.gen_type_var(),
             CST::Ident("Nil", _) => TYPE_NIL.clone(),
-            CST::Ident(basic, _) => Type::Const(basic),
+            CST::Ident(basic, ref pos) => Type::Const(basic, Some(pos.clone())),
             CST::Num(_, ref pos) => pos.error_exit(Mismatch("type", "numeric literal")),
             CST::Str(_, ref pos) => pos.error_exit(Mismatch("type", "string literal")),
         }

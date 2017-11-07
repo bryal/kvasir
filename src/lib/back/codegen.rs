@@ -252,7 +252,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
-        use lib::front::ast::Type as PType;
         match *typ {
             ast::Type::Var {
                 id: _,
@@ -260,23 +259,23 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             } if constraints.len() == 1 && constraints.contains("Num") => {
                 Type::get::<isize>(self.ctx)
             }
-            PType::Var { .. } => panic!("Type was Unknown at compile time"),
-            PType::Const("Int8") => Type::get::<i8>(self.ctx),
-            PType::Const("Int16") => Type::get::<i16>(self.ctx),
-            PType::Const("Int32") => Type::get::<i32>(self.ctx),
-            PType::Const("Int64") => Type::get::<i64>(self.ctx),
-            PType::Const("Int") => Type::get::<isize>(self.ctx),
-            PType::Const("UInt8") => Type::get::<u8>(self.ctx),
-            PType::Const("UInt16") => Type::get::<u16>(self.ctx),
-            PType::Const("UInt32") => Type::get::<u32>(self.ctx),
-            PType::Const("UInt64") => Type::get::<u64>(self.ctx),
-            PType::Const("UInt") => Type::get::<usize>(self.ctx),
-            PType::Const("Bool") => Type::get::<bool>(self.ctx),
-            PType::Const("Float32") => Type::get::<f32>(self.ctx),
-            PType::Const("Float64") => Type::get::<f64>(self.ctx),
-            PType::Const("Nil") => self.named_types.nil,
-            PType::Const("RealWorld") => self.named_types.real_world,
-            PType::App(box ast::TypeFunc::Const(s), ref ts) => {
+            ast::Type::Var { .. } => panic!("Type was Unknown at compile time"),
+            ast::Type::Const("Int8", _) => Type::get::<i8>(self.ctx),
+            ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
+            ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
+            ast::Type::Const("Int64", _) => Type::get::<i64>(self.ctx),
+            ast::Type::Const("Int", _) => Type::get::<isize>(self.ctx),
+            ast::Type::Const("UInt8", _) => Type::get::<u8>(self.ctx),
+            ast::Type::Const("UInt16", _) => Type::get::<u16>(self.ctx),
+            ast::Type::Const("UInt32", _) => Type::get::<u32>(self.ctx),
+            ast::Type::Const("UInt64", _) => Type::get::<u64>(self.ctx),
+            ast::Type::Const("UInt", _) => Type::get::<usize>(self.ctx),
+            ast::Type::Const("Bool", _) => Type::get::<bool>(self.ctx),
+            ast::Type::Const("Float32", _) => Type::get::<f32>(self.ctx),
+            ast::Type::Const("Float64", _) => Type::get::<f64>(self.ctx),
+            ast::Type::Const("Nil", _) => self.named_types.nil,
+            ast::Type::Const("RealWorld", _) => self.named_types.real_world,
+            ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => {
                 match s {
                     "->" => {
                         let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
@@ -384,19 +383,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             } if constraints.len() == 1 && constraints.contains("Num") => {
                 CodeGenerator::parse_gen_lit::<isize>
             }
-            ast::Type::Const("Int8") => CodeGenerator::parse_gen_lit::<i8>,
-            ast::Type::Const("Int16") => CodeGenerator::parse_gen_lit::<i16>,
-            ast::Type::Const("Int32") => CodeGenerator::parse_gen_lit::<i32>,
-            ast::Type::Const("Int64") => CodeGenerator::parse_gen_lit::<i64>,
-            ast::Type::Const("Int") => CodeGenerator::parse_gen_lit::<isize>,
-            ast::Type::Const("UInt8") => CodeGenerator::parse_gen_lit::<u8>,
-            ast::Type::Const("UInt16") => CodeGenerator::parse_gen_lit::<u16>,
-            ast::Type::Const("UInt32") => CodeGenerator::parse_gen_lit::<u32>,
-            ast::Type::Const("UInt64") => CodeGenerator::parse_gen_lit::<u64>,
-            ast::Type::Const("UInt") => CodeGenerator::parse_gen_lit::<usize>,
-            ast::Type::Const("Bool") => CodeGenerator::parse_gen_lit::<bool>,
-            ast::Type::Const("Float32") => CodeGenerator::parse_gen_lit::<f32>,
-            ast::Type::Const("Float64") => CodeGenerator::parse_gen_lit::<f64>,
+            ast::Type::Const("Int8", _) => CodeGenerator::parse_gen_lit::<i8>,
+            ast::Type::Const("Int16", _) => CodeGenerator::parse_gen_lit::<i16>,
+            ast::Type::Const("Int32", _) => CodeGenerator::parse_gen_lit::<i32>,
+            ast::Type::Const("Int64", _) => CodeGenerator::parse_gen_lit::<i64>,
+            ast::Type::Const("Int", _) => CodeGenerator::parse_gen_lit::<isize>,
+            ast::Type::Const("UInt8", _) => CodeGenerator::parse_gen_lit::<u8>,
+            ast::Type::Const("UInt16", _) => CodeGenerator::parse_gen_lit::<u16>,
+            ast::Type::Const("UInt32", _) => CodeGenerator::parse_gen_lit::<u32>,
+            ast::Type::Const("UInt64", _) => CodeGenerator::parse_gen_lit::<u64>,
+            ast::Type::Const("UInt", _) => CodeGenerator::parse_gen_lit::<usize>,
+            ast::Type::Const("Bool", _) => CodeGenerator::parse_gen_lit::<bool>,
+            ast::Type::Const("Float32", _) => CodeGenerator::parse_gen_lit::<f32>,
+            ast::Type::Const("Float64", _) => CodeGenerator::parse_gen_lit::<f64>,
             _ => {
                 num.pos.error_exit(
                     ICE("type of numeric literal is not numeric".into()),
