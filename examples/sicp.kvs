@@ -1,0 +1,120 @@
+;;; Solving the exercises of SICP in Kvasir
+
+(extern malloc (-> UInt (Ptr UInt8)))
+(extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
+(extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
+
+(extern eq-float64 (-> (Cons Float64 Float64) Bool))
+(extern lt-float64 (-> (Cons Float64 Float64) Bool))
+(extern gt-float64 (-> (Cons Float64 Float64) Bool))
+(extern mul-float64 (-> (Cons Float64 Float64) Float64))
+(extern div-float64 (-> (Cons Float64 Float64) Float64))
+(extern add-float64 (-> (Cons Float64 Float64) Float64))
+(extern sub-float64 (-> (Cons Float64 Float64) Float64))
+
+(extern eq-int64 (-> (Cons Int64 Int64) Bool))
+(extern lt-int64 (-> (Cons Int64 Int64) Bool))
+(extern gt-int64 (-> (Cons Int64 Int64) Bool))
+(extern mul-int64 (-> (Cons Int64 Int64) Int64))
+(extern div-int64 (-> (Cons Int64 Int64) Int64))
+(extern add-int64 (-> (Cons Int64 Int64) Int64))
+(extern sub-int64 (-> (Cons Int64 Int64) Int64))
+
+(define (=f x y) (eq-float64 (cons x y)))
+(define (<f x y) (lt-float64 (cons x y)))
+(define (>f x y) (gt-float64 (cons x y)))
+(define (*f x y) (mul-float64 (cons x y)))
+(define (/f x y) (div-float64 (cons x y)))
+(define (+f x y) (add-float64 (cons x y)))
+(define (-f x y) (sub-float64 (cons x y)))
+
+(define (=i x y) (eq-int64 (cons x y)))
+(define (<i x y) (lt-int64 (cons x y)))
+(define (>i x y) (gt-int64 (cons x y)))
+(define (*i x y) (mul-int64 (cons x y)))
+(define (/i x y) (div-int64 (cons x y)))
+(define (+i x y) (add-int64 (cons x y)))
+(define (-i x y) (sub-int64 (cons x y)))
+
+(define (print-int64 x)
+  (lambda (real-world)
+    (print_int64 (cons x real-world))))
+
+(define (print-float64 x)
+  (lambda (real-world)
+    (print_float64 (cons x real-world))))
+
+(define (>> io1 io2)
+  (lambda (real-world)
+    (io2 (cdr (io1 real-world)))))
+
+(define (>>= io f)
+  (lambda (real-world)
+    (let ((r (io real-world))
+          (v (car r))
+          (real-world2 (cdr r)))
+      (f v real-world2))))
+
+(define (iomap io f)
+  (lambda (real-world)
+    (let ((r (io real-world))
+          (v (car r))
+          (real-world2 (cdr r)))
+      (cons (f v) real-world2))))
+
+;;; 1.3
+(define (max x y)
+  (if (>f x y)
+      x
+      y))
+
+(define (square x) (*f x x))
+
+(define (sum-squares x y)
+  (+f (square x) (square y)))
+
+(define (foo x y z)
+  (if (>f x y)
+      (sum-squares x (max y z))
+      (sum-squares y (max x z))))
+;;;
+
+;;; 1.4
+(define (a-plus-abs-b a b)
+  ((if (>f b 0) +f -f) a b))
+;;;
+
+(define (abs x)
+  (if (<f x 0)
+      (-f 0 x)
+      x))
+
+(define (average x y)
+  (/f (+f x y) 2))
+
+(define (sqrt x)
+  (let (((improve guess x)
+         (average guess (/f x guess)))
+        ((good-enough? guess x)
+         (<f (abs (-f (square guess) x)) 0.001))
+        ((sqrt-iter guess x)
+         (if (good-enough? guess x)
+                                guess
+                                (sqrt-iter (improve guess x) x))))
+    (sqrt-iter 1.0 x)))
+
+(define (factorial n)
+  (let (((iter p i)
+         (if (=i i 0)
+             p
+             (iter (*i i p) (-i i 1)))))
+    (iter 1 n)))
+
+(define (fib n)
+  (let (((iter a b i)
+         (if (=i i 0)
+             a
+             (iter b (+i a b) (-i i 1)))))
+    (iter 0 1 n)))
+
+(define main (print-int64 (fib 10)))
