@@ -266,23 +266,67 @@ impl<'tvg> Parser<'tvg> {
         Parser { type_var_gen }
     }
 
-    fn gen_type_var<'src>(&mut self) -> Type<'src> {
-        Type::Var {
+    fn gen_tvar<'src>(&mut self) -> TVar<'src> {
+        TVar {
             id: self.type_var_gen.gen(),
             constrs: BTreeSet::new(),
+            explicit: None,
+        }
+    }
+
+    fn gen_type_var<'src>(&mut self) -> Type<'src> {
+        Type::Var(self.gen_tvar())
+    }
+
+    fn parse_constraint<'src>(&mut self, cst: &CST<'src>) -> &'src str {
+        match *cst {
+            CST::Ident("Num", _) => "Num",
+            CST::Ident(s, ref pos) => pos.error_exit(format!("Undefined constraint {}", s)),
+            _ => cst.pos().error_exit("Invalid constraint"),
+        }
+    }
+
+    /// Parse a specification of constraints for a type variable
+    ///
+    /// E.g. `(: t Num)`
+    fn parse_constraints_spec<'src>(&mut self, csts: &[CST<'src>]) -> Type<'src> {
+        match csts[0] {
+            CST::Ident(s, _) if s.starts_with(char::is_lowercase) => {
+                Type::Var(TVar {
+                    id: self.type_var_gen.gen(),
+                    constrs: csts[1..]
+                        .iter()
+                        .map(|cst| self.parse_constraint(cst))
+                        .collect::<BTreeSet<&'src str>>(),
+                    explicit: Some(s),
+                })
+            }
+            ref cst => {
+                cst.pos().error_exit(
+                    "Invalid type variable. Type variable must begin with a lower case letter",
+                )
+            }
         }
     }
 
     /// Parse a `CST` as a `Type`
     fn parse_type<'src>(&mut self, tree: &CST<'src>) -> Type<'src> {
         match *tree {
-            // Type application. E.g. `(Vec Int32)`
+            // Type application, e.g. `(Vec Int32)`; or type variable with constraints,
+            // e.g. `(: t Num)`
             CST::SExpr(ref app, ref pos) if !app.is_empty() => {
                 match app[0] {
+                    CST::Ident(":", _) if app.len() > 2 => self.parse_constraints_spec(&app[1..]),
+                    CST::Ident(":", _) => {
+                        pos.error_exit(
+                            "Constraint specification requires at least two arguments: \
+                             the type variable to constrain, and one/multiple constraint(s)",
+                        )
+                    }
                     CST::Ident("->", _) if app.len() < 3 => {
                         pos.error_exit(
                             "Function type constructor requires at least two arguments: \
-                         one/multiple input type(s) and an output type",
+                             one/multiple input type(s) and an output type",
                         )
                     }
                     CST::Ident("->", _) if app.len() == 3 => {
@@ -314,7 +358,14 @@ impl<'tvg> Parser<'tvg> {
             CST::SExpr(_, ref pos) => pos.error_exit("Empty type application"),
             CST::Ident("_", _) => self.gen_type_var(),
             CST::Ident("Nil", _) => TYPE_NIL.clone(),
-            CST::Ident(basic, ref pos) => Type::Const(basic, Some(pos.clone())),
+            // The type identifier starts with a lowercase letter => Is a type variable
+            CST::Ident(s, _) if s.starts_with(char::is_lowercase) => Type::Var(TVar {
+                id: self.type_var_gen.gen(),
+                constrs: BTreeSet::new(),
+                explicit: Some(s),
+            }),
+            // Doesn't start with lowercase => Is a type constant e.g. Int32
+            CST::Ident(s, ref pos) => Type::Const(s, Some(pos.clone())),
             CST::Num(_, ref pos) => pos.error_exit(Mismatch("type", "numeric literal")),
             CST::Str(_, ref pos) => pos.error_exit(Mismatch("type", "string literal")),
         }

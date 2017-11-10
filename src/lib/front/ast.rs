@@ -15,7 +15,7 @@ lazy_static!{
 /// A polytype
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Poly<'src> {
-    pub params: Vec<u64>,
+    pub params: Vec<TVar<'src>>,
     pub body: Type<'src>,
 }
 
@@ -23,7 +23,17 @@ impl<'src> fmt::Display for Poly<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let params_s = self.params
             .iter()
-            .map(|id| format!("${}", id))
+            .map(|tv| {
+                format!(
+                    "(: ${} {})",
+                    tv.id,
+                    tv.constrs
+                        .iter()
+                        .cloned()
+                        .intersperse(" ")
+                        .collect::<String>()
+                )
+            })
             .intersperse(" ".to_string())
             .collect::<String>();
         write!(f, "(for ({}) {})", params_s, self.body)
@@ -46,15 +56,53 @@ impl<'src> fmt::Display for TypeFunc<'src> {
     }
 }
 
+/// A type variable uniquely identified by an integer id
+/// and constrained by a set of type classes
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TVar<'src> {
+    /// A unique identifier
+    pub id: u64,
+    /// A set of constraints that applies to the polytype
+    pub constrs: BTreeSet<&'src str>,
+    /// Whether the variable is explicit in source, and if so, what it's name is
+    ///
+    /// The variable being explicit implies that it is immutable.
+    /// If a more specific type is encountered during inference, do not unify to the more
+    /// explicit type, but instead produce an error.
+    pub explicit: Option<&'src str>,
+}
+
+impl<'src> fmt::Display for TVar<'src> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let tv = format!("${}", self.id);
+        let name = self.explicit.unwrap_or(&tv);
+        if self.constrs.is_empty() {
+            write!(f, "{}", name)
+        } else {
+            write!(
+                f,
+                "(: {} {})",
+                name,
+                self.constrs
+                    .iter()
+                    .cloned()
+                    .intersperse(" ")
+                    .collect::<String>()
+            )
+        }
+    }
+}
+
+// TODO: This is weird. Probably wrong. Each type variable should not carry constraints?
+//       optionally being explicit kind of makes sense though, but maybe explicit, locked
+//       type variables should be a discinct variant?
+
 /// A type
 #[derive(Clone, Debug, PartialOrd, Ord, Hash)]
 pub enum Type<'src> {
     /// A type variable uniquely identified by an integer id
     /// and constrained by a set of type classes
-    Var {
-        id: u64,
-        constrs: BTreeSet<&'src str>,
-    },
+    Var(TVar<'src>),
     /// A monotype constant, like `int`, or `string`
     Const(&'src str, Option<SrcPos<'src>>),
     /// An application of a type function over one/some/no monotype(s)
@@ -96,7 +144,7 @@ impl<'src> Type<'src> {
 
     fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
         match *self {
-            Type::Var { ref id, .. } => bound.contains(id),
+            Type::Var(ref v) => bound.contains(&v.id),
             Type::Const(_, _) => true,
             Type::App(ref f, ref args) => {
                 let all_args_mono = args.iter().all(|arg| arg.is_monomorphic_in_context(bound));
@@ -104,14 +152,14 @@ impl<'src> Type<'src> {
                     TypeFunc::Const(_) => all_args_mono,
                     TypeFunc::Poly(ref p) => {
                         let mut dup = HashSet::new();
-                        for param in &p.params {
-                            if !bound.insert(*param) {
+                        for &TVar { id: param, .. } in &p.params {
+                            if !bound.insert(param) {
                                 dup.insert(param);
                             }
                         }
                         let body_is_mono = p.body.is_monomorphic_in_context(bound);
-                        for param in p.params.iter().filter(|param| !dup.contains(param)) {
-                            bound.remove(param);
+                        for param in p.params.iter().filter(|&param| !dup.contains(&param.id)) {
+                            bound.remove(&param.id);
                         }
                         all_args_mono && body_is_mono
                     }
@@ -129,7 +177,7 @@ impl<'src> Type<'src> {
     pub fn canonicalize_in_context(&self, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
         match *self {
             Type::Const(_, _) => self.clone(),
-            Type::Var { ref id, .. } => s.get(id).unwrap_or(self).clone(),
+            Type::Var(ref v) => s.get(&v.id).unwrap_or(self).clone(),
             Type::App(box TypeFunc::Const(c), ref args) => {
                 Type::App(
                     Box::new(TypeFunc::Const(c)),
@@ -140,8 +188,8 @@ impl<'src> Type<'src> {
             }
             Type::App(box TypeFunc::Poly(ref p), ref args) => {
                 let shadoweds = zip(&p.params, args)
-                    .filter_map(|(&param, arg)| {
-                        s.insert(param, arg.clone()).map(|shad| (param, shad))
+                    .filter_map(|(param, arg)| {
+                        s.insert(param.id, arg.clone()).map(|shad| (param.id, shad))
                     })
                     .collect::<Vec<_>>();
                 let b = p.body.canonicalize_in_context(s);
@@ -214,14 +262,9 @@ impl<'src> PartialEq for Type<'src> {
     fn eq(&self, other: &Self) -> bool {
         use self::Type::*;
         match (self, other) {
-            (&Var {
-                 id: n,
-                 constrs: ref c,
-             },
-             &Var {
-                 id: m,
-                 constrs: ref d,
-             }) => n == m && c == d,
+            (&Var(ref v1), &Var(ref v2)) => {
+                v1.id == v2.id && v1.constrs == v2.constrs && v1.explicit == v2.explicit
+            }
             (&Const(t, _), &Const(u, _)) => t == u,
             (&App(ref f, ref v), &App(ref g, ref w)) => f == g && v == w,
             (&Poly(ref p), &Poly(ref q)) => p == q,
@@ -235,15 +278,7 @@ impl<'src> Eq for Type<'src> {}
 impl<'src> fmt::Display for Type<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Type::Var { id, ref constrs } if constrs.is_empty() => write!(f, "${}", id),
-            Type::Var { id, ref constrs } => {
-                write!(
-                    f,
-                    "(: ${} {})",
-                    id,
-                    constrs.iter().cloned().intersperse(" ").collect::<String>()
-                )
-            }
+            Type::Var(ref tv) => tv.fmt(f),
             Type::Const(s, _) => fmt::Display::fmt(s, f),
             Type::App(ref con, ref args) => {
                 let args_s = args.iter()

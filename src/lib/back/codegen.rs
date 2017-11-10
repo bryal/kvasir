@@ -253,8 +253,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
         match *typ {
-            ast::Type::Var { id: _, ref constrs }
-                if constrs.len() == 1 && constrs.contains("Num") => Type::get::<isize>(self.ctx),
+            ast::Type::Var(ref tv) if tv.constrs.len() == 1 && tv.constrs.contains("Num") => {
+                Type::get::<isize>(self.ctx)
+            }
             ast::Type::Var { .. } => panic!("Type was Unknown at compile time"),
             ast::Type::Const("Int8", _) => Type::get::<i8>(self.ctx),
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
@@ -373,8 +374,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
         let parser = match num.typ {
             // If it's an arbitrary number, default to isize (Int)
-            ast::Type::Var { id: _, ref constrs }
-                if constrs.len() == 1 && constrs.contains("Num") => {
+            ast::Type::Var(ref tv) if tv.constrs.len() == 1 && tv.constrs.contains("Num") => {
                 CodeGenerator::parse_gen_lit::<isize>
             }
             ast::Type::Const("Int8", _) => CodeGenerator::parse_gen_lit::<i8>,

@@ -21,7 +21,7 @@ use std::collections::{HashMap, BTreeMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
 use std::path;
-use itertools::{zip, repeat_call, Itertools};
+use itertools::{zip, Itertools};
 
 enum InferenceErr<'p, 'src: 'p> {
     /// Type mismatch. (expected, found)
@@ -79,7 +79,7 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
 fn subst_poly<'src>(p: &Poly<'src>, s: &mut HashMap<u64, Type<'src>>) -> Poly<'src> {
     let shadowed_mappings = p.params
         .iter()
-        .filter_map(|i| s.remove(i).map(|t| (*i, t)))
+        .filter_map(|tv| s.remove(&tv.id).map(|t| (tv.id, t)))
         .collect::<Vec<_>>();
     let substituted = subst(&p.body, s);
     s.extend(shadowed_mappings);
@@ -99,8 +99,8 @@ fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -
 /// Apply substitutions in `s` to free type variables in `t`
 fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
     match *t {
-        Type::Var { ref id, .. } => {
-            s.get(id).cloned().map(|t2| subst(&t2, s)).unwrap_or(
+        Type::Var(ref tv) => {
+            s.get(&tv.id).cloned().map(|t2| subst(&t2, s)).unwrap_or(
                 t.clone(),
             )
         }
@@ -170,8 +170,8 @@ fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
 /// Useful to check for circular type variable mappings
 fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
     match *u {
-        Type::Var { id, .. } if t == id => true,
-        Type::Var { ref id, .. } => s.get(id).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
+        Type::Var(ref tv) if t == tv.id => true,
+        Type::Var(ref tv) => s.get(&tv.id).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
 
         Type::App(_, ref us) => us.iter().any(|u2| occurs_in(t, u2, s)),
         // TODO: Verify that this is correct
@@ -243,18 +243,17 @@ fn wrap_vars_types_in_apps_<'src>(
 fn wrap_vars_types_in_apps<'src>(
     e: &mut Expr<'src>,
     vars: &mut HashMap<&'src str, Poly<'src>>,
-    app_args: &[u64],
+    app_args: &[TVar<'src>],
 ) {
-    let app_args_t = app_args
-        .iter()
-        .map(|&id| {
-            Type::Var {
-                id,
-                constrs: BTreeSet::new(),
-            }
-        })
-        .collect::<Vec<_>>();
-    wrap_vars_types_in_apps_(e, vars, &app_args_t)
+    let app_args_t = app_args.iter().collect::<Vec<_>>();
+    wrap_vars_types_in_apps_(
+        e,
+        vars,
+        &app_args_t
+            .iter()
+            .map(|&tv| Type::Var(tv.clone()))
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// The definition of a type name
@@ -325,29 +324,29 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     /// Returns an iterator of all free type variables that occur in `p`
-    fn free_type_vars_poly(&self, p: &Poly<'src>) -> HashSet<u64> {
+    fn free_type_vars_poly(&self, p: &Poly<'src>) -> HashSet<TVar<'src>> {
         let mut set = self.free_type_vars(&p.body);
-        for i in &p.params {
-            set.remove(i);
+        for tv in &p.params {
+            set.remove(&tv);
         }
         set
     }
 
     /// Returns an iterator of all free type variables that occur in `t`
-    fn free_type_vars(&self, t: &Type<'src>) -> HashSet<u64> {
+    fn free_type_vars(&self, t: &Type<'src>) -> HashSet<TVar<'src>> {
         match *t {
-            Type::Var { ref id, .. } => {
+            Type::Var(ref tv) => {
                 self.type_var_map
-                    .get(id)
+                    .get(&tv.id)
                     .map(|u| {
-                        if occurs_in(*id, u, &self.type_var_map) {
+                        if occurs_in(tv.id, u, &self.type_var_map) {
                             // NOTE: Shouldn't be able to happen if no bugs right?
                             panic!("ICE: in get_type_vars: t occurs in u")
                         } else {
                             self.free_type_vars(u)
                         }
                     })
-                    .unwrap_or(HashSet::from_iter(once(*id)))
+                    .unwrap_or(HashSet::from_iter(once(tv.clone())))
             }
             Type::App(_, ref ts) => {
                 ts.iter()
@@ -362,7 +361,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Quantifying monotype variables in `t` that are not bound in the context
     ///
     /// Used for generalization.
-    fn free_type_vars_in_context(&self, t: &Type<'src>) -> HashSet<u64> {
+    fn free_type_vars_in_context(&self, t: &Type<'src>) -> HashSet<TVar<'src>> {
         let env_type_vars = self.var_env
             .iter()
             .flat_map(|(_, v)| v.iter())
@@ -390,12 +389,47 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn instantiate(&mut self, t: &Type<'src>) -> Type<'src> {
         match *t {
             Type::Poly(ref p) => {
-                let tvs = repeat_call(|| self.type_var_gen.gen_tv())
-                    .take(p.params.len())
+                let tvs = p.params
+                    .iter()
+                    .map(|ref tv| {
+                        Type::Var(TVar {
+                            id: self.type_var_gen.gen(),
+                            constrs: tv.constrs.clone(),
+                            explicit: None,
+                        })
+                    })
                     .collect::<Vec<_>>();
                 Type::App(Box::new(TypeFunc::Poly((**p).clone())), tvs)
             }
             _ => t.clone(),
+        }
+    }
+
+    /// Unify two `Var`s
+    fn unify_vars(
+        &mut self,
+        t: &TVar<'src>,
+        u: &TVar<'src>,
+    ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
+        match (t.explicit, t.explicit) {
+            (a, b) if a == b => {
+                let joined_constrs = Type::Var(TVar {
+                    id: self.type_var_gen.gen(),
+                    constrs: t.constrs.union(&u.constrs).cloned().collect(),
+                    explicit: a.clone(),
+                });
+                self.type_var_map.insert(t.id, joined_constrs.clone());
+                self.type_var_map.insert(u.id, joined_constrs.clone());
+                Ok(joined_constrs)
+            }
+            (Some(_), Some(_)) => Err((Type::Var(t.clone()), Type::Var(u.clone()))),
+            (Some(_), None) => {
+                self.type_var_map.insert(u.id, Type::Var(t.clone()));
+                Ok(Type::Var(t.clone()))
+            }
+            (None, Some(_)) => self.unify_vars(u, t),
+            (None, None) if t.id == u.id => Ok(Type::Var(t.clone())),
+            _ => unreachable!(),
         }
     }
 
@@ -405,38 +439,25 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Introduce type variables and generate substitutions such that the two types
     /// are equivalent in the resulting environment.
     /// On success, returns the unification. On failure, returns the conflicting nodes
-    fn unify(
+    fn unify<'t>(
         &mut self,
-        a: &Type<'src>,
-        b: &Type<'src>,
+        a: &'t Type<'src>,
+        b: &'t Type<'src>,
     ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
         use self::Type::*;
         match (a, b) {
-            (&Var { ref id, .. }, _) if self.type_var_map.contains_key(id) => {
-                let a2 = self.type_var_map[id].clone();
-                self.unify(&a2, b)
+            (&Var(ref tv), x) |
+            (x, &Var(ref tv)) if self.type_var_map.contains_key(&tv.id) => {
+                let t = self.type_var_map[&tv.id].clone();
+                self.unify(&t, x)
             }
-            (_, &Var { ref id, .. }) if self.type_var_map.contains_key(id) => {
-                let b2 = self.type_var_map[id].clone();
-                self.unify(a, &b2)
+            (&Var(ref t), &Var(ref u)) => self.unify_vars(t, u),
+            (&Var(ref tv), _) if occurs_in(tv.id, b, &self.type_var_map) => {
+                panic!("ICE: unify: `{}` occurs in `{}`", tv.id, b);
             }
-            (&Var { id, .. }, &Var { id: id2, .. }) if id == id2 => Ok(a.clone()),
-            (&Var { id, .. }, _) if occurs_in(id, b, &self.type_var_map) => {
-                panic!("ICE: unify: `{}` occurs in `{}`", id, b);
-            }
-            (&Var {
-                 id,
-                 constrs: ref cs,
-             },
-             &Var {
-                 id: _,
-                 constrs: ref cs2,
-             }) if cs == cs2 => {
-                self.type_var_map.insert(id, b.clone());
-                Ok(b.clone())
-            }
-            (&Var { id, ref constrs }, _) if b.fulfills_constraints(constrs) => {
-                self.type_var_map.insert(id, b.clone());
+            (&Var(ref tv), _) if tv.explicit.is_some() => Err((a.clone(), b.clone())),
+            (&Var(ref tv), _) if b.fulfills_constraints(&tv.constrs) => {
+                self.type_var_map.insert(tv.id, b.clone());
                 Ok(b.clone())
             }
             (_, &Var { .. }) => self.unify(b, a),
@@ -446,12 +467,12 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                         assert_eq!(p.params.len(), ts1.len());
                         self.type_var_map.extend(
                             zip(&p.params, ts1).map(|(param, t)| {
-                                (*param, t.clone())
+                                (param.id, t.clone())
                             }),
                         );
                         let a2 = subst(&p.body, &mut self.type_var_map);
                         for param in &p.params {
-                            self.type_var_map.remove(param);
+                            self.type_var_map.remove(&param.id);
                         }
                         self.unify(&a2, b)
                     }
@@ -518,10 +539,11 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     ) -> &'n Type<'src> {
         let mut num_constraint = BTreeSet::new();
         num_constraint.insert("Num");
-        let tv_num = Type::Var {
+        let tv_num = Type::Var(TVar {
             id: self.type_var_gen.gen(),
             constrs: num_constraint,
-        };
+            explicit: None,
+        });
         let num_type = self.unify(expected_type, &tv_num).unwrap_or_else(|_| {
             lit.pos.error_exit(format!(
                 "Type mismatch. Expected `{}`, found numeric literal",
@@ -604,8 +626,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     expected: &subst(func_param_type, &mut self.type_var_map),
                     found: &subst(&arg_type, &mut self.type_var_map),
 
-                    sub_expected: &e,
-                    sub_found: &f,
+                    sub_expected: &subst(&e, &mut self.type_var_map),
+                    sub_found: &subst(&f, &mut self.type_var_map),
                 })
             },
         );
@@ -614,8 +636,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 app.pos.error_exit(TypeMisSub {
                     expected: &subst(expected_type, &mut self.type_var_map),
                     found: &subst(func_ret_type, &mut self.type_var_map),
-                    sub_expected: &e,
-                    sub_found: &f,
+                    sub_expected: &subst(&e, &mut self.type_var_map),
+                    sub_found: &subst(&f, &mut self.type_var_map),
                 })
             },
         );
@@ -883,7 +905,7 @@ fn monomorphize_def_of_inst<'src>(
             if !b.mono_insts.contains_key(ts) {
                 // The monomorphization does not already exist
                 let mut s = zip(&p.params, ts)
-                    .map(|(param, t)| (param.clone(), t.clone()))
+                    .map(|(param, t)| (param.id, t.clone()))
                     .collect();
                 let mut def_mono = b.val.clone();
                 subst_expr(&mut def_mono, &mut s);

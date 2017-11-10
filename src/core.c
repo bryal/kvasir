@@ -1,9 +1,9 @@
 #include<inttypes.h>
 #include<stdio.h>
 
-uintptr_t read_int(void) {
-    uintptr_t n;
-    scanf("%" PRIuPTR, &n);
+uintptr_t read_int64(void) {
+    uint64_t n;
+    scanf("%" PRIu64, &n);
     return n;
 }
 

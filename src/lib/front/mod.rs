@@ -33,10 +33,11 @@ impl TypeVarGen {
     }
 
     pub fn gen_tv<'src>(&mut self) -> ast::Type<'src> {
-        ast::Type::Var {
+        ast::Type::Var(ast::TVar {
             id: self.gen(),
             constrs: BTreeSet::new(),
-        }
+            explicit: None,
+        })
     }
 }
 
@@ -152,7 +153,7 @@ impl<'src> SrcPos<'src> {
             .intersperse(&nl_align)
             .collect::<String>();
         println!("{}", aligned_msg);
-        println!("--> {}:{}:{}", self.filename.display(), row, col);
+        println!("  --> {}:{}:{}", self.filename.display(), row, col);
         println!("{}: {}", row, line);
         t.fg(color).ok();
         println!(
