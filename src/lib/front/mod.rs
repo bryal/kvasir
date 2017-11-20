@@ -16,6 +16,8 @@ pub mod lex;
 pub mod ast;
 pub mod parse;
 pub mod inference;
+pub mod monomorphization;
+pub mod substitution;
 
 /// A generator of unique type variables
 pub struct TypeVarGen(u64);

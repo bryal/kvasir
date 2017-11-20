@@ -70,7 +70,8 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
                 v.ident.s,
                 set_of((
                     v.typ.get_inst_args().unwrap_or(&[]).to_vec(),
-                    v.typ.clone(),
+                    // Apply instantiation to type to remove wrapping `App`
+                    v.typ.canonicalize(),
                 )),
             )
         }
@@ -79,7 +80,7 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Lambda(box ref l) => free_vars_in_lambda(l),
         Let(box ref l) => {
             let mut es = vec![&l.body];
-            es.extend(l.bindings.bindings().map(|b| &b.val));
+            es.extend(l.bindings.bindings().flat_map(|b| b.mono_insts.values()));
             let mut fvs = free_vars_in_exprs(&es);
             for b in l.bindings.bindings() {
                 fvs.remove(b.ident.s);
@@ -404,13 +405,90 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate IR for a variable used as an r-value
-    fn gen_variable(
-        &self,
-        env: &mut Env<'src, 'ctx>,
-        var: &'ast ast::Variable<'src>,
-    ) -> &'ctx Value {
+    fn gen_variable(&self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
+        let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
+        let logic_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
+
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
+        let type_canon = var.typ.canonicalize();
         match env.get(var.ident.s, inst) {
+            // NOTE: Ugly hack to fix generic codegen for some binops
+            _ if arithm_binops.contains(var.ident.s) => {
+                let maybe_arg_typ_s =
+                    if let Some((a, b, r)) = type_canon.get_cons_binop() {
+                        match *a {
+                            ast::Type::Const(s, _) if a == b && b == r => Some(s),
+                            ast::Type::Var(ast::TVar { ref constrs, .. })
+                                if a == b && b == r && constrs.len() == 1 &&
+                                       constrs.contains("Num") => Some("Int64"),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                let arg_typ_s = maybe_arg_typ_s.unwrap_or_else(|| {
+                    panic!("ICE: binop has bad type {}", type_canon)
+                });
+                assert!(
+                    (arg_typ_s.starts_with("Int") || arg_typ_s.starts_with("UInt") ||
+                         arg_typ_s.starts_with("Float")) &&
+                        (arg_typ_s.ends_with("32") || arg_typ_s.ends_with("64")),
+                    "ICE: binop has bad type {}",
+                    arg_typ_s
+                );
+                let typ = ast::Type::new_func(
+                    ast::Type::new_cons(
+                        ast::Type::Const(arg_typ_s, None),
+                        ast::Type::Const(arg_typ_s, None),
+                    ),
+                    ast::Type::Const(arg_typ_s, None),
+                );
+                let f = format!("{}-{}", var.ident.s, arg_typ_s.to_lowercase());
+                let mut var2 = var.clone();
+                var2.typ = typ;
+                var2.ident.s = &f;
+                self.gen_variable(env, &var2)
+            }
+            // NOTE: Ugly hack to fix generic codegen for some binops
+            _ if logic_binops.contains(var.ident.s) => {
+                let maybe_arg_typ_s = if let Some((a, b, r)) = type_canon.get_cons_binop() {
+                    match (a, r) {
+                        (&ast::Type::Const(s, _), &ast::Type::Const("Bool", _)) if a == b => Some(
+                            s,
+                        ),
+                        (&ast::Type::Var(ast::TVar { ref constrs, .. }),
+                         &ast::Type::Const("Bool", _))
+                            if a == b && constrs.len() == 1 && constrs.contains("Num") => Some(
+                            "Int64",
+                        ),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let arg_typ_s = maybe_arg_typ_s.unwrap_or_else(|| {
+                    panic!("ICE: binop has bad type {}", type_canon)
+                });
+                assert!(
+                    (arg_typ_s.starts_with("Int") || arg_typ_s.starts_with("UInt") ||
+                         arg_typ_s.starts_with("Float")) &&
+                        (arg_typ_s.ends_with("32") || arg_typ_s.ends_with("64")),
+                    "ICE: binop has bad type {}",
+                    arg_typ_s
+                );
+                let typ = ast::Type::new_func(
+                    ast::Type::new_cons(
+                        ast::Type::Const(arg_typ_s, None),
+                        ast::Type::Const(arg_typ_s, None),
+                    ),
+                    ast::Type::Const("Bool", None),
+                );
+                let f = format!("{}-{}", var.ident.s, arg_typ_s.to_lowercase());
+                let mut var2 = var.clone();
+                var2.typ = typ;
+                var2.ident.s = &f;
+                self.gen_variable(env, &var2)
+            }
             Some(Var::Extern(e)) => {
                 Value::new_struct(
                     self.ctx,
@@ -420,7 +498,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             }
             Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
-            None => unreachable!(),
+            None => {
+                panic!(
+                    "ICE: Undefined variable at codegen: `{}` inst `{:?}`",
+                    var.ident.s,
+                    inst
+                )
+            }
         }
     }
 
@@ -651,7 +735,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         )
     }
 
-    /// Build instructions to cast a pointer value to a generic reference counted pointer `{i64, i8}*`
+    /// Build instructions to cast a pointer value to a generic
+    /// reference counted pointer `{i64, i8}*`
     pub fn build_as_generic_rc(&self, val: &Value) -> &'ctx Value {
         self.builder.build_bit_cast(val, type_rc_generic(self.ctx))
     }
@@ -667,9 +752,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let mut captures_vals = Vec::new();
         for (&fv, insts) in free_vars {
             for &(ref inst, _) in insts {
-                captures_vals.push(env.get_var(fv, inst).expect(
-                    "ICE: Free var not found in env",
-                ))
+                captures_vals.push(env.get_var(fv, inst).expect(&format!(
+                    "ICE: Free var not found in env\n\
+                     var: {}, inst: {:?}\n\
+                     env: {:?}",
+                    fv,
+                    inst,
+                    env
+                )))
             }
         }
         self.build_struct(&captures_vals)
@@ -892,8 +982,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                     main.pos.error_exit(error_msg)
                 } else {
                     main.pos.error(error_msg);
-                    main.pos.help("Try adding type annotations to enforce correct type during type-checking.\n\
-                                   E.g. `(define main (: (lambda (_) ...) (-> Nil Nil)))`");
+                    main.pos.help(
+                        "Try adding type annotations to enforce correct type \
+                         during type-checking.\n\
+                         E.g. `(define main (: (lambda (_) ...) (-> Nil Nil)))`",
+                    );
                     exit()
                 }
             }

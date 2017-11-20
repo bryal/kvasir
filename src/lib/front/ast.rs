@@ -228,6 +228,13 @@ impl<'src> Type<'src> {
         self.get_bin("->")
     }
 
+    /// If the type is of the form `(-> (Cons A B) C)`, return the tuple `(A, B, C)`
+    pub fn get_cons_binop(&self) -> Option<(&Type<'src>, &Type<'src>, &Type<'src>)> {
+        self.get_func().and_then(
+            |(c, r)| c.get_cons().map(|(a, b)| (a, b, r)),
+        )
+    }
+
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         self.get_bin("Cons")
     }

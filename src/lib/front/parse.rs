@@ -289,17 +289,17 @@ impl<'tvg> Parser<'tvg> {
     /// Parse a specification of constraints for a type variable
     ///
     /// E.g. `(: t Num)`
-    fn parse_constraints_spec<'src>(&mut self, csts: &[CST<'src>]) -> Type<'src> {
+    fn parse_constraints_spec<'src>(&mut self, csts: &[CST<'src>]) -> TVar<'src> {
         match csts[0] {
             CST::Ident(s, _) if s.starts_with(char::is_lowercase) => {
-                Type::Var(TVar {
+                TVar {
                     id: self.type_var_gen.gen(),
                     constrs: csts[1..]
                         .iter()
                         .map(|cst| self.parse_constraint(cst))
                         .collect::<BTreeSet<&'src str>>(),
                     explicit: Some(s),
-                })
+                }
             }
             ref cst => {
                 cst.pos().error_exit(
@@ -309,14 +309,35 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    /// Parse a `CST` as a `Type`
-    fn parse_type<'src>(&mut self, tree: &CST<'src>) -> Type<'src> {
+    /// Parse a syntax tree as a `Type`, keeping track och implicitly defined type variables
+    fn parse_type_with_tvars<'src>(
+        &mut self,
+        tvars: &mut HashMap<&'src str, (TVar<'src>, SrcPos<'src>)>,
+        tree: &CST<'src>,
+    ) -> Type<'src> {
         match *tree {
             // Type application, e.g. `(Vec Int32)`; or type variable with constraints,
             // e.g. `(: t Num)`
             CST::SExpr(ref app, ref pos) if !app.is_empty() => {
                 match app[0] {
-                    CST::Ident(":", _) if app.len() > 2 => self.parse_constraints_spec(&app[1..]),
+                    CST::Ident(":", _) if app.len() > 2 => {
+                        let tv = self.parse_constraints_spec(&app[1..]);
+                        let name = tv.explicit.unwrap();
+                        if tvars.contains_key(name) {
+                            let first_pos = &tvars.get(name).unwrap().1;
+                            pos.error("Type variable has already been defined in this scope");
+                            first_pos.note(
+                                "A type variable is implicitly defined the first time it is used \
+                                 in a scope.\nTry removing the constraints of this instance of \
+                                 the type variable, \nand add them to the first instance instead.\n\
+                                 The first instance of the type variable is here:",
+                            );
+                            exit()
+                        } else {
+                            tvars.insert(tv.explicit.unwrap(), (tv.clone(), pos.clone()));
+                            Type::Var(tv)
+                        }
+                    }
                     CST::Ident(":", _) => {
                         pos.error_exit(
                             "Constraint specification requires at least two arguments: \
@@ -330,23 +351,29 @@ impl<'tvg> Parser<'tvg> {
                         )
                     }
                     CST::Ident("->", _) if app.len() == 3 => {
-                        Type::new_func(self.parse_type(&app[1]), self.parse_type(&app[2]))
+                        Type::new_func(
+                            self.parse_type_with_tvars(tvars, &app[1]),
+                            self.parse_type_with_tvars(tvars, &app[2]),
+                        )
                     }
                     CST::Ident("->", _) => {
                         let last_fn = Type::new_func(
-                            self.parse_type(&app[app.len() - 2]),
-                            self.parse_type(&app[app.len() - 1]),
+                            self.parse_type_with_tvars(tvars, &app[app.len() - 2]),
+                            self.parse_type_with_tvars(tvars, &app[app.len() - 1]),
                         );
                         app[1..app.len() - 2].iter().rev().fold(last_fn, |acc, t| {
-                            Type::new_func(self.parse_type(t), acc)
+                            Type::new_func(self.parse_type_with_tvars(tvars, t), acc)
                         })
                     }
                     CST::Ident("Cons", _) if app.len() == 3 => {
-                        Type::new_cons(self.parse_type(&app[1]), self.parse_type(&app[2]))
+                        Type::new_cons(
+                            self.parse_type_with_tvars(tvars, &app[1]),
+                            self.parse_type_with_tvars(tvars, &app[2]),
+                        )
                     }
                     CST::Ident("Cons", _) => pos.error_exit(ArityMis(2, app.len() - 1)),
                     CST::Ident("Ptr", _) if app.len() == 2 => {
-                        Type::new_ptr(self.parse_type(&app[1]))
+                        Type::new_ptr(self.parse_type_with_tvars(tvars, &app[1]))
                     }
                     CST::Ident("Ptr", _) => pos.error_exit(ArityMis(1, app.len() - 1)),
                     CST::Ident(c, ref c_pos) => {
@@ -359,16 +386,31 @@ impl<'tvg> Parser<'tvg> {
             CST::Ident("_", _) => self.gen_type_var(),
             CST::Ident("Nil", _) => TYPE_NIL.clone(),
             // The type identifier starts with a lowercase letter => Is a type variable
-            CST::Ident(s, _) if s.starts_with(char::is_lowercase) => Type::Var(TVar {
-                id: self.type_var_gen.gen(),
-                constrs: BTreeSet::new(),
-                explicit: Some(s),
-            }),
+            CST::Ident(s, ref pos) if s.starts_with(char::is_lowercase) => {
+                let tv = tvars
+                    .entry(s)
+                    .or_insert((
+                        TVar {
+                            id: self.type_var_gen.gen(),
+                            constrs: BTreeSet::new(),
+                            explicit: Some(s),
+                        },
+                        pos.clone(),
+                    ))
+                    .0
+                    .clone();
+                Type::Var(tv)
+            }
             // Doesn't start with lowercase => Is a type constant e.g. Int32
             CST::Ident(s, ref pos) => Type::Const(s, Some(pos.clone())),
             CST::Num(_, ref pos) => pos.error_exit(Mismatch("type", "numeric literal")),
             CST::Str(_, ref pos) => pos.error_exit(Mismatch("type", "string literal")),
         }
+    }
+
+    /// Parse a syntax tree as a `Type`
+    fn parse_type<'src>(&mut self, tree: &CST<'src>) -> Type<'src> {
+        self.parse_type_with_tvars(&mut HashMap::new(), tree)
     }
 
     /// Parse a `CST` as an `Ident` (identifier)
@@ -701,6 +743,7 @@ impl<'tvg> Parser<'tvg> {
                     Expr::Nil(Nil { pos: pos.clone() })
                 }
             }
+            CST::Ident("nil", ref pos) => Expr::Nil(Nil { pos: pos.clone() }),
             CST::Ident("true", ref pos) => {
                 Expr::Bool(Bool {
                     val: true,

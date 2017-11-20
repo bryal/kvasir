@@ -4,37 +4,29 @@
 (extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
 (extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
 
-(extern eq-float64 (-> (Cons Float64 Float64) Bool))
-(extern lt-float64 (-> (Cons Float64 Float64) Bool))
-(extern gt-float64 (-> (Cons Float64 Float64) Bool))
-(extern mul-float64 (-> (Cons Float64 Float64) Float64))
-(extern div-float64 (-> (Cons Float64 Float64) Float64))
-(extern add-float64 (-> (Cons Float64 Float64) Float64))
-(extern sub-float64 (-> (Cons Float64 Float64) Float64))
-
-(extern eq-int64 (-> (Cons Int64 Int64) Bool))
-(extern lt-int64 (-> (Cons Int64 Int64) Bool))
-(extern gt-int64 (-> (Cons Int64 Int64) Bool))
-(extern mul-int64 (-> (Cons Int64 Int64) Int64))
-(extern div-int64 (-> (Cons Int64 Int64) Int64))
 (extern add-int64 (-> (Cons Int64 Int64) Int64))
 (extern sub-int64 (-> (Cons Int64 Int64) Int64))
+(extern mul-int64 (-> (Cons Int64 Int64) Int64))
+(extern div-int64 (-> (Cons Int64 Int64) Int64))
 
-(define (=f x y) (eq-float64 (cons x y)))
-(define (<f x y) (lt-float64 (cons x y)))
-(define (>f x y) (gt-float64 (cons x y)))
-(define (*f x y) (mul-float64 (cons x y)))
-(define (/f x y) (div-float64 (cons x y)))
-(define (+f x y) (add-float64 (cons x y)))
-(define (-f x y) (sub-float64 (cons x y)))
+(extern eq-int64 (-> (Cons Int64 Int64) Bool))
+(extern neq-int64 (-> (Cons Int64 Int64) Bool))
+(extern gt-int64 (-> (Cons Int64 Int64) Bool))
+(extern gteq-int64 (-> (Cons Int64 Int64) Bool))
+(extern lt-int64 (-> (Cons Int64 Int64) Bool))
+(extern lteq-int64 (-> (Cons Int64 Int64) Bool))
 
-(define (=i x y) (eq-int64 (cons x y)))
-(define (<i x y) (lt-int64 (cons x y)))
-(define (>i x y) (gt-int64 (cons x y)))
-(define (*i x y) (mul-int64 (cons x y)))
-(define (/i x y) (div-int64 (cons x y)))
-(define (+i x y) (add-int64 (cons x y)))
-(define (-i x y) (sub-int64 (cons x y)))
+(extern add-float64 (-> (Cons Float64 Float64) Float64))
+(extern sub-float64 (-> (Cons Float64 Float64) Float64))
+(extern mul-float64 (-> (Cons Float64 Float64) Float64))
+(extern div-float64 (-> (Cons Float64 Float64) Float64))
+
+(extern eq-float64 (-> (Cons Float64 Float64) Bool))
+(extern neq-float64 (-> (Cons Float64 Float64) Bool))
+(extern gt-float64 (-> (Cons Float64 Float64) Bool))
+(extern gteq-float64 (-> (Cons Float64 Float64) Bool))
+(extern lt-float64 (-> (Cons Float64 Float64) Bool))
+(extern lteq-float64 (-> (Cons Float64 Float64) Bool))
 
 (define (print-int64 x)
   (lambda (real-world)
@@ -43,6 +35,39 @@
 (define (print-float64 x)
   (lambda (real-world)
     (print_float64 (cons x real-world))))
+
+(define undef (: (lambda (_) (undef nil))
+                 (-> Nil t)))
+
+(define add (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define sub (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define mul (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define div (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+
+(define eq (: (lambda (_) (undef nil))
+              (-> (Cons (: t Num) t) Bool)))
+(define neq (: (lambda (_) (undef nil))
+               (-> (Cons (: t Num) t) Bool)))
+(define gt (: (lambda (_) (undef nil))
+              (-> (Cons (: t Num) t) Bool)))
+(define gteq (: (lambda (_) (undef nil))
+                (-> (Cons (: t Num) t) Bool)))
+(define lt (: (lambda (_) (undef nil))
+              (-> (Cons (: t Num) t) Bool)))
+(define lteq (: (lambda (_) (undef nil))
+                (-> (Cons (: t Num) t) Bool)))
+
+(define (+ x y) (add (cons x y)))
+(define (- x y) (sub (cons x y)))
+(define (* x y) (mul (cons x y)))
+(define (/ x y) (div (cons x y)))
+
+(define (= x y) (eq (cons x y)))
+(define (/= x y) (neq (cons x y)))
+(define (> x y) (gt (cons x y)))
+(define (>= x y) (gteq (cons x y)))
+(define (< x y) (lt (cons x y)))
+(define (<= x y) (lteq (cons x y)))
 
 (define (>> io1 io2)
   (lambda (real-world)
@@ -64,39 +89,39 @@
 
 ;;; 1.3
 (define (max x y)
-  (if (>f x y)
+  (if (> x y)
       x
       y))
 
-(define (square x) (*f x x))
+(define (square x) (* x x))
 
 (define (sum-squares x y)
-  (+f (square x) (square y)))
+  (+ (square x) (square y)))
 
 (define (foo x y z)
-  (if (>f x y)
+  (if (> x y)
       (sum-squares x (max y z))
       (sum-squares y (max x z))))
 ;;;
 
 ;;; 1.4
 (define (a-plus-abs-b a b)
-  ((if (>f b 0) +f -f) a b))
+  ((if (> b 0) + -) a b))
 ;;;
 
 (define (abs x)
-  (if (<f x 0)
-      (-f 0 x)
+  (if (< x 0)
+      (- 0 x)
       x))
 
 (define (average x y)
-  (/f (+f x y) 2))
+  (/ (+ x y) 2))
 
 (define (sqrt x)
   (let (((improve guess x)
-         (average guess (/f x guess)))
+         (average guess (/ x guess)))
         ((good-enough? guess x)
-         (<f (abs (-f (square guess) x)) 0.001))
+         (< (abs (- (square guess) x)) 0.001))
         ((sqrt-iter guess x)
          (if (good-enough? guess x)
                                 guess
@@ -105,16 +130,16 @@
 
 (define (factorial n)
   (let (((iter p i)
-         (if (=i i 0)
+         (if (= i 0)
              p
-             (iter (*i i p) (-i i 1)))))
+             (iter (* i p) (- i 1)))))
     (iter 1 n)))
 
 (define (fib n)
   (let (((iter a b i)
-         (if (=i i 0)
+         (if (= i 0)
              a
-             (iter b (+i a b) (-i i 1)))))
+             (iter b (+ a b) (- i 1)))))
     (iter 0 1 n)))
 
 (define main (print-int64 (fib 10)))

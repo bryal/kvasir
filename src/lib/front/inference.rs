@@ -14,13 +14,13 @@
 //       as new info might have been gathered in second branch
 
 use self::InferenceErr::*;
-use lib::collections::ScopeStack;
 use lib::front::*;
 use lib::front::ast::*;
+use lib::front::monomorphization::*;
+use lib::front::substitution::*;
 use std::collections::{HashMap, BTreeMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
-use std::path;
 use itertools::{zip, Itertools};
 
 enum InferenceErr<'p, 'src: 'p> {
@@ -73,95 +73,6 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
                 )
             }
         }
-    }
-}
-
-fn subst_poly<'src>(p: &Poly<'src>, s: &mut HashMap<u64, Type<'src>>) -> Poly<'src> {
-    let shadowed_mappings = p.params
-        .iter()
-        .filter_map(|tv| s.remove(&tv.id).map(|t| (tv.id, t)))
-        .collect::<Vec<_>>();
-    let substituted = subst(&p.body, s);
-    s.extend(shadowed_mappings);
-    Poly {
-        params: p.params.clone(),
-        body: substituted,
-    }
-}
-
-fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -> TypeFunc<'src> {
-    match *f {
-        TypeFunc::Const(c) => TypeFunc::Const(c),
-        TypeFunc::Poly(ref p) => TypeFunc::Poly(subst_poly(p, s)),
-    }
-}
-
-/// Apply substitutions in `s` to free type variables in `t`
-fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
-    match *t {
-        Type::Var(ref tv) => {
-            s.get(&tv.id).cloned().map(|t2| subst(&t2, s)).unwrap_or(
-                t.clone(),
-            )
-        }
-        Type::App(ref c, ref ts) => {
-            Type::App(
-                Box::new(subst_type_func(c, s)),
-                ts.iter().map(|t2| subst(t2, s)).collect(),
-            )
-        }
-        Type::Poly(ref p) => Type::Poly(Box::new(subst_poly(p, s))),
-        _ => t.clone(),
-    }
-}
-
-/// Apply substitutions in `s` to type variables in types in `e`
-fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
-    match *e {
-        Expr::NumLit(ref mut n) => n.typ = subst(&n.typ, s),
-        Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
-        Expr::App(ref mut app) => {
-            subst_expr(&mut app.func, s);
-            subst_expr(&mut app.arg, s);
-            app.typ = subst(&app.typ, s);
-        }
-        Expr::If(ref mut cond) => {
-            subst_expr(&mut cond.predicate, s);
-            subst_expr(&mut cond.consequent, s);
-            subst_expr(&mut cond.alternative, s);
-            cond.typ = subst(&cond.typ, s);
-        }
-        Expr::Lambda(ref mut l) => {
-            l.param_type = subst(&l.param_type, s);
-            subst_expr(&mut l.body, s);
-            l.typ = subst(&l.typ, s);
-        }
-        Expr::Let(ref mut l) => {
-            for binding in l.bindings.bindings_mut() {
-                binding.typ = subst(&binding.typ, s);
-                subst_expr(&mut binding.val, s);
-            }
-            subst_expr(&mut l.body, s);
-            l.typ = subst(&l.typ, s);
-        }
-        Expr::TypeAscript(ref mut a) => {
-            a.typ = subst(&a.typ, s);
-            subst_expr(&mut a.expr, s);
-        }
-        Expr::Cons(ref mut c) => {
-            c.typ = subst(&c.typ, s);
-            subst_expr(&mut c.car, s);
-            subst_expr(&mut c.cdr, s);
-        }
-        Expr::Car(ref mut c) => {
-            c.typ = subst(&c.typ, s);
-            subst_expr(&mut c.expr, s);
-        }
-        Expr::Cdr(ref mut c) => {
-            c.typ = subst(&c.typ, s);
-            subst_expr(&mut c.expr, s);
-        }
-        _ => (),
     }
 }
 
@@ -461,31 +372,26 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 Ok(b.clone())
             }
             (_, &Var { .. }) => self.unify(b, a),
-            (&App(ref f1, ref ts1), &App(ref f2, ref ts2)) => {
-                match (&**f1, &**f2) {
-                    (&TypeFunc::Poly(ref p), _) => {
-                        assert_eq!(p.params.len(), ts1.len());
-                        self.type_var_map.extend(
-                            zip(&p.params, ts1).map(|(param, t)| {
-                                (param.id, t.clone())
-                            }),
-                        );
-                        let a2 = subst(&p.body, &mut self.type_var_map);
-                        for param in &p.params {
-                            self.type_var_map.remove(&param.id);
-                        }
-                        self.unify(&a2, b)
-                    }
-                    (_, &TypeFunc::Poly(_)) => self.unify(b, a),
-                    (&TypeFunc::Const(c1), &TypeFunc::Const(c2))
-                        if c1 == c2 && ts1.len() == ts2.len() => {
-                        zip(ts1, ts2)
-                            .map(|(t1, t2)| self.unify(t1, t2))
-                            .collect::<Result<_, _>>()
-                            .map(|us| App(f1.clone(), us))
-                    }
-                    _ => Err((a.clone(), b.clone())),
+            (&App(box TypeFunc::Poly(ref p), ref ts), x) |
+            (x, &App(box TypeFunc::Poly(ref p), ref ts)) => {
+                assert_eq!(p.params.len(), ts.len());
+                self.type_var_map.extend(
+                    zip(&p.params, ts).map(|(param, t)| {
+                        (param.id, t.clone())
+                    }),
+                );
+                let t = subst(&p.body, &mut self.type_var_map);
+                for param in &p.params {
+                    self.type_var_map.remove(&param.id);
                 }
+                self.unify(&t, x)
+            }
+            (&App(box TypeFunc::Const(c1), ref ts1), &App(box TypeFunc::Const(c2), ref ts2))
+                if c1 == c2 && ts1.len() == ts2.len() => {
+                zip(ts1, ts2)
+                    .map(|(t1, t2)| self.unify(t1, t2))
+                    .collect::<Result<_, _>>()
+                    .map(|us| App(box TypeFunc::Const(c1), us))
             }
             (&Poly(_), _) | (_, &Poly(_)) => {
                 println!("unifying polytype: `{}` U `{}`", a, b);
@@ -887,131 +793,6 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
         }
     }
-}
-
-/// If `var` is an instantiation of a polymorphic value and monomorphization
-/// does not already exist for this instantiation type, generate a
-/// monomorphization and return the monomorphisized definition
-fn monomorphize_def_of_inst<'src>(
-    var: &Variable<'src>,
-    env: &mut ScopeStack<&str, Binding<'src>>,
-) -> Option<(Vec<Type<'src>>, Expr<'src>)> {
-    if let Type::App(ref f, ref ts) = var.typ {
-        assert!(ts.iter().all(|t| t.is_monomorphic()));
-        if let TypeFunc::Poly(ref p) = **f {
-            // An application of a polytype =>
-            //   it's an instantiation to generate monomorphization for
-            let b = env.get(var.ident.s).unwrap();
-            if !b.mono_insts.contains_key(ts) {
-                // The monomorphization does not already exist
-                let mut s = zip(&p.params, ts)
-                    .map(|(param, t)| (param.id, t.clone()))
-                    .collect();
-                let mut def_mono = b.val.clone();
-                subst_expr(&mut def_mono, &mut s);
-                return Some((ts.clone(), def_mono));
-            }
-        }
-    }
-    // Either definition is already monomorphic to begin with,
-    // or it is polymorphic, but monomorphization has already been generated
-    None
-}
-
-/// Monomorphize definitions for monomorphic instantiations of variables in `expr`
-fn monomorphize_defs_of_insts_in_expr<'src>(
-    e: &mut Expr<'src>,
-    env: &mut ScopeStack<&'src str, Binding<'src>>,
-) {
-    match *e {
-        Expr::Variable(ref var) => {
-            if let Some((arg_ts, mut def_mono)) = monomorphize_def_of_inst(var, env) {
-                // Insert dummy monomorphization as a tag to show that monomorphization
-                // already has been done, but we still need `def_mono` to continue
-                // our recursive monomorphization
-                {
-                    let dummy_expr =
-                        Expr::Nil(Nil { pos: SrcPos::new_pos(path::Path::new(""), "", 0) });
-                    let b = env.get_mut(var.ident.s).unwrap();
-                    b.mono_insts.insert(arg_ts.clone(), dummy_expr);
-                }
-
-                // Recursively generate monomorphizations for now-monomorphic
-                // instantiations in `def_mono`
-                let h = env.get_height(var.ident.s).unwrap();
-                let above = env.split_off(h + 1);
-                monomorphize_defs_of_insts_in_expr(&mut def_mono, env);
-                env.extend(above);
-
-                let b = env.get_mut(var.ident.s).unwrap();
-                *b.mono_insts.get_mut(&arg_ts).unwrap() = def_mono;
-            }
-        }
-        Expr::App(ref mut app) => {
-            monomorphize_defs_of_insts_in_expr(&mut app.func, env);
-            monomorphize_defs_of_insts_in_expr(&mut app.arg, env);
-        }
-        Expr::If(ref mut cond) => {
-            monomorphize_defs_of_insts_in_expr(&mut cond.predicate, env);
-            monomorphize_defs_of_insts_in_expr(&mut cond.consequent, env);
-            monomorphize_defs_of_insts_in_expr(&mut cond.alternative, env);
-        }
-        Expr::Lambda(ref mut lam) => {
-            monomorphize_defs_of_insts_in_expr(&mut lam.body, env);
-        }
-        Expr::Let(box ref mut l) => {
-            monomorphize_defs_of_insts_in_let(&mut l.bindings, &mut l.body, env)
-        }
-        Expr::TypeAscript(_) => unreachable!(),
-        Expr::Cons(ref mut cons) => {
-            monomorphize_defs_of_insts_in_expr(&mut cons.car, env);
-            monomorphize_defs_of_insts_in_expr(&mut cons.cdr, env);
-        }
-        Expr::Car(ref mut c) => {
-            monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
-        }
-        Expr::Cdr(ref mut c) => {
-            monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
-        }
-        _ => (),
-    }
-}
-
-/// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
-fn monomorphize_defs_of_insts_in_let<'src>(
-    bindings: &mut TopologicallyOrderedDependencyGroups<'src>,
-    body: &mut Expr<'src>,
-    env: &mut ScopeStack<&'src str, Binding<'src>>,
-) {
-    let mut monos = HashMap::new();
-    let mut bindings_flat_map = HashMap::new();
-    for b in bindings.bindings() {
-        if b.typ.is_monomorphic() {
-            monos.insert(b.ident.s, b.val.clone());
-        }
-        bindings_flat_map.insert(b.ident.s, b.clone());
-    }
-    env.push(bindings_flat_map);
-
-    for (_, mut def) in &mut monos {
-        monomorphize_defs_of_insts_in_expr(&mut def, env);
-    }
-    monomorphize_defs_of_insts_in_expr(body, env);
-
-    for b in bindings.bindings_mut() {
-        if let Some(upd_def) = monos.remove(b.ident.s) {
-            b.val = upd_def;
-        } else if let Some(upd_bnd) = env.remove(b.ident.s) {
-            *b = upd_bnd
-        }
-    }
-    env.pop().unwrap();
-}
-
-/// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
-fn monomorphize_defs_of_insts<'src>(globals: &mut TopologicallyOrderedDependencyGroups<'src>) {
-    let mut dummy_body = Expr::Nil(Nil { pos: SrcPos::new_pos(path::Path::new(""), "", 0) });
-    monomorphize_defs_of_insts_in_let(globals, &mut dummy_body, &mut ScopeStack::new());
 }
 
 pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
