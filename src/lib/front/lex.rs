@@ -280,6 +280,13 @@ impl<'s> CST<'s> {
         }
     }
 
+    pub fn ident(&self) -> Option<&str> {
+        match *self {
+            CST::Ident(s, _) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Construct a new syntax tree from a token with a position, and the tokens following
     fn from_token((token, mut pos): (Token<'s>, SrcPos<'s>), nexts: &mut Tokens<'s>) -> Self {
         match token {

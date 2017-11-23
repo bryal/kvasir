@@ -121,11 +121,11 @@
   (let (((improve guess x)
          (average guess (/ x guess)))
         ((good-enough? guess x)
-         (< (abs (- (square guess) x)) 0.001))
+         (< (abs (- (square guess) x)) 0.0001))
         ((sqrt-iter guess x)
          (if (good-enough? guess x)
-                                guess
-                                (sqrt-iter (improve guess x) x))))
+             guess
+             (sqrt-iter (improve guess x) x))))
     (sqrt-iter 1.0 x)))
 
 (define (factorial n)
@@ -142,4 +142,11 @@
              (iter b (+ a b) (- i 1)))))
     (iter 0 1 n)))
 
-(define main (print-int64 (fib 10)))
+(define (A x y)
+  (cond ((= y 0) 0)
+        ((= x 0) (* 2 y))
+        ((= y 1) 2)
+        (else (A (- x 1)
+                 (A x (- y 1))))))
+
+(define main (print-int64 (A 1 10)))

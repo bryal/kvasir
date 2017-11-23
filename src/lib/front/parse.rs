@@ -278,6 +278,20 @@ impl<'tvg> Parser<'tvg> {
         Type::Var(self.gen_tvar())
     }
 
+    /// Parse a syntax tree as a tuple of `n` syntax trees
+    fn parse_tuple<'src, 'c>(&mut self, cst: &'c CST<'src>, n: usize) -> &'c [CST<'src>] {
+        match *cst {
+            CST::SExpr(ref csts, _) if csts.len() == n => csts,
+            CST::SExpr(ref csts, ref pos) => pos.error_exit(ArityMis(n, csts.len())),
+            _ => cst.pos().error_exit(Expected("s-expression")),
+        }
+    }
+
+    fn parse_pair<'src, 'c>(&mut self, cst: &'c CST<'src>) -> (&'c CST<'src>, &'c CST<'src>) {
+        let pair = self.parse_tuple(cst, 2);
+        (&pair[0], &pair[1])
+    }
+
     fn parse_constraint<'src>(&mut self, cst: &CST<'src>) -> &'src str {
         match *cst {
             CST::Ident("Num", _) => "Num",
@@ -493,6 +507,47 @@ impl<'tvg> Parser<'tvg> {
                 typ: self.gen_type_var(),
                 pos: pos,
             }
+        }
+    }
+
+    /// Parse the `else` clause of a `cond`
+    fn parse_else_clause<'src>(&mut self, cst: &CST<'src>) -> Expr<'src> {
+        let (pred, conseq) = self.parse_pair(cst);
+        if pred.ident() == Some("else") {
+            self.parse_expr(conseq)
+        } else {
+            cst.pos().error_exit("Expected `else`")
+        }
+    }
+
+    /// Parse a clause of a `cond`
+    fn parse_cond_clause<'src>(&mut self, cst: &CST<'src>) -> (Expr<'src>, Expr<'src>) {
+        let (pred_cst, conseq_cst) = self.parse_pair(cst);
+        (self.parse_expr(pred_cst), self.parse_expr(conseq_cst))
+    }
+
+    /// Parse a sequence of token trees as the clauses of a `cond` special form
+    ///
+    /// Translate to nested `If`s
+    fn parse_cond<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
+        if let Some((last, init)) = csts.split_last() {
+            let else_val = self.parse_else_clause(last);
+            init.iter().rev().fold(else_val, |alternative, c| {
+                let (predicate, consequent) = self.parse_cond_clause(c);
+                Expr::If(box If {
+                    predicate,
+                    consequent,
+                    alternative,
+                    pos: c.pos().clone(),
+                    typ: self.gen_type_var(),
+                })
+            })
+        } else {
+            pos.error_exit(
+                "No clauses in `cond`.\n\
+                            Must contain at lease one clause, \
+                            where the last clause is the `else` clause.",
+            )
         }
     }
 
@@ -737,6 +792,10 @@ impl<'tvg> Parser<'tvg> {
                         CST::Ident("cdr", _) => Expr::Cdr(
                             Box::new(self.parse_cdr(tail, pos.clone())),
                         ),
+
+                        // "Macros"
+                        CST::Ident("cond", _) => self.parse_cond(tail, pos.clone()),
+
                         _ => Expr::App(Box::new(self.parse_app(&sexpr[0], tail, pos.clone()))),
                     }
                 } else {
