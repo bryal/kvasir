@@ -1,6 +1,7 @@
 ;;; Solving the exercises of SICP in Kvasir
 
 (extern malloc (-> UInt (Ptr UInt8)))
+(extern read_int64 (-> RealWorld (Cons Int64 RealWorld)))
 (extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
 (extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
 
@@ -27,6 +28,10 @@
 (extern gteq-float64 (-> (Cons Float64 Float64) Bool))
 (extern lt-float64 (-> (Cons Float64 Float64) Bool))
 (extern lteq-float64 (-> (Cons Float64 Float64) Bool))
+
+(extern pcg32_random (-> RealWorld (Cons Int64 RealWorld)))
+
+(define read-int64 read_int64)
 
 (define (print-int64 x)
   (lambda (real-world)
@@ -80,7 +85,11 @@
           (real-world2 (cdr r)))
       (f v real-world2))))
 
-(define (iomap io f)
+(define (return x)
+  (lambda (real-world)
+    (cons x real-world)))
+
+(define (iomap f io)
   (lambda (real-world)
     (let ((r (io real-world))
           (v (car r))
@@ -135,13 +144,6 @@
              (iter (* i p) (- i 1)))))
     (iter 1 n)))
 
-(define (fib n)
-  (let (((iter a b i)
-         (if (= i 0)
-             a
-             (iter b (+ a b) (- i 1)))))
-    (iter 0 1 n)))
-
 (define (A x y)
   (cond ((= y 0) 0)
         ((= x 0) (* 2 y))
@@ -149,4 +151,43 @@
         (else (A (- x 1)
                  (A x (- y 1))))))
 
-(define main (print-int64 (A 1 10)))
+(define (fib n)
+  (let (((fib-iter a b i) (if (= i 0)
+                              a
+                              (fib-iter b (+ a b) (- i 1)))))
+    (fib-iter 0 1 n)))
+
+(define (remainder n d)
+  (- n (* (/ n d) d)))
+
+(define (even? n)
+  (= (remainder n 2) 0))
+
+;; Exercise 1.16
+(define (expt b n)
+  (let (((iter acc b i)
+         (cond ((= i 0)
+                acc)
+               ((even? i)
+                (iter acc (square b) (/ i 2)))
+               (else
+                (iter (* acc b) b (- i 1))))))
+    (iter 1 b n)))
+
+(define (gcd a b)
+  (if (= b 0)
+      a
+      (gcd b (remainder a b))))
+
+(define (divides? a b)
+  (= (remainder b a) 0))
+
+(define (flip f a b) (f b a))
+
+(define (random n)
+  (iomap ((flip remainder) n) pcg32_random))
+
+(define main (io-pipe (>>= (random 10) print-int64)
+                      (>>= (random 10) print-int64)
+                      (>>= (random 10) print-int64)
+                      (>>= (random 10) print-int64)))

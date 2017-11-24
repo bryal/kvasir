@@ -90,6 +90,15 @@ impl<'src> SrcPos<'src> {
         }
     }
 
+    fn new_dummy() -> Self {
+        SrcPos {
+            filename: Path::new("DUMMY"),
+            src: "DUMMY",
+            start: 0,
+            end: None,
+        }
+    }
+
     fn to(&self, other: &Self) -> Self {
         assert_eq!(
             self.filename,

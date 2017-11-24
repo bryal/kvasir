@@ -1,5 +1,6 @@
 #include<inttypes.h>
 #include<stdio.h>
+#include "pcg-c-basic/pcg_basic.h"
 
 uintptr_t read_int64(void) {
     uint64_t n;

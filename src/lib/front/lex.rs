@@ -280,11 +280,29 @@ impl<'s> CST<'s> {
         }
     }
 
-    pub fn ident(&self) -> Option<&str> {
+    pub fn ident(&self) -> Option<&'s str> {
         match *self {
             CST::Ident(s, _) => Some(s),
             _ => None,
         }
+    }
+
+    pub fn sexpr<'c>(&'c self) -> Option<&'c [CST<'s>]> {
+        match *self {
+            CST::SExpr(ref v, _) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// If the CST is an application of the function/form `f`, return the argument list
+    pub fn application_of<'c>(&'c self, f: &str) -> Option<&'c [CST<'s>]> {
+        self.sexpr().and_then(|v| {
+            v.first().and_then(|c| if c.ident() == Some(f) {
+                Some(&v[1..])
+            } else {
+                None
+            })
+        })
     }
 
     /// Construct a new syntax tree from a token with a position, and the tokens following

@@ -51,10 +51,8 @@ fn map_of<K: cmp::Ord, V>(k: K, v: V) -> BTreeMap<K, V> {
 
 fn free_vars_in_exprs<'src>(es: &[&ast::Expr<'src>]) -> FreeVarInsts<'src> {
     let mut fvs = BTreeMap::new();
-    for fvs2 in es.iter().map(|e2| free_vars_in_expr(e2)) {
-        for (k, v) in fvs2 {
-            fvs.entry(k).or_insert(BTreeSet::new()).extend(v)
-        }
+    for (k, v) in es.iter().flat_map(|e2| free_vars_in_expr(e2)) {
+        fvs.entry(k).or_insert(BTreeSet::new()).extend(v)
     }
     fvs
 }
@@ -80,7 +78,13 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Lambda(box ref l) => free_vars_in_lambda(l),
         Let(box ref l) => {
             let mut es = vec![&l.body];
-            es.extend(l.bindings.bindings().flat_map(|b| b.mono_insts.values()));
+            for binding in l.bindings.bindings() {
+                if binding.typ.is_monomorphic() {
+                    es.push(&binding.val)
+                } else {
+                    es.extend(binding.mono_insts.values())
+                }
+            }
             let mut fvs = free_vars_in_exprs(&es);
             for b in l.bindings.bindings() {
                 fvs.remove(b.ident.s);
@@ -109,7 +113,7 @@ fn free_vars_in_lambda_filter_externs<'src, 'ctx>(
 ) -> FreeVarInsts<'src> {
     free_vars_in_lambda(&lam)
         .into_iter()
-        .filter(|&(k, _)| env.vars.contains_key(k))
+        .filter(|&(k, _)| !env.externs.contains_key(k))
         .collect::<FreeVarInsts>()
 }
 
@@ -500,9 +504,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             // Undefined variables are caught during type check/inference
             None => {
                 panic!(
-                    "ICE: Undefined variable at codegen: `{}` inst `{:?}`",
+                    "ICE: Undefined variable at codegen: {} inst `{:?}`\ninsts of {}: {:#?}",
                     var.ident.s,
-                    inst
+                    inst,
+                    var.ident.s,
+                    env.get_var_insts(var.ident.s)
                 )
             }
         }

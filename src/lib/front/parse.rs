@@ -767,6 +767,71 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
+    /// Apply either the `>>` or `>>=` action
+    fn app_action<'src>(&mut self, f: &'static str, a: Expr<'src>, b: Expr<'src>) -> Expr<'src> {
+        let f_var = Expr::Variable(Variable {
+            ident: Ident {
+                s: f,
+                pos: SrcPos::new_dummy(),
+            },
+            typ: self.gen_type_var(),
+        });
+        Expr::App(box self.new_multary_app(
+            f_var,
+            vec![a, b],
+            SrcPos::new_dummy(),
+        ))
+    }
+
+    /// Parse a syntax tree as an io "statement"
+    ///
+    /// Either an IO expression which translates to `>>`,
+    /// or a `<-` assignment which translates to `>>=`.
+    fn parse_io_statement<'src>(&mut self, cst: &CST<'src>, next: Expr<'src>) -> Expr<'src> {
+        if let Some(v) = cst.application_of("<-") {
+            if v.len() == 2 {
+                if let Some(id) = v[0].ident() {
+                    let first_expr = self.parse_expr(&v[1]);
+                    let next_lam = Expr::Lambda(box Lambda {
+                        param_ident: Ident {
+                            s: id,
+                            pos: v[0].pos().clone(),
+                        },
+                        param_type: self.gen_type_var(),
+                        body: next,
+                        typ: self.gen_type_var(),
+                        pos: SrcPos::new_dummy(),
+                    });
+                    self.app_action(">>=", first_expr, next_lam)
+                } else {
+                    v[0].pos().error_exit(Expected("identifier"))
+                }
+            } else {
+                cst.pos().error_exit(ArityMis(2, v.len()))
+            }
+        } else {
+            let first = self.parse_expr(cst);
+            self.app_action(">>", first, next)
+        }
+    }
+
+    /// Parse a sequence of token trees as a pipe (sequence) of io "statements"
+    ///
+    /// Translate to applications of `>>` and `>>=`. These functions must be defined
+    /// in source to not invoke a compiler error.
+    fn parse_io_pipe<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
+        if let Some((last, init)) = csts.split_last() {
+            let ret = self.parse_expr(last);
+            init.iter().rev().fold(ret, |next, cst| {
+                self.parse_io_statement(cst, next)
+            })
+        } else {
+            pos.error_exit(
+                "No statements in `io-pipe`.\nMust contain at lease one statement.",
+            )
+        }
+    }
+
     /// Parse a `CST` as an `Expr`
     fn parse_expr<'src>(&mut self, cst: &CST<'src>) -> Expr<'src> {
         match *cst {
@@ -795,6 +860,7 @@ impl<'tvg> Parser<'tvg> {
 
                         // "Macros"
                         CST::Ident("cond", _) => self.parse_cond(tail, pos.clone()),
+                        CST::Ident("io-pipe", _) => self.parse_io_pipe(tail, pos.clone()),
 
                         _ => Expr::App(Box::new(self.parse_app(&sexpr[0], tail, pos.clone()))),
                     }
