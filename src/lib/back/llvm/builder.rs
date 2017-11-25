@@ -138,18 +138,31 @@ impl Builder {
             call.into()
         }
     }
-    /// Build an instruction that converts `val` to a floating point `dest`.
+    /// Build an instruction that converts the floating point `val` to a signed integer `dest`
     pub fn build_fp_to_si(&self, val: &Value, dest: &Type) -> &Value {
         unsafe {
             core::LLVMBuildFPToSI(self.into(), val.into(), dest.into(), NULL_NAME.as_ptr()).into()
         }
     }
-    /// Build an instruction that converts `val` to an integer `dest`.
+    /// Build an instruction that converts the floating point `val` to an unsigned integer `dest`
+    pub fn build_fp_to_ui(&self, val: &Value, dest: &Type) -> &Value {
+        unsafe {
+            core::LLVMBuildFPToUI(self.into(), val.into(), dest.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+    /// Build an instruction that converts the signed integer `val` to a floating point `dest`
     pub fn build_si_to_fp(&self, val: &Value, dest: &Type) -> &Value {
         unsafe {
             core::LLVMBuildSIToFP(self.into(), val.into(), dest.into(), NULL_NAME.as_ptr()).into()
         }
     }
+    /// Build an instruction that converts the unsigned integer `val` to a floating point `dest`
+    pub fn build_ui_to_fp(&self, val: &Value, dest: &Type) -> &Value {
+        unsafe {
+            core::LLVMBuildUIToFP(self.into(), val.into(), dest.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+
     /// Build an instruction that yields to `true_val` if `cond` is equal to `1`, and `false_val` otherwise.
     pub fn build_select(&self, cond: &Value, true_val: &Value, false_val: &Value) -> &Value {
         unsafe {
@@ -181,6 +194,13 @@ impl Builder {
             core::LLVMBuildPtrToInt(self.into(), val.into(), dest.into(), NULL_NAME.as_ptr()).into()
         }
     }
+    /// Build an instruction that sign extends its operand to the type `dest`.
+    pub fn build_sext(&self, value: &Value, dest: &Type) -> &Value {
+        unsafe {
+            core::LLVMBuildSExtOrBitCast(self.into(), value.into(), dest.into(), NULL_NAME.as_ptr())
+                .into()
+        }
+    }
     /// Build an instruction that zero extends its operand to the type `dest`.
     pub fn build_zext(&self, value: &Value, dest: &Type) -> &Value {
         unsafe {
@@ -192,6 +212,13 @@ impl Builder {
     pub fn build_trunc(&self, value: &Value, dest: &Type) -> &Value {
         unsafe {
             core::LLVMBuildTrunc(self.into(), value.into(), dest.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+    /// Build an instruction that extends, bitcasts, or truncates its float operand
+    /// to the float type `dest`.
+    pub fn build_fpcast(&self, value: &Value, dest: &Type) -> &Value {
+        unsafe {
+            core::LLVMBuildFPCast(self.into(), value.into(), dest.into(), NULL_NAME.as_ptr()).into()
         }
     }
     /// Build an instruction that inserts a value into an aggregate data value.

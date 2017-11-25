@@ -134,6 +134,57 @@ impl<'src> Type<'src> {
         Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
     }
 
+    fn _int_size(s: &str, ptr_size: usize) -> Option<usize> {
+        match s {
+            "Int8" => Some(8),
+            "Int16" => Some(16),
+            "Int32" => Some(32),
+            "Int64" => Some(64),
+            "IntPtr" => Some(ptr_size),
+            _ => None,
+        }
+    }
+
+    /// If a signed integer, return int size
+    pub fn int_size(&self, ptr_size: usize) -> Option<usize> {
+        match *self {
+            Type::Const(s, _) => Type::_int_size(s, ptr_size),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the type is a signed integer
+    pub fn is_int(&self) -> bool {
+        self.int_size(0).is_some()
+    }
+
+    /// If an unsigned integer, return int size
+    pub fn uint_size(&self, ptr_size: usize) -> Option<usize> {
+        match *self {
+            Type::Const(s, _) if s.starts_with('U') => Type::_int_size(&s[1..], ptr_size),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the type is an unsigned integer
+    pub fn is_uint(&self) -> bool {
+        self.uint_size(0).is_some()
+    }
+
+    /// If a float, return size
+    pub fn float_size(&self) -> Option<usize> {
+        match *self {
+            Type::Const("Float32", _) => Some(32),
+            Type::Const("Float64", _) => Some(64),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the type is a float
+    pub fn is_float(&self) -> bool {
+        self.float_size().is_some()
+    }
+
     /// If this type is an instantiated polytype, return the instantiation args
     pub fn get_inst_args(&self) -> Option<&[Type<'src>]> {
         match *self {
@@ -587,6 +638,14 @@ pub struct Cdr<'src> {
     pub pos: SrcPos<'src>,
 }
 
+/// A type cast
+#[derive(Clone, Debug)]
+pub struct Cast<'src> {
+    pub expr: Expr<'src>,
+    pub typ: Type<'src>,
+    pub pos: SrcPos<'src>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
@@ -602,6 +661,7 @@ pub enum Expr<'src> {
     Cons(Box<Cons<'src>>),
     Car(Box<Car<'src>>),
     Cdr(Box<Cdr<'src>>),
+    Cast(Box<Cast<'src>>),
 }
 
 impl<'src> Expr<'src> {
@@ -620,6 +680,7 @@ impl<'src> Expr<'src> {
             Expr::Cons(ref c) => &c.pos,
             Expr::Car(ref c) => &c.pos,
             Expr::Cdr(ref c) => &c.pos,
+            Expr::Cast(ref c) => &c.pos,
         }
     }
 
@@ -645,6 +706,7 @@ impl<'src> Expr<'src> {
             Expr::Cons(ref c) => &c.typ,
             Expr::Car(ref c) => &c.typ,
             Expr::Cdr(ref c) => &c.typ,
+            Expr::Cast(ref c) => &c.typ,
         }
     }
 

@@ -29,7 +29,7 @@
 (extern lt-float64 (-> (Cons Float64 Float64) Bool))
 (extern lteq-float64 (-> (Cons Float64 Float64) Bool))
 
-(extern pcg32_random (-> RealWorld (Cons Int64 RealWorld)))
+(extern pcg32_random (-> RealWorld (Cons Int32 RealWorld)))
 
 (define read-int64 read_int64)
 
@@ -185,7 +185,8 @@
 (define (flip f a b) (f b a))
 
 (define (random n)
-  (iomap ((flip remainder) n) pcg32_random))
+  (iomap (lambda (r) (remainder (cast r Int64) n))
+         pcg32_random))
 
 (define main (io-pipe (>>= (random 10) print-int64)
                       (>>= (random 10) print-int64)

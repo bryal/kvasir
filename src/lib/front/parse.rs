@@ -64,6 +64,7 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut HashSet<&'src str>) -> Hash
         Car(ref c) => sibling_refs(&c.expr, siblings),
         Cdr(ref c) => sibling_refs(&c.expr, siblings),
         TypeAscript(ref a) => sibling_refs(&a.expr, siblings),
+        Cast(ref c) => sibling_refs(&c.expr, siblings),
         Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => HashSet::new(),
     }
 }
@@ -767,6 +768,20 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
+    /// Parse a type cast
+    ///
+    /// `(cast VAL TYPE)`, e.g. `(cast (: 1 Int32) Int64)`
+    fn parse_cast<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cast<'src> {
+        if csts.len() != 2 {
+            pos.error_exit(ArityMis(2, csts.len()))
+        }
+        Cast {
+            expr: self.parse_expr(&csts[0]),
+            typ: self.parse_type(&csts[1]),
+            pos: pos,
+        }
+    }
+
     /// Apply either the `>>` or `>>=` action
     fn app_action<'src>(&mut self, f: &'static str, a: Expr<'src>, b: Expr<'src>) -> Expr<'src> {
         let f_var = Expr::Variable(Variable {
@@ -856,6 +871,9 @@ impl<'tvg> Parser<'tvg> {
                         ),
                         CST::Ident("cdr", _) => Expr::Cdr(
                             Box::new(self.parse_cdr(tail, pos.clone())),
+                        ),
+                        CST::Ident("cast", _) => Expr::Cast(
+                            Box::new(self.parse_cast(tail, pos.clone())),
                         ),
 
                         // "Macros"

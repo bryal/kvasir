@@ -86,6 +86,10 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
             c.typ = subst(&c.typ, s);
             subst_expr(&mut c.expr, s);
         }
-        _ => (),
+        Expr::Cast(ref mut c) => {
+            c.typ = subst(&c.typ, s);
+            subst_expr(&mut c.expr, s);
+        }
+        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }

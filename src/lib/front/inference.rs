@@ -145,6 +145,9 @@ fn wrap_vars_types_in_apps_<'src>(
         Expr::Cdr(ref mut c) => {
             wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
         }
+        Expr::Cast(ref mut c) => {
+            wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
+        }
         Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
@@ -775,6 +778,22 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &cdr.typ
     }
 
+    fn infer_cast<'c>(
+        &mut self,
+        cast: &'c mut Cast<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'c Type<'src> {
+        let expected_from = self.type_var_gen.gen_tv();
+        self.infer_expr(&mut cast.expr, &expected_from);
+        cast.typ = self.unify(expected_type, &cast.typ).unwrap_or_else(|_| {
+            cast.pos.error_exit(TypeMis(
+                &subst(expected_type, &mut self.type_var_map),
+                &subst(&cast.typ, &mut self.type_var_map),
+            ))
+        });
+        &cast.typ
+    }
+
     // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
         match *expr {
@@ -791,6 +810,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Cons(ref mut cons) => self.infer_cons(cons, expected_type).clone(),
             Expr::Car(ref mut c) => self.infer_car(c, expected_type).clone(),
             Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
+            Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),            
         }
     }
 }

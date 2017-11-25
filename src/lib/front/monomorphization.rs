@@ -109,7 +109,10 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
         Expr::Cdr(ref mut c) => {
             monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
         }
-        _ => (),
+        Expr::Cast(ref mut c) => {
+            monomorphize_defs_of_insts_in_expr(&mut c.expr, env);
+        }
+        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
 

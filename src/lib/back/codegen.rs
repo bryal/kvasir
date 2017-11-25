@@ -95,6 +95,7 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Cons(box ref c) => free_vars_in_exprs(&[&c.car, &c.cdr]),
         Car(box ref c) => free_vars_in_expr(&c.expr),
         Cdr(box ref c) => free_vars_in_expr(&c.expr),
+        Cast(ref c) => free_vars_in_expr(&c.expr),
     }
 }
 
@@ -239,14 +240,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         Value::new_undef(self.named_types.nil)
     }
 
-    fn size_of(&self, t: &Type) -> u64 {
+    fn target_data(&self) -> &'ctx TargetData {
         unsafe {
             let module_ref = mem::transmute::<&Module, LLVMModuleRef>(self.module);
-            let target_data_layout = mem::transmute::<LLVMTargetDataRef, &TargetData>(
+            let target_data = mem::transmute::<LLVMTargetDataRef, &TargetData>(
                 llvm_sys::target::LLVMGetModuleDataLayout(module_ref),
             );
-            target_data_layout.size_of(t)
+            target_data
         }
+    }
+
+    fn size_of(&self, t: &Type) -> u64 {
+        self.target_data().size_of(t)
+    }
+
+    fn pointer_size(&self) -> usize {
+        self.target_data().get_pointer_size()
     }
 
     fn gen_func_type(&self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
@@ -919,6 +928,73 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.builder.build_extract_value(cons, 1)
     }
 
+    /// Generate LLVM IR for the cast of an expression to a type
+    fn gen_cast(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cast<'src>) -> &'ctx Value {
+        let ptr_size = self.pointer_size();
+        let from_type = c.expr.get_type();
+        let to_type = &c.typ;
+        let to_type_ll = self.gen_type(to_type);
+        let from_expr = self.gen_expr(env, &c.expr, None);
+        let res = if let Some(from_size) = from_type.int_size(ptr_size) {
+            // Casting from signed integer
+            if let Some(to_size) = to_type.int_size(ptr_size).or(to_type.uint_size(ptr_size)) {
+                // to some integer type
+                if from_size < to_size {
+                    Some(self.builder.build_sext(from_expr, to_type_ll))
+                } else if from_size > to_size {
+                    Some(self.builder.build_trunc(from_expr, to_type_ll))
+                } else {
+                    Some(from_expr)
+                }
+            } else if to_type.is_float() {
+                // to some float type
+                Some(self.builder.build_si_to_fp(from_expr, to_type_ll))
+            } else {
+                None
+            }
+        } else if let Some(from_size) = from_type.uint_size(ptr_size) {
+            // Casting from unsigned integer
+            if let Some(to_size) = to_type.int_size(ptr_size).or(to_type.uint_size(ptr_size)) {
+                // to some integer type
+                if from_size < to_size {
+                    Some(self.builder.build_zext(from_expr, to_type_ll))
+                } else if from_size > to_size {
+                    Some(self.builder.build_trunc(from_expr, to_type_ll))
+                } else {
+                    Some(from_expr)
+                }
+            } else if to_type.is_float() {
+                // to some float type
+                Some(self.builder.build_ui_to_fp(from_expr, to_type_ll))
+            } else {
+                None
+            }
+        } else if from_type.is_float() {
+            // Casting from float
+            if to_type.is_float() {
+                // to some float type
+                Some(self.builder.build_fpcast(from_expr, to_type_ll))
+            } else if to_type.is_int() {
+                // to some signed integer type
+                Some(self.builder.build_fp_to_si(from_expr, to_type_ll))
+            } else if to_type.is_uint() {
+                // to some unsigned integer type
+                Some(self.builder.build_fp_to_ui(from_expr, to_type_ll))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        res.unwrap_or_else(|| {
+            c.pos.error_exit(format!(
+                "Invalid cast\nCannot cast from {} to {}",
+                from_type,
+                to_type
+            ))
+        })
+    }
+
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(
         &self,
@@ -942,6 +1018,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Cons(ref c) => self.gen_cons(env, c),
             Expr::Car(ref c) => self.gen_car(env, c),
             Expr::Cdr(ref c) => self.gen_cdr(env, c),
+            Expr::Cast(ref c) => self.gen_cast(env, c),
         }
     }
 
