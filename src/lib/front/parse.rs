@@ -279,6 +279,86 @@ impl<'tvg> Parser<'tvg> {
         Type::Var(self.gen_tvar())
     }
 
+    /// Parse a list of `CST`s as a module import
+    fn parse_import<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Import<'src> {
+        if csts.len() != 1 {
+            pos.error_exit(ArityMis(1, csts.len()))
+        } else {
+            match csts[0] {
+                CST::Ident(name, ref id_pos) => {
+                    Import {
+                        module: Ident::new(name, id_pos.clone()),
+                        pos: pos.clone(),
+                    }
+                }
+                _ => csts[0].pos().error_exit(Expected("identifier")),
+            }
+        }
+    }
+
+    fn parse_imports<'src>(
+        &mut self,
+        imports_csts: &[(&[CST<'src>], &SrcPos<'src>)],
+    ) -> BTreeMap<&'src str, Import<'src>> {
+        let mut imports = BTreeMap::new();
+        for &(import_csts, pos) in imports_csts {
+            let import = self.parse_import(import_csts, pos);
+            let module = import.module.s;
+            if let Some(prev) = imports.insert(module, import) {
+                pos.warn(format!("Duplicate import of module `{}`", module));
+                prev.pos.note(format!(
+                    "Previous import of module `{}` here",
+                    module
+                ));
+            }
+        }
+        imports
+    }
+
+    /// Parse a list of `CST`s as an external variable declaration
+    fn parse_extern<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src> {
+        if csts.len() != 2 {
+            pos.error_exit(
+                "Invalid external variable declaration. Expected identifier and type",
+            )
+        } else {
+            match csts[0] {
+                CST::Ident(name, ref id_pos) => {
+                    // Type must be monomorphic canonical
+                    let typ = self.parse_type(&csts[1]).canonicalize();
+                    if !typ.is_monomorphic() {
+                        csts[1].pos().error_exit(
+                            "Type of external variable must be fully specified",
+                        )
+                    }
+                    ExternDecl {
+                        ident: Ident::new(name, id_pos.clone()),
+                        typ: typ,
+                        pos: pos.clone(),
+                    }
+                }
+                _ => csts[0].pos().error_exit(Expected("identifier")),
+            }
+        }
+    }
+
+    fn parse_externs<'src>(
+        &mut self,
+        decls_csts: &[(&[CST<'src>], &SrcPos<'src>)],
+    ) -> BTreeMap<&'src str, ExternDecl<'src>> {
+        let mut externs = BTreeMap::new();
+        for &(decl_csts, pos) in decls_csts {
+            let ext = self.parse_extern(decl_csts, pos);
+            if let Some(ext) = externs.insert(ext.ident.s, ext) {
+                ext.pos.error_exit(format!(
+                    "Duplicate declaration of external variable `{}`",
+                    ext.ident.s
+                ))
+            }
+        }
+        externs
+    }
+
     /// Parse a syntax tree as a tuple of `n` syntax trees
     fn parse_tuple<'src, 'c>(&mut self, cst: &'c CST<'src>, n: usize) -> &'c [CST<'src>] {
         match *cst {
@@ -920,23 +1000,27 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    /// Separate `csts` into token trees for globals end externs
+    /// Separate `csts` into token trees for imports, externs, and globals
     fn group_top_level_csts<'c, 'src>(
         &mut self,
         csts: &'c [CST<'src>],
-    ) -> (Vec<(&'c [CST<'src>], &'c SrcPos<'src>)>, Vec<(&'c [CST<'src>], &'c SrcPos<'src>)>) {
-        let (mut globals, mut externs) = (Vec::new(), Vec::new());
+    ) -> [Vec<(&'c [CST<'src>], &'c SrcPos<'src>)>; 3] {
+        let (mut imports, mut externs, mut globals) = (Vec::new(), Vec::new(), Vec::new());
         for cst in csts {
             let pos = cst.pos();
             match *cst {
                 CST::SExpr(ref sexpr, _) if !sexpr.is_empty() => {
                     match sexpr[0] {
-                        CST::Ident("define", _) => {
-                            globals.push((&sexpr[1..], pos));
+                        CST::Ident("import", _) => {
+                            imports.push((&sexpr[1..], pos));
                             continue;
                         }
                         CST::Ident("extern", _) => {
                             externs.push((&sexpr[1..], pos));
+                            continue;
+                        }
+                        CST::Ident("define", _) => {
+                            globals.push((&sexpr[1..], pos));
                             continue;
                         }
                         _ => (),
@@ -946,61 +1030,22 @@ impl<'tvg> Parser<'tvg> {
             }
             pos.error_exit("Unexpected token-tree at top-level")
         }
-        (globals, externs)
-    }
-
-    /// Parse a list of `CST`s as an external variable declaration
-    fn parse_extern<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src> {
-        if csts.len() != 2 {
-            pos.error_exit(
-                "Invalid external variable declaration. Expected identifier and type",
-            )
-        } else {
-            match csts[0] {
-                CST::Ident(name, ref id_pos) => {
-                    // Type must be monomorphic canonical
-                    let typ = self.parse_type(&csts[1]).canonicalize();
-                    if !typ.is_monomorphic() {
-                        csts[1].pos().error_exit(
-                            "Type of external variable must be fully specified",
-                        )
-                    }
-                    ExternDecl {
-                        ident: Ident::new(name, id_pos.clone()),
-                        typ: typ,
-                        pos: pos.clone(),
-                    }
-                }
-                _ => csts[0].pos().error_exit(Expected("identifier")),
-            }
-        }
-    }
-
-    fn parse_externs<'src>(
-        &mut self,
-        decls_csts: &[(&[CST<'src>], &SrcPos<'src>)],
-    ) -> BTreeMap<&'src str, ExternDecl<'src>> {
-        let mut externs = BTreeMap::new();
-        for &(decl_csts, pos) in decls_csts {
-            let ext = self.parse_extern(decl_csts, pos);
-            if let Some(ext) = externs.insert(ext.ident.s, ext) {
-                ext.pos.error_exit(format!(
-                    "Duplicate declaration of external variable `{}`",
-                    ext.ident.s
-                ))
-            }
-        }
-        externs
+        [imports, externs, globals]
     }
 
     /// Parse a list of `CST`s as the items of a `Module`
     fn parse_module<'src>(&mut self, csts: &[CST<'src>]) -> Module<'src> {
         // Store globals in a Vec as order matters atm, but disallow
         // multiple definitions. Use a set to keep track of defined globals
-        let (globals_csts, externs_csts) = self.group_top_level_csts(csts);
-        let globals = self.parse_bindings(&globals_csts);
-        let externs = self.parse_externs(&externs_csts);
-        Module { globals, externs }
+        let groups = self.group_top_level_csts(csts);
+        let imports = self.parse_imports(&groups[0]);
+        let externs = self.parse_externs(&groups[1]);
+        let globals = self.parse_bindings(&groups[2]);
+        Module {
+            imports,
+            externs,
+            globals,
+        }
     }
 }
 

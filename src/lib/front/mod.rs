@@ -99,6 +99,14 @@ impl<'src> SrcPos<'src> {
         }
     }
 
+    /// Returns a SrcPos of the position of the start of `self`
+    pub fn pos_at_start(&self) -> Self {
+        SrcPos {
+            end: None,
+            ..self.clone()
+        }
+    }
+
     fn to(&self, other: &Self) -> Self {
         assert_eq!(
             self.filename,

@@ -446,6 +446,12 @@ impl<'src> fmt::Display for Ident<'src> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Import<'src> {
+    pub module: Ident<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ExternDecl<'src> {
     pub ident: Ident<'src>,
     /// The type of the external variable being declared.
@@ -804,6 +810,8 @@ impl<'src> Expr<'src> {
 /// A module of definitions and declarations of functions and variables
 #[derive(Clone, Debug)]
 pub struct Module<'src> {
+    /// Module import statements
+    pub imports: BTreeMap<&'src str, Import<'src>>,
     /// External variable declarations
     ///
     /// May include declarations of external both functions and variables
