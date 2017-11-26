@@ -156,7 +156,7 @@ enum Var<'ctx> {
 
 #[derive(Debug)]
 struct Env<'src, 'ctx> {
-    externs: BTreeMap<&'src str, Extern<'ctx>>,
+    externs: BTreeMap<String, Extern<'ctx>>,
     vars: BTreeMap<&'src str, Vec<BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>>>,
 }
 
@@ -254,8 +254,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.target_data().size_of(t)
     }
 
-    fn pointer_size(&self) -> usize {
+    fn ptr_size_bits(&self) -> usize {
         self.target_data().get_pointer_size()
+    }
+
+    fn gen_int_ptr_type(&self) -> &'ctx Type {
+        match self.ptr_size_bits() * 8 {
+            8 => Type::get::<i8>(self.ctx),
+            16 => Type::get::<i16>(self.ctx),
+            32 => Type::get::<i32>(self.ctx),
+            64 => Type::get::<i64>(self.ctx),
+            e => panic!("ICE: Platform has unsupported pointer size of {} bit", e),
+        }
     }
 
     fn gen_func_type(&self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
@@ -275,12 +285,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
             ast::Type::Const("Int64", _) => Type::get::<i64>(self.ctx),
-            ast::Type::Const("Int", _) => Type::get::<isize>(self.ctx),
+            ast::Type::Const("IntPtr", _) |
+            ast::Type::Const("UIntPtr", _) => self.gen_int_ptr_type(),
             ast::Type::Const("UInt8", _) => Type::get::<u8>(self.ctx),
             ast::Type::Const("UInt16", _) => Type::get::<u16>(self.ctx),
             ast::Type::Const("UInt32", _) => Type::get::<u32>(self.ctx),
             ast::Type::Const("UInt64", _) => Type::get::<u64>(self.ctx),
-            ast::Type::Const("UInt", _) => Type::get::<usize>(self.ctx),
             ast::Type::Const("Bool", _) => Type::get::<bool>(self.ctx),
             ast::Type::Const("Float32", _) => Type::get::<f32>(self.ctx),
             ast::Type::Const("Float64", _) => Type::get::<f64>(self.ctx),
@@ -319,17 +329,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         StructType::new(self.ctx, &captures_types, false)
     }
 
-    fn gen_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
+    fn gen_func_decl(&self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         let (arg, ret) = typ.get_func().expect(&format!(
             "ICE: Invalid function type `{}`",
             typ
         ));
         let func_typ = self.gen_func_type(arg, ret);
-        self.module.add_function(id, func_typ)
+        self.module.add_function(&id, func_typ)
     }
 
     /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func_decl(&self, id: &str, typ: &ast::Type<'src>) -> Extern<'ctx> {
+    fn gen_extern_func_decl(&self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
@@ -339,10 +349,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             typ
         ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
+        let func_type = FunctionType::new(ret_type, &[arg_type]);
+        self.module.add_function(&id, func_type)
+    }
 
-        let func_typ = FunctionType::new(ret_type, &[arg_type]);
-        let func = self.module.add_function(id, func_typ);
-
+    /// Generate a dummy closure value that wraps a call to a plain function
+    fn gen_wrapping_closure(
+        &self,
+        func: &'ctx Function,
+        id: String,
+        func_type: &ast::Type,
+    ) -> &'ctx Function {
+        let (at, rt) = func_type.get_func().expect(&format!(
+            "ICE: Invalid function type `{}`",
+            func_type
+        ));
+        let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
         let closure = self.module.add_function(
             &format!("{}_closure", id),
@@ -354,8 +376,111 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let param = &*closure[1];
         let r = self.builder.build_call(func, &[param]);
         self.builder.build_ret(r);
+        closure
+    }
 
+    /// Generate an external function declaration and matching closure-wrapping
+    fn gen_extern_func(&self, id: String, typ: &ast::Type<'src>) -> Extern<'ctx> {
+        assert!(
+            self.current_block.borrow().is_none(),
+            "ICE: External function declarations may only be generated first"
+        );
+        let func = self.gen_extern_func_decl(id.clone(), typ);
+        let closure = self.gen_wrapping_closure(func, id, typ);
         Extern { func, closure }
+    }
+
+    /// Generates a simple binop function of the instruction built by `build_instr`
+    fn gen_binop_func(
+        &self,
+        func_name: String,
+        typ: &ast::Type<'src>,
+        build_instr: fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value,
+    ) -> Extern<'ctx> {
+        let func = self.gen_extern_func_decl(func_name.clone(), typ);
+        let entry = func.append("entry");
+        self.builder.position_at_end(entry);
+        let a = self.builder.build_extract_value(&*func[0], 0);
+        let b = self.builder.build_extract_value(&*func[0], 1);
+        let r = build_instr(self.builder, a, b);
+        self.builder.build_ret(r);
+
+        let closure = self.gen_wrapping_closure(func, func_name, typ);
+        Extern { func, closure }
+    }
+
+    fn gen_core_funcs(&self, env: &mut Env<'src, 'ctx>) {
+        type BinopBuilder<'ctx> = fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value;
+        assert!(
+            self.current_block.borrow().is_none(),
+            "ICE: Core functions may only be generated before main"
+        );
+
+        // Generate arithmeric, relational, and logic binops, e.g. addition
+        let int_types = ["Int8", "Int16", "Int32", "Int64"];
+        let uint_types = ["UInt8", "UInt16", "UInt32", "UInt64"];
+        let float_types = ["Float32", "Float64"];
+        let arithm_binops = [
+            ("add", Builder::build_add as BinopBuilder<'ctx>),
+            ("sub", Builder::build_sub),
+            ("mul", Builder::build_mul),
+        ];
+        let int_arithm_binops = [
+            ("div", Builder::build_sdiv as BinopBuilder<'ctx>),
+            ("shl", Builder::build_shl),
+            ("shr", Builder::build_shl),
+        ];
+        let uint_arithm_binops = [
+            ("div", Builder::build_udiv as BinopBuilder<'ctx>),
+            ("shl", Builder::build_shl),
+            ("shr", Builder::build_shl),
+        ];
+        let float_arithm_binops = [("div", Builder::build_fdiv as BinopBuilder<'ctx>)];
+        let relational_binops = [
+            ("eq", Builder::build_eq as BinopBuilder<'ctx>),
+            ("neq", Builder::build_neq),
+            ("gt", Builder::build_gt),
+            ("gteq", Builder::build_gteq),
+            ("lt", Builder::build_lt),
+            ("lteq", Builder::build_lteq),
+        ];
+        let logic_binops = [
+            ("and", Builder::build_and as BinopBuilder<'ctx>),
+            ("or", Builder::build_or),
+            ("xor", Builder::build_xor),
+        ];
+        let num_classes_with_extras = [
+            (&int_types[..], &int_arithm_binops[..]),
+            (&uint_types[..], &uint_arithm_binops[..]),
+            (&float_types[..], &float_arithm_binops[..]),
+        ];
+        for &(num_class, extras) in &num_classes_with_extras {
+            for type_name in num_class {
+                let arithms_with_div = arithm_binops
+                    .iter()
+                    .chain(extras)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let typ = ast::Type::Const(type_name, None);
+                let binop_type = ast::Type::new_binop(typ.clone());
+                let relational_binop_type = ast::Type::new_relational_binop(typ);
+                let logic_binop_type = ast::Type::new_logic_binop();
+                let ops_with_type = [
+                    (&arithms_with_div[..], binop_type),
+                    (&relational_binops[..], relational_binop_type),
+                    (&logic_binops[..], logic_binop_type),
+                ];
+                for &(ops, ref op_type) in &ops_with_type {
+                    for &(op_name, build_op) in ops {
+                        let func_name = format!("{}-{}", op_name, type_name);
+                        env.externs.insert(
+                            func_name.clone(),
+                            self.gen_binop_func(func_name, op_type, build_op),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn gen_extern_decls(
@@ -370,8 +495,20 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 unimplemented!()
             }
             env.externs.insert(
-                id,
-                self.gen_extern_func_decl(id, &decl.typ),
+                id.to_string(),
+                self.gen_extern_func(id.to_string(), &decl.typ),
+            );
+        }
+        // Heap allocation is required for core-functionality. Unless user has already
+        // explicitly declared the allocator, add it.
+        if !externs.contains_key("malloc") {
+            let malloc_type = ast::Type::new_func(
+                ast::Type::Const("UIntPtr", None),
+                ast::Type::new_ptr(ast::Type::Const("UInt8", None)),
+            );
+            env.externs.insert(
+                "malloc".to_string(),
+                self.gen_extern_func("malloc".to_string(), &malloc_type),
             );
         }
     }
@@ -420,83 +557,61 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     /// Generate IR for a variable used as an r-value
     fn gen_variable(&self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
         let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
-        let logic_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
+        let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
+        let logic_binops = hashset!{ "and", "or", "xor" };
 
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
         let type_canon = var.typ.canonicalize();
         match env.get(var.ident.s, inst) {
             // NOTE: Ugly hack to fix generic codegen for some binops
             _ if arithm_binops.contains(var.ident.s) => {
-                let maybe_arg_typ_s =
-                    if let Some((a, b, r)) = type_canon.get_cons_binop() {
-                        match *a {
-                            ast::Type::Const(s, _) if a == b && b == r => Some(s),
-                            ast::Type::Var(ast::TVar { ref constrs, .. })
-                                if a == b && b == r && constrs.len() == 1 &&
-                                       constrs.contains("Num") => Some("Int64"),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                let arg_typ_s = maybe_arg_typ_s.unwrap_or_else(|| {
+                let maybe_op_typ = type_canon.get_cons_binop().map(|t| t.num_to_int64());
+                let op_typ = maybe_op_typ.unwrap_or_else(|| {
                     panic!("ICE: binop has bad type {}", type_canon)
                 });
                 assert!(
-                    (arg_typ_s.starts_with("Int") || arg_typ_s.starts_with("UInt") ||
-                         arg_typ_s.starts_with("Float")) &&
-                        (arg_typ_s.ends_with("32") || arg_typ_s.ends_with("64")),
+                    op_typ.is_int() || op_typ.is_uint() || op_typ.is_float(),
                     "ICE: binop has bad type {}",
-                    arg_typ_s
+                    type_canon
                 );
-                let typ = ast::Type::new_func(
-                    ast::Type::new_cons(
-                        ast::Type::Const(arg_typ_s, None),
-                        ast::Type::Const(arg_typ_s, None),
-                    ),
-                    ast::Type::Const(arg_typ_s, None),
-                );
-                let f = format!("{}-{}", var.ident.s, arg_typ_s.to_lowercase());
+                let typ = ast::Type::new_binop(op_typ.clone());
+                let f = format!("{}-{}", var.ident.s, op_typ.get_const().unwrap());
                 let mut var2 = var.clone();
                 var2.typ = typ;
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            // NOTE: Ugly hack to fix generic codegen for some binops
-            _ if logic_binops.contains(var.ident.s) => {
-                let maybe_arg_typ_s = if let Some((a, b, r)) = type_canon.get_cons_binop() {
-                    match (a, r) {
-                        (&ast::Type::Const(s, _), &ast::Type::Const("Bool", _)) if a == b => Some(
-                            s,
-                        ),
-                        (&ast::Type::Var(ast::TVar { ref constrs, .. }),
-                         &ast::Type::Const("Bool", _))
-                            if a == b && constrs.len() == 1 && constrs.contains("Num") => Some(
-                            "Int64",
-                        ),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                let arg_typ_s = maybe_arg_typ_s.unwrap_or_else(|| {
-                    panic!("ICE: binop has bad type {}", type_canon)
+            _ if relational_binops.contains(var.ident.s) => {
+                let maybe_op_typ = type_canon.get_cons_relational_binop().map(
+                    |t| t.num_to_int64(),
+                );
+                let op_typ = maybe_op_typ.unwrap_or_else(|| {
+                    panic!("ICE: binary relational op has bad type {}", type_canon)
                 });
                 assert!(
-                    (arg_typ_s.starts_with("Int") || arg_typ_s.starts_with("UInt") ||
-                         arg_typ_s.starts_with("Float")) &&
-                        (arg_typ_s.ends_with("32") || arg_typ_s.ends_with("64")),
-                    "ICE: binop has bad type {}",
-                    arg_typ_s
+                    op_typ.is_int() || op_typ.is_uint() || op_typ.is_float(),
+                    "ICE: relational binop has bad type {}",
+                    type_canon
                 );
-                let typ = ast::Type::new_func(
-                    ast::Type::new_cons(
-                        ast::Type::Const(arg_typ_s, None),
-                        ast::Type::Const(arg_typ_s, None),
-                    ),
-                    ast::Type::Const("Bool", None),
+                let typ = ast::Type::new_relational_binop(op_typ.clone());
+                let f = format!(
+                    "{}-{}",
+                    var.ident.s,
+                    op_typ.get_const().unwrap().to_lowercase()
                 );
-                let f = format!("{}-{}", var.ident.s, arg_typ_s.to_lowercase());
+                let mut var2 = var.clone();
+                var2.typ = typ;
+                var2.ident.s = &f;
+                self.gen_variable(env, &var2)
+            }
+            _ if logic_binops.contains(var.ident.s) => {
+                assert!(
+                    type_canon.is_cons_logic_binop(),
+                    "ICE: relational binop has bad type {}",
+                    type_canon
+                );
+                let typ = ast::Type::new_logic_binop();
+                let f = format!("{}", var.ident.s);
                 let mut var2 = var.clone();
                 var2.typ = typ;
                 var2.ident.s = &f;
@@ -611,7 +726,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Some(name) => format!("__lambda_{}", name),
             None => format!("lambda"),
         };
-        let func = self.gen_func_decl(&lambda_name, &lam.typ);
+        let func = self.gen_func_decl(lambda_name, &lam.typ);
         let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
         let entry = func.append("entry");
         let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
@@ -930,7 +1045,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     /// Generate LLVM IR for the cast of an expression to a type
     fn gen_cast(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cast<'src>) -> &'ctx Value {
-        let ptr_size = self.pointer_size();
+        let ptr_size = self.ptr_size_bits();
         let from_type = c.expr.get_type();
         let to_type = &c.typ;
         let to_type_ll = self.gen_type(to_type);
@@ -1076,6 +1191,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         }
 
         let mut env = Env::new();
+
+        // Generate core functions
+        self.gen_core_funcs(&mut env);
 
         // Generate extern declarations
         self.gen_extern_decls(&mut env, &module.externs);

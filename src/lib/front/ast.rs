@@ -134,55 +134,19 @@ impl<'src> Type<'src> {
         Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
     }
 
-    fn _int_size(s: &str, ptr_size: usize) -> Option<usize> {
-        match s {
-            "Int8" => Some(8),
-            "Int16" => Some(16),
-            "Int32" => Some(32),
-            "Int64" => Some(64),
-            "IntPtr" => Some(ptr_size),
-            _ => None,
-        }
+    pub fn new_binop(typ: Type<'src>) -> Self {
+        Type::new_func(Type::new_cons(typ.clone(), typ.clone()), typ)
     }
 
-    /// If a signed integer, return int size
-    pub fn int_size(&self, ptr_size: usize) -> Option<usize> {
-        match *self {
-            Type::Const(s, _) => Type::_int_size(s, ptr_size),
-            _ => None,
-        }
+    pub fn new_relational_binop(typ: Type<'src>) -> Self {
+        Type::new_func(Type::new_cons(typ.clone(), typ), Type::Const("Bool", None))
     }
 
-    /// Returns whether the type is a signed integer
-    pub fn is_int(&self) -> bool {
-        self.int_size(0).is_some()
-    }
-
-    /// If an unsigned integer, return int size
-    pub fn uint_size(&self, ptr_size: usize) -> Option<usize> {
-        match *self {
-            Type::Const(s, _) if s.starts_with('U') => Type::_int_size(&s[1..], ptr_size),
-            _ => None,
-        }
-    }
-
-    /// Returns whether the type is an unsigned integer
-    pub fn is_uint(&self) -> bool {
-        self.uint_size(0).is_some()
-    }
-
-    /// If a float, return size
-    pub fn float_size(&self) -> Option<usize> {
-        match *self {
-            Type::Const("Float32", _) => Some(32),
-            Type::Const("Float64", _) => Some(64),
-            _ => None,
-        }
-    }
-
-    /// Returns whether the type is a float
-    pub fn is_float(&self) -> bool {
-        self.float_size().is_some()
+    pub fn new_logic_binop() -> Self {
+        Type::new_func(
+            Type::new_cons(Type::Const("Bool", None), Type::Const("Bool", None)),
+            Type::Const("Bool", None),
+        )
     }
 
     /// If this type is an instantiated polytype, return the instantiation args
@@ -264,6 +228,72 @@ impl<'src> Type<'src> {
         self.canonicalize_in_context(&mut HashMap::new())
     }
 
+    /// If a type constant, return the name
+    pub fn get_const(&self) -> Option<&'src str> {
+        match *self {
+            Type::Const(s, _) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn _int_size(s: &str, ptr_size: usize) -> Option<usize> {
+        match s {
+            "Int8" => Some(8),
+            "Int16" => Some(16),
+            "Int32" => Some(32),
+            "Int64" => Some(64),
+            "IntPtr" => Some(ptr_size),
+            _ => None,
+        }
+    }
+
+    /// If a signed integer, return int size
+    pub fn int_size(&self, ptr_size: usize) -> Option<usize> {
+        self.get_const().and_then(|s| Type::_int_size(s, ptr_size))
+    }
+
+    /// Returns whether the type is a signed integer
+    pub fn is_int(&self) -> bool {
+        self.int_size(0).is_some()
+    }
+
+    /// If an unsigned integer, return int size
+    pub fn uint_size(&self, ptr_size: usize) -> Option<usize> {
+        match *self {
+            Type::Const(s, _) if s.starts_with('U') => Type::_int_size(&s[1..], ptr_size),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the type is an unsigned integer
+    pub fn is_uint(&self) -> bool {
+        self.uint_size(0).is_some()
+    }
+
+    /// If a float, return size
+    pub fn float_size(&self) -> Option<usize> {
+        match *self {
+            Type::Const("Float32", _) => Some(32),
+            Type::Const("Float64", _) => Some(64),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the type is a float
+    pub fn is_float(&self) -> bool {
+        self.float_size().is_some()
+    }
+
+    /// If a type variable with only the `Num` constraint, translate
+    /// to default integer type Int64
+    pub fn num_to_int64(&self) -> Self {
+        match *self {
+            Type::Var(TVar { ref constrs, .. })
+                if constrs.len() == 1 && constrs.contains("Num") => Type::Const("Int64", None),
+            _ => self.clone(),
+        }
+    }
+
     fn get_bin(&self, con: &'src str) -> Option<(&Type<'src>, &Type<'src>)> {
         match *self {
             Type::App(ref f, ref ts) if **f == TypeFunc::Const(con) => {
@@ -280,10 +310,41 @@ impl<'src> Type<'src> {
     }
 
     /// If the type is of the form `(-> (Cons A B) C)`, return the tuple `(A, B, C)`
-    pub fn get_cons_binop(&self) -> Option<(&Type<'src>, &Type<'src>, &Type<'src>)> {
+    pub fn get_cons_binary_func(&self) -> Option<(&Type<'src>, &Type<'src>, &Type<'src>)> {
         self.get_func().and_then(
             |(c, r)| c.get_cons().map(|(a, b)| (a, b, r)),
         )
+    }
+
+    /// If binop, by the definition of binops as : S x S -> S, return the operand type
+    pub fn get_cons_binop(&self) -> Option<&Self> {
+        if let Some((a, b, r)) = self.get_cons_binary_func() {
+            if a == b && b == r { Some(a) } else { None }
+        } else {
+            None
+        }
+    }
+
+    /// If binary relational operation, by the definition : S x S -> Bool, return the operand type
+    pub fn get_cons_relational_binop(&self) -> Option<&Self> {
+        if let Some((a, b, r)) = self.get_cons_binary_func() {
+            if a == b && r.get_const() == Some("Bool") {
+                Some(a)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns whether type is binary logic operation: `and`, `or`, etc
+    pub fn is_cons_logic_binop(&self) -> bool {
+        if let Some((a, b, r)) = self.get_cons_binary_func() {
+            a == b && b == r && r.get_const() == Some("Bool")
+        } else {
+            false
+        }
     }
 
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
@@ -299,12 +360,12 @@ impl<'src> Type<'src> {
                     Const("Int16", _) |
                     Const("Int32", _) |
                     Const("Int64", _) |
-                    Const("Int", _) |
+                    Const("IntPtr", _) |
                     Const("UInt8", _) |
                     Const("UInt16", _) |
                     Const("UInt32", _) |
                     Const("UInt64", _) |
-                    Const("UInt", _) |
+                    Const("UIntPtr", _) |
                     Const("Bool", _) |
                     Const("Float32", _) |
                     Const("Float64", _) => true,

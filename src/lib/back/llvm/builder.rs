@@ -299,12 +299,36 @@ impl Builder {
     bin_op!{build_add, LLVMBuildAdd, LLVMBuildFAdd}
     bin_op!{build_sub, LLVMBuildSub, LLVMBuildFSub}
     bin_op!{build_mul, LLVMBuildMul, LLVMBuildFMul}
-    bin_op!{build_div, LLVMBuildSDiv, LLVMBuildFDiv}
     bin_op!{build_shl, LLVMBuildShl}
     bin_op!{build_ashr, LLVMBuildAShr}
     bin_op!{build_and, LLVMBuildAnd}
     bin_op!{build_or, LLVMBuildOr}
     bin_op!{build_xor, LLVMBuildXor}
+
+    /// Build an isntruction to divide the signed integer nominator `left` by the
+    /// denominator `right` of the same type.
+    pub fn build_sdiv(&self, left: &Value, right: &Value) -> &Value {
+        unsafe {
+            core::LLVMBuildSDiv(self.into(), left.into(), right.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+
+    /// Build an isntruction to divide the unsigned integer nominator `left` by the
+    /// denominator `right` of the same type.
+    pub fn build_udiv(&self, left: &Value, right: &Value) -> &Value {
+        unsafe {
+            core::LLVMBuildUDiv(self.into(), left.into(), right.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+
+    /// Build an isntruction to divide the float nominator `left` by the
+    /// denominator `right` of the same type.
+    pub fn build_fdiv(&self, left: &Value, right: &Value) -> &Value {
+        unsafe {
+            core::LLVMBuildFDiv(self.into(), left.into(), right.into(), NULL_NAME.as_ptr()).into()
+        }
+    }
+
     /// Build an instruction to compare two values with the predicate given.
     pub fn build_cmp(&self, a: &Value, b: &Value, pred: Predicate) -> &Value {
         let (at, bt) = (a.get_type(), b.get_type());
@@ -336,5 +360,24 @@ impl Builder {
         } else {
             panic!("expected numbers, got {:?}", at)
         }
+    }
+
+    pub fn build_eq(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::Equal)
+    }
+    pub fn build_neq(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::NotEqual)
+    }
+    pub fn build_gt(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::GreaterThan)
+    }
+    pub fn build_gteq(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::GreaterThanOrEqual)
+    }
+    pub fn build_lt(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::LessThan)
+    }
+    pub fn build_lteq(&self, a: &Value, b: &Value) -> &Value {
+        self.build_cmp(a, b, Predicate::LessThanOrEqual)
     }
 }

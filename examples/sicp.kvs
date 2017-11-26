@@ -1,33 +1,8 @@
 ;;; Solving the exercises of SICP in Kvasir
 
-(extern malloc (-> UInt (Ptr UInt8)))
 (extern read_int64 (-> RealWorld (Cons Int64 RealWorld)))
 (extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
 (extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
-
-(extern add-int64 (-> (Cons Int64 Int64) Int64))
-(extern sub-int64 (-> (Cons Int64 Int64) Int64))
-(extern mul-int64 (-> (Cons Int64 Int64) Int64))
-(extern div-int64 (-> (Cons Int64 Int64) Int64))
-
-(extern eq-int64 (-> (Cons Int64 Int64) Bool))
-(extern neq-int64 (-> (Cons Int64 Int64) Bool))
-(extern gt-int64 (-> (Cons Int64 Int64) Bool))
-(extern gteq-int64 (-> (Cons Int64 Int64) Bool))
-(extern lt-int64 (-> (Cons Int64 Int64) Bool))
-(extern lteq-int64 (-> (Cons Int64 Int64) Bool))
-
-(extern add-float64 (-> (Cons Float64 Float64) Float64))
-(extern sub-float64 (-> (Cons Float64 Float64) Float64))
-(extern mul-float64 (-> (Cons Float64 Float64) Float64))
-(extern div-float64 (-> (Cons Float64 Float64) Float64))
-
-(extern eq-float64 (-> (Cons Float64 Float64) Bool))
-(extern neq-float64 (-> (Cons Float64 Float64) Bool))
-(extern gt-float64 (-> (Cons Float64 Float64) Bool))
-(extern gteq-float64 (-> (Cons Float64 Float64) Bool))
-(extern lt-float64 (-> (Cons Float64 Float64) Bool))
-(extern lteq-float64 (-> (Cons Float64 Float64) Bool))
 
 (extern pcg32_random (-> RealWorld (Cons Int32 RealWorld)))
 
@@ -49,18 +24,12 @@
 (define mul (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
 (define div (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
 
-(define eq (: (lambda (_) (undef nil))
-              (-> (Cons (: t Num) t) Bool)))
-(define neq (: (lambda (_) (undef nil))
-               (-> (Cons (: t Num) t) Bool)))
-(define gt (: (lambda (_) (undef nil))
-              (-> (Cons (: t Num) t) Bool)))
-(define gteq (: (lambda (_) (undef nil))
-                (-> (Cons (: t Num) t) Bool)))
-(define lt (: (lambda (_) (undef nil))
-              (-> (Cons (: t Num) t) Bool)))
-(define lteq (: (lambda (_) (undef nil))
-                (-> (Cons (: t Num) t) Bool)))
+(define eq   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define neq  (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define gt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define gteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define lt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define lteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
 
 (define (+ x y) (add (cons x y)))
 (define (- x y) (sub (cons x y)))
