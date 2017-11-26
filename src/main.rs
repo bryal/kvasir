@@ -255,6 +255,7 @@ fn main() {
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
     let mut ast = parse(&csts, &mut type_var_generator);
     infer_types(&mut ast, &mut type_var_generator);
+    //println!("inferred: {:#?}", ast);
     compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
 
     println!(

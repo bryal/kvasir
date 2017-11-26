@@ -532,12 +532,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Int16", _) => CodeGenerator::parse_gen_lit::<i16>,
             ast::Type::Const("Int32", _) => CodeGenerator::parse_gen_lit::<i32>,
             ast::Type::Const("Int64", _) => CodeGenerator::parse_gen_lit::<i64>,
-            ast::Type::Const("Int", _) => CodeGenerator::parse_gen_lit::<isize>,
+            ast::Type::Const("IntPtr", _) => CodeGenerator::parse_gen_lit::<isize>,
             ast::Type::Const("UInt8", _) => CodeGenerator::parse_gen_lit::<u8>,
             ast::Type::Const("UInt16", _) => CodeGenerator::parse_gen_lit::<u16>,
             ast::Type::Const("UInt32", _) => CodeGenerator::parse_gen_lit::<u32>,
             ast::Type::Const("UInt64", _) => CodeGenerator::parse_gen_lit::<u64>,
-            ast::Type::Const("UInt", _) => CodeGenerator::parse_gen_lit::<usize>,
+            ast::Type::Const("UIntPtr", _) => CodeGenerator::parse_gen_lit::<usize>,
             ast::Type::Const("Bool", _) => CodeGenerator::parse_gen_lit::<bool>,
             ast::Type::Const("Float32", _) => CodeGenerator::parse_gen_lit::<f32>,
             ast::Type::Const("Float64", _) => CodeGenerator::parse_gen_lit::<f64>,
@@ -550,8 +550,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         parser(self, &num.lit, &num.typ, &num.pos)
     }
 
-    fn gen_str(&self, _: &'ast ast::StrLit<'src>) -> &'ctx Value {
-        unimplemented!()
+    fn gen_str(&self, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
+        let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
+        let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
+        str_const.set_constant(true);
+        let str_ptr = self.builder.build_gep(
+            str_const,
+            &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
+        );
+        self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr])
     }
 
     /// Generate IR for a variable used as an r-value
@@ -594,11 +601,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                     type_canon
                 );
                 let typ = ast::Type::new_relational_binop(op_typ.clone());
-                let f = format!(
-                    "{}-{}",
-                    var.ident.s,
-                    op_typ.get_const().unwrap().to_lowercase()
-                );
+                let f = format!("{}-{}", var.ident.s, op_typ.get_const().unwrap());
                 let mut var2 = var.clone();
                 var2.typ = typ;
                 var2.ident.s = &f;

@@ -787,15 +787,12 @@ impl<'tvg> Parser<'tvg> {
         let f_var = Expr::Variable(Variable {
             ident: Ident {
                 s: f,
-                pos: SrcPos::new_dummy(),
+                pos: a.pos().pos_at_start(),
             },
             typ: self.gen_type_var(),
         });
-        Expr::App(box self.new_multary_app(
-            f_var,
-            vec![a, b],
-            SrcPos::new_dummy(),
-        ))
+        let app_interval = a.pos().to(b.pos());
+        Expr::App(box self.new_multary_app(f_var, vec![a, b], app_interval))
     }
 
     /// Parse a syntax tree as an io "statement"
@@ -807,6 +804,7 @@ impl<'tvg> Parser<'tvg> {
             if v.len() == 2 {
                 if let Some(id) = v[0].ident() {
                     let first_expr = self.parse_expr(&v[1]);
+                    let next_lam_pos = next.pos().clone();
                     let next_lam = Expr::Lambda(box Lambda {
                         param_ident: Ident {
                             s: id,
@@ -815,7 +813,7 @@ impl<'tvg> Parser<'tvg> {
                         param_type: self.gen_type_var(),
                         body: next,
                         typ: self.gen_type_var(),
-                        pos: SrcPos::new_dummy(),
+                        pos: next_lam_pos,
                     });
                     self.app_action(">>=", first_expr, next_lam)
                 } else {

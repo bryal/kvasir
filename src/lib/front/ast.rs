@@ -8,7 +8,9 @@ use std::iter::once;
 lazy_static!{
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil", None);
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool", None);
-    pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
+    pub static ref TYPE_STRING: Type<'static> = Type::new_cons(
+        Type::Const("UIntPtr", None),
+        Type::new_ptr(Type::Const("UInt8", None)));
     pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld", None);
 }
 

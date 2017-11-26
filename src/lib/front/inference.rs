@@ -23,23 +23,23 @@ use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
 use itertools::{zip, Itertools};
 
-enum InferenceErr<'p, 'src: 'p> {
+enum InferenceErr<'src> {
     /// Type mismatch. (expected, found)
-    TypeMis(&'p Type<'src>, &'p Type<'src>),
+    TypeMis(Type<'src>, Type<'src>),
     /// Type mismatch with specified mismatching nodes
     TypeMisSub {
-        expected: &'p Type<'src>,
-        found: &'p Type<'src>,
-        sub_expected: &'p Type<'src>,
-        sub_found: &'p Type<'src>,
+        expected: Type<'src>,
+        found: Type<'src>,
+        sub_expected: Type<'src>,
+        sub_found: Type<'src>,
     },
-    ArmsDiffer(&'p Type<'src>, &'p Type<'src>),
+    ArmsDiffer(Type<'src>, Type<'src>),
 }
 
-impl<'src, 'p> Display for InferenceErr<'src, 'p> {
+impl<'src> Display for InferenceErr<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            TypeMis(expected, found) => {
+            TypeMis(ref expected, ref found) => {
                 write!(
                     f,
                     "Type mismatch. Expected `{}`, found `{}`",
@@ -48,10 +48,10 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
                 )
             }
             TypeMisSub {
-                expected,
-                found,
-                sub_expected,
-                sub_found,
+                ref expected,
+                ref found,
+                ref sub_expected,
+                ref sub_found,
             } => {
                 write!(
                     f,
@@ -63,7 +63,7 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
                     sub_expected
                 )
             }
-            ArmsDiffer(c, a) => {
+            ArmsDiffer(ref c, ref a) => {
                 write!(
                     f,
                     "Consequent and alternative have different types. Expected `{}` from \
@@ -75,6 +75,30 @@ impl<'src, 'p> Display for InferenceErr<'src, 'p> {
         }
     }
 }
+
+fn type_mis<'src>(
+    type_var_map: &mut HashMap<u64, Type<'src>>,
+    expected: &Type<'src>,
+    found: &Type<'src>,
+) -> InferenceErr<'src> {
+    TypeMis(subst(expected, type_var_map), subst(found, type_var_map))
+}
+
+fn type_mis_sub<'src>(
+    type_var_map: &mut HashMap<u64, Type<'src>>,
+    expected: &Type<'src>,
+    found: &Type<'src>,
+    sub_expected: &Type<'src>,
+    sub_found: &Type<'src>,
+) -> InferenceErr<'src> {
+    TypeMisSub {
+        expected: subst(expected, type_var_map),
+        found: subst(found, type_var_map),
+        sub_expected: subst(sub_expected, type_var_map),
+        sub_found: subst(sub_found, type_var_map),
+    }
+}
+
 
 /// Returns whether type variable `t` occurs in type `u` with substitutions `s`
 ///
@@ -415,7 +439,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_type: &Type<'src>) -> Type<'src> {
         self.unify(expected_type, &TYPE_NIL).unwrap_or_else(
             |(e, f)| {
-                nil.pos.error_exit(TypeMis(&e, &f))
+                nil.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
             },
         )
     }
@@ -424,7 +448,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
         self.unify(expected_type, &TYPE_STRING).unwrap_or_else(
             |(e, f)| {
-                lit.pos.error_exit(TypeMis(&e, &f))
+                lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
             },
         )
     }
@@ -433,7 +457,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
         self.unify(expected_type, &TYPE_BOOL).unwrap_or_else(
             |(e, f)| {
-                b.pos.error_exit(TypeMis(&e, &f))
+                b.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
             },
         )
     }
@@ -493,12 +517,13 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             // An extern. Check that type of extern is unifiable with expected type
             var.typ = self.unify(expected_type, &ext.typ).unwrap_or_else(
                 |(e, f)| {
-                    var.ident.pos.error_exit(TypeMisSub {
-                        expected: &subst(expected_type, &mut self.type_var_map),
-                        found: &ext.typ,
-                        sub_expected: &e,
-                        sub_found: &f,
-                    })
+                    var.ident.pos.error_exit(type_mis_sub(
+                        &mut self.type_var_map,
+                        expected_type,
+                        &ext.typ,
+                        &e,
+                        &f,
+                    ))
                 },
             );
             var.typ.clone()
@@ -531,23 +556,24 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         );
         self.unify(func_param_type, &arg_type).unwrap_or_else(
             |(e, f)| {
-                app.arg.pos().error_exit(TypeMisSub {
-                    expected: &subst(func_param_type, &mut self.type_var_map),
-                    found: &subst(&arg_type, &mut self.type_var_map),
-
-                    sub_expected: &subst(&e, &mut self.type_var_map),
-                    sub_found: &subst(&f, &mut self.type_var_map),
-                })
+                app.arg.pos().error_exit(type_mis_sub(
+                    &mut self.type_var_map,
+                    func_param_type,
+                    &arg_type,
+                    &e,
+                    &f,
+                ))
             },
         );
         let ret_unification = self.unify(expected_type, func_ret_type).unwrap_or_else(
             |(e, f)| {
-                app.pos.error_exit(TypeMisSub {
-                    expected: &subst(expected_type, &mut self.type_var_map),
-                    found: &subst(func_ret_type, &mut self.type_var_map),
-                    sub_expected: &subst(&e, &mut self.type_var_map),
-                    sub_found: &subst(&f, &mut self.type_var_map),
-                })
+                app.pos.error_exit(type_mis_sub(
+                    &mut self.type_var_map,
+                    expected_type,
+                    func_ret_type,
+                    &e,
+                    &f,
+                ))
             },
         );
         app.typ = ret_unification;
@@ -565,7 +591,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         cond.typ = self.unify(&consequent_type, &alternative_type)
             .unwrap_or_else(|_| {
                 cond.pos.error_exit(
-                    ArmsDiffer(&consequent_type, &alternative_type),
+                    ArmsDiffer(consequent_type, alternative_type),
                 )
             });
         &cond.typ
@@ -584,7 +610,13 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let body_type = self.type_var_gen.gen_tv();
         let func_type = Type::new_func(param_type.clone(), body_type);
         let (expected_param_type, expected_body_type) = self.unify(expected_type, &func_type)
-            .unwrap_or_else(|_| lam.pos.error_exit(TypeMis(expected_type, &func_type)))
+            .unwrap_or_else(|_| {
+                lam.pos.error_exit(type_mis(
+                    &mut self.type_var_map,
+                    expected_type,
+                    &func_type,
+                ))
+            })
             .get_func()
             .map(|(p, b)| (p.clone(), b.clone()))
             .expect(
@@ -718,7 +750,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         match expr.remove_type_ascription() {
             Some(ascribed) => {
                 let expected_type2 = self.unify(expected_type, &ascribed).unwrap_or_else(|_| {
-                    ascr_pos.error_exit(TypeMis(expected_type, &ascribed))
+                    ascr_pos.error_exit(type_mis(&mut self.type_var_map, expected_type, &ascribed))
                 });
                 self.infer_expr(expr, &expected_type2)
             }
@@ -735,9 +767,11 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Type::new_cons(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
         let expected_type2 = self.unify(expected_type, &arbitrary_cons_type)
             .unwrap_or_else(|_| {
-                cons.pos.error_exit(
-                    TypeMis(expected_type, &arbitrary_cons_type),
-                )
+                cons.pos.error_exit(type_mis(
+                    &mut self.type_var_map,
+                    expected_type,
+                    &arbitrary_cons_type,
+                ))
             });
         let (expected_car_type, expected_cdr_type) = expected_type2.get_cons().expect(
             "ICE: expected type not cons in infer_cons ",
@@ -786,9 +820,10 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let expected_from = self.type_var_gen.gen_tv();
         self.infer_expr(&mut cast.expr, &expected_from);
         cast.typ = self.unify(expected_type, &cast.typ).unwrap_or_else(|_| {
-            cast.pos.error_exit(TypeMis(
-                &subst(expected_type, &mut self.type_var_map),
-                &subst(&cast.typ, &mut self.type_var_map),
+            cast.pos.error_exit(type_mis(
+                &mut self.type_var_map,
+                expected_type,
+                &cast.typ,
             ))
         });
         &cast.typ
