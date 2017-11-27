@@ -1,0 +1,170 @@
+;;; Section Strings
+;;;
+;;; Represent strings as a pair of (pointer to string data) and length
+;;; I.e. (Cons UIntPtr (Ptr UInt8))
+
+(extern c_display (-> (Cons (Cons UIntPtr (Ptr UInt8)) RealWorld)
+                      (Cons Nil RealWorld)))
+
+(define (display s real-world) (c_display (cons s real-world)))
+
+;;; Section Input/output
+
+(extern read_int64 (-> RealWorld (Cons Int64 RealWorld)))
+(extern read_uint64 (-> RealWorld (Cons UInt64 RealWorld)))
+(extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
+(extern print_uint64 (-> (Cons UInt64 RealWorld) (Cons Nil RealWorld)))
+(extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
+
+(define read-int64 read_int64)
+(define read-uint64 read_uint64)
+
+(define (print-int64 x)
+  (lambda (real-world)
+    (print_int64 (cons x real-world))))
+
+(define (print-uint64 x)
+  (lambda (real-world)
+    (print_uint64 (cons x real-world))))
+
+(define (print-float64 x)
+  (lambda (real-world)
+    (print_float64 (cons x real-world))))
+
+(define (>> io1 io2)
+  (lambda (real-world)
+    (io2 (cdr (io1 real-world)))))
+
+(define (>>= io f)
+  (lambda (real-world)
+    (let ((r (io real-world))
+          (v (car r))
+          (real-world2 (cdr r)))
+      (f v real-world2))))
+
+(define (return x)
+  (lambda (real-world)
+    (cons x real-world)))
+
+(define (iomap f io)
+  (lambda (real-world)
+    (let ((r (io real-world))
+          (v (car r))
+          (real-world2 (cdr r)))
+      (cons (f v) real-world2))))
+
+;;; Section Random number generation
+;;;
+;;; Uses a global rng
+
+(extern pcg32_srandom (-> (Cons (Cons UInt64 UInt64) RealWorld) (Cons Nil RealWorld))) ;
+(extern pcg32_random (-> RealWorld (Cons UInt32 RealWorld)))
+
+;;? Seed the global rng
+(define seed-rng
+  (: (lambda (initstate real-world)
+       (pcg32_srandom (cons (cons initstate 42) real-world)))
+     (-> UInt64 RealWorld (Cons Nil RealWorld))))
+
+;;? Generate a random number in [0, n) using the global rng
+(define (random n)
+  (iomap (lambda (r) (remainder (cast r _) n))
+         pcg32_random))
+
+;;; Section Function compositioning
+
+(define (flip f a b) (f b a))
+
+;;; Section Option and Either
+
+(define (right x) (cons true x))
+(define (left x) (cons false x))
+(define (is-right option) (car option))
+(define (is-left option) (not (is-right option)))
+(define (unwrap option) (cdr option))
+
+;;; Section Iteration
+
+(define (next iterator)
+  (let ((f (car iterator))
+        (state (cdr iterator))
+        (r (f state))
+        (item (car r))
+        (state2 (cdr r)))
+    (cons item (cons f state2))))
+
+;;? Returns an iterator of the numbers from `n` to `m`
+(define (range n m)
+  (cons (lambda (i)
+          (if (< i m)
+              (cons (right i) (+ i 1))
+              (cons (left i) i)))
+        n))
+
+(define (for iterator f state)
+  (let ((r (next iterator))
+        (maybe-item (car r))
+        (iterator2 (cdr r)))
+    (if (is-right maybe-item)
+        (for iterator2 f (f (unwrap maybe-item) state))
+        state)))
+
+(define (for-io iterator f real-world)
+  (let ((r (next iterator))
+        (maybe-item (car r))
+        (iterator2 (cdr r)))
+    (if (is-right maybe-item)
+        (for-io iterator2 f (cdr (f (unwrap maybe-item) real-world)))
+        (cons nil real-world))))
+
+(define (loop-n-times-io n f)
+  (for-io (range 0 n)
+          (lambda (_) f)))
+
+(define (do-while-io f real-world)
+  (let ((r (f real-world))
+        (real-world2 (cdr r)))
+    (if (is-right (car r))
+        (do-while-io f real-world2)
+        (cons nil real-world2))))
+
+(define (continue-while-io io)
+  (iomap right io))
+
+(define (break-while-io io)
+  (iomap left io))
+
+;;; Misc
+
+(define undef (: (lambda (_) (undef nil))
+                 (-> Nil t)))
+
+(define add (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define sub (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define mul (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define div (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+
+(define eq   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define neq  (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define gt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define gteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define lt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define lteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+
+(define (not b) (if b false true))
+
+(define (+ x y) (add (cons x y)))
+(define (- x y) (sub (cons x y)))
+(define (* x y) (mul (cons x y)))
+(define (/ x y) (div (cons x y)))
+
+(define (= x y) (eq (cons x y)))
+(define (/= x y) (neq (cons x y)))
+(define (> x y) (gt (cons x y)))
+(define (>= x y) (gteq (cons x y)))
+(define (< x y) (lt (cons x y)))
+(define (<= x y) (lteq (cons x y)))
+
+;; CPU clock ticks
+(extern _clock (-> RealWorld (Cons UInt64 RealWorld)))
+(define clock _clock)

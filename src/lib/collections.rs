@@ -117,3 +117,105 @@ impl<K: Debug + Hash + Eq, V: Debug> Debug for ScopeStack<K, V> {
         Debug::fmt(&self.0, f)
     }
 }
+
+struct AddMapNode<K, V> {
+    key: K,
+    val: V,
+    /// null indicates no next node
+    next: *mut Option<AddMapNode<K, V>>,
+}
+
+impl<K, V> AddMapNode<K, V> {
+    fn entry<'a, Q>(&'a self, key: &Q) -> Option<(&'a K, &'a V)>
+    where
+        K: Borrow<Q> + PartialEq<Q>,
+    {
+        if &self.key == key {
+            Some((&self.key, &self.val))
+        } else {
+            unsafe { (*self.next).as_ref().and_then(|n| n.entry(key)) }
+        }
+    }
+
+    fn add(&self, key: K, val: V) -> (&K, &V)
+    where
+        K: PartialEq<K>,
+    {
+        if self.key == key {
+            panic!("Key already exists in map")
+        } else {
+            unsafe {
+                match *self.next {
+                    None => {
+                        *self.next = Some(AddMapNode {
+                            key: key,
+                            val: val,
+                            next: Box::into_raw(Box::new(None)),
+                        });
+                        let next = (*self.next).as_ref().unwrap();
+                        (&next.key, &next.val)
+                    }
+                    Some(ref next_node) => next_node.add(key, val),
+                }
+            }
+        }
+    }
+}
+
+/// A map which can only grow.
+///
+/// Implemented with a linked list
+pub struct AddMap<K, V> {
+    next: *mut Option<AddMapNode<K, V>>,
+}
+
+impl<K, V> AddMap<K, V>
+where
+    K: PartialEq<K>,
+{
+    pub fn new() -> Self {
+        AddMap { next: Box::into_raw(Box::new(None)) }
+    }
+
+    /// Get reference to key and value in map associated with `key`
+    ///
+    /// Executes in `O(n)` time
+    pub fn entry<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q> + PartialEq<Q>,
+    {
+        unsafe { (*self.next).as_ref().and_then(|n| n.entry(key)) }
+    }
+
+    /// Returns whether the map contains `key`
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q> + PartialEq<Q>,
+    {
+        self.entry(key).is_some()
+    }
+
+    /// Insert the value `val` with key `key` in map
+    ///
+    /// Returns reference to entry in map.
+    /// Executes in `O(n)` time
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in list
+    pub fn add(&self, key: K, val: V) -> (&K, &V) {
+        unsafe {
+            if (*self.next).is_none() {
+                *self.next = Some(AddMapNode {
+                    key: key,
+                    val: val,
+                    next: Box::into_raw(Box::new(None)),
+                });
+                let next = (*self.next).as_ref().unwrap();
+                (&next.key, &next.val)
+            } else {
+                (*self.next).as_ref().unwrap().add(key, val)
+            }
+        }
+    }
+}

@@ -1164,11 +1164,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     ///     (main')))
     /// ```
     /// where `main'` is the user defined `main`, and `main` is a simple, C-abi compatible function.
-    pub fn gen_executable(&mut self, module: &ast::Module) {
+    pub fn gen_executable(&mut self, ast: &ast::Ast) {
         // Assert that `main` exists and is monomorphic of type `(-> Nil Nil)`
         {
-            let main = module
-                .globals
+            let main = ast.globals
                 .bindings()
                 .find(|b| b.ident.s == "main")
                 .unwrap_or_else(|| error_exit("main function not found"));
@@ -1199,10 +1198,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.gen_core_funcs(&mut env);
 
         // Generate extern declarations
-        self.gen_extern_decls(&mut env, &module.externs);
+        self.gen_extern_decls(&mut env, &ast.externs);
 
         // Create wrapping, entry-point `main` function
-        let main_type = FunctionType::new(self.named_types.nil, &[self.named_types.nil]);
+        let main_type = FunctionType::new(Type::get::<i32>(self.ctx), &[self.named_types.nil]);
         let main_wrapper = self.module.add_function("main", &main_type);
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
@@ -1210,18 +1209,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         *self.current_block.borrow_mut() = Some(entry);
 
         // Generate global definitions
-        let global_bindings = module.globals.bindings().rev().collect::<Vec<_>>();
+        let global_bindings = ast.globals.bindings().rev().collect::<Vec<_>>();
         self.gen_bindings(&mut env, &global_bindings);
 
         // Call user defined `main`
         let user_main = env.get_var("main", &[]).expect(
             "ICE: No monomorphic user defined `main`",
         );
-        let r = self.build_app(
+        self.build_app(
             user_main,
             (self.new_nil_val(), self.named_types.nil),
             self.named_types.nil,
         );
-        self.builder.build_ret(r);
+        self.builder.build_ret(0i32.compile(self.ctx));
     }
 }

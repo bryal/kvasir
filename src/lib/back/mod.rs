@@ -1,6 +1,7 @@
 use self::llvm::{Context, Builder, Module};
 use self::codegen::*;
-use {Emission, FileName};
+use Emission;
+use lib::CanonPathBuf;
 use lib::front::ast;
 use std::fs;
 use std::io::Write;
@@ -11,8 +12,9 @@ mod llvm;
 mod codegen;
 
 pub fn compile(
-    ast: &ast::Module,
-    out_file_name: FileName,
+    ast: &ast::Ast,
+    out_filename: CanonPathBuf,
+    explicit_filename: bool,
     emission: Emission,
     link_libs: &[String],
     lib_paths: &[String],
@@ -32,37 +34,55 @@ pub fn compile(
         )
     });
 
+    let with_ext_unless_explicit = |ext| if explicit_filename {
+        out_filename.clone()
+    } else {
+        out_filename.with_extension(ext)
+    };
+
     match emission {
         Emission::LlvmAsm => {
-            let mut ir_file =
-                fs::File::create(out_file_name.clone().unwrap_or_with_ext("ll"))
-                    .unwrap_or_else(|e| panic!("Failed to open file `{}`, {}", out_file_name, e));
+            let ll_filename = with_ext_unless_explicit("ll");
+            let mut ir_file = fs::File::create(ll_filename.path()).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open file `{}`, {}",
+                    out_filename.path().display(),
+                    e
+                )
+            });
 
             write!(ir_file, "{:?}", codegenerator.module).unwrap_or_else(|e| {
-                panic!("Failed to write IR to `{}`, {}", out_file_name, e)
+                panic!(
+                    "Failed to write IR to `{}`, {}",
+                    ll_filename.path().display(),
+                    e
+                )
             })
         }
         Emission::LlvmBc => {
+            let bc_filename = with_ext_unless_explicit("bc");
             codegenerator
                 .module
-                .write_bitcode(&out_file_name
-                    .clone()
-                    .unwrap_or_with_ext("bc")
-                    .to_string_lossy())
+                .write_bitcode(&bc_filename.path().to_string_lossy())
                 .unwrap_or_else(|e| {
-                    panic!("Failed to write bitcode to `{}`, {}", out_file_name, e)
+                    panic!(
+                        "Failed to write bitcode to `{}`, {}",
+                        bc_filename.path().display(),
+                        e
+                    )
                 })
         }
         Emission::Obj => {
+            let obj_filename = with_ext_unless_explicit("o");
             codegenerator
                 .module
-                .compile(&out_file_name.clone().unwrap_or_with_ext("o"), 0)
+                .compile(obj_filename.path(), 0)
                 .expect("Failed to compile module")
                 .wait()
                 .expect("Failed to wait on compilation child");
         }
         Emission::Exe => {
-            let obj_path = out_file_name.path().with_extension("o");
+            let obj_path = out_filename.path().with_extension("o");
 
             codegenerator
                 .module
@@ -75,7 +95,7 @@ pub fn compile(
             clang.arg(&obj_path).args(
                 &[
                     "-o",
-                    &out_file_name.path().to_string_lossy(),
+                    &out_filename.path().to_string_lossy(),
                 ],
             );
             // Add current dir to link dir paths by default

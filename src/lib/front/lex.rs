@@ -6,10 +6,14 @@
 
 use self::LexErr::*;
 use super::SrcPos;
+use lib::CanonPathBuf;
+use lib::collections::AddMap;
 use itertools::Itertools;
 use std::borrow::Cow;
 use std::path::Path;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 
 /// Common errors for various lexing actions
 enum LexErr {
@@ -381,8 +385,28 @@ fn tokens_to_trees_until<'s>(
 }
 
 /// Lex the source code as a Concrete Syntax Tree
-pub fn concrete_syntax_trees_from_src<'s>(filename: &'s Path, src: &'s str) -> Vec<CST<'s>> {
+fn lex_src<'s>(filename: &'s Path, src: &'s str) -> Vec<CST<'s>> {
     tokens_to_trees_until(&mut Tokens::new(filename, src), None).0
+}
+
+/// Lex the source code of the file `filename`
+pub fn lex_file<'s>(
+    filename: CanonPathBuf,
+    sources: &'s AddMap<CanonPathBuf, String>,
+) -> Vec<CST<'s>> {
+    let mut src_code = String::new();
+    File::open(filename.path())
+        .expect(&format!(
+            "Failed to open file `{}`",
+            filename.path().display()
+        ))
+        .read_to_string(&mut src_code)
+        .expect(&format!(
+            "Reading contents of `{}` failed",
+            filename.path().display()
+        ));
+    let (filename_ref, src_ref) = sources.add(filename, src_code);
+    lex_src(filename_ref.path(), src_ref)
 }
 
 #[cfg(test)]

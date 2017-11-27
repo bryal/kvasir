@@ -850,16 +850,16 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 }
 
-pub fn infer_types(module: &mut Module, type_var_generator: &mut TypeVarGen) {
-    let mut inferrer = Inferrer::new(&mut module.externs, type_var_generator);
-    inferrer.infer_bindings(&mut module.globals);
+pub fn infer_types(ast: &mut Ast, type_var_generator: &mut TypeVarGen) {
+    let mut inferrer = Inferrer::new(&mut ast.externs, type_var_generator);
+    inferrer.infer_bindings(&mut ast.globals);
 
     // Apply all substitutions recursively to get rid of reduntant, indirect type variables
-    for binding in module.globals.bindings_mut() {
+    for binding in ast.globals.bindings_mut() {
         binding.typ = subst(&binding.typ, &mut inferrer.type_var_map);
         subst_expr(&mut binding.val, &mut inferrer.type_var_map);
     }
 
     // Map monomorphic instantiations of variables to monomorphization of definitions
-    monomorphize_defs_of_insts(&mut module.globals);
+    monomorphize_defs_of_insts(&mut ast.globals);
 }

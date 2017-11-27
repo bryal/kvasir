@@ -95,14 +95,12 @@ extern crate cbox;
 extern crate maplit;
 
 use getopts::Options;
+use lib::CanonPathBuf;
+use lib::collections::AddMap;
 use lib::back::compile;
-use lib::concrete_syntax_trees_from_src;
 use lib::front::inference::infer_types;
-use lib::front::parse::parse;
+use lib::front::parse::parse_program;
 use std::{env, fmt, time};
-use std::fs::{File, canonicalize};
-use std::io::Read;
-use std::path::{Path, PathBuf};
 
 mod lib;
 
@@ -129,45 +127,6 @@ impl<S: AsRef<str> + fmt::Display> From<S> for Emission {
     }
 }
 
-/// A filename that is either specified by the user or an inferred default
-#[derive(Clone)]
-pub enum FileName {
-    /// A user-specified filename. Will not be modified
-    Some(PathBuf),
-    /// A default filename. The extension will change depending on the emission type
-    Default(PathBuf),
-}
-impl FileName {
-    /// Get the filename as a `&Path`
-    pub fn path(&self) -> &Path {
-        match *self {
-            FileName::Some(ref p) => p,
-            FileName::Default(ref p) => p,
-        }
-    }
-
-    /// Modifies the filename by applying a function to the contained `PathBuf`.
-    pub fn map<F: Fn(PathBuf) -> PathBuf>(self, f: F) -> FileName {
-        match self {
-            FileName::Some(p) => FileName::Some(f(p)),
-            FileName::Default(p) => FileName::Default(f(p)),
-        }
-    }
-
-    /// If `Some`, unwrap it. If `Default`, change the extension before unwrapping
-    pub fn unwrap_or_with_ext(self, ext: &str) -> PathBuf {
-        match self {
-            FileName::Some(p) => p,
-            FileName::Default(p) => p.with_extension(ext),
-        }
-    }
-}
-impl fmt::Display for FileName {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.path().display(), fmt)
-    }
-}
-
 #[cfg(windows)]
 const BIN_EXT: &'static str = "exe";
 #[cfg(not(windows))]
@@ -180,10 +139,8 @@ fn print_usage(program: &str, opts: Options) {
 
 fn main() {
     let start_time = time::Instant::now();
-
     let args: Vec<_> = env::args().collect();
     let bin_name = args[0].clone();
-
     let mut opts = Options::new();
     opts.optopt("o", "out-file", "Write output to <FILENAME>", "FILENAME")
         .optopt(
@@ -195,68 +152,55 @@ fn main() {
         .optmulti("l", "", "Link with <LIBRARY>", "LIBRARY")
         .optmulti("L", "", "Add <PATH> to the library search path", "PATH")
         .optflag("h", "help", "Display this help menu");
-
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(e) => panic!(e),
     };
-
     if matches.opt_present("h") {
         print_usage(&bin_name, opts);
         return;
     }
-
-    let inp_file_name = if !matches.free.is_empty() {
-        PathBuf::from(matches.free[0].clone())
+    let inp_filename = if !matches.free.is_empty() {
+        CanonPathBuf::new(&matches.free[0]).expect("Failed to canonicalize input filename")
     } else {
         print_usage(&bin_name, opts);
         return;
     };
-    let canon_inp_file_name =
-        canonicalize(inp_file_name.as_path()).expect("Failed to canonicalize input filename");
-
-    let out_file_name = matches
+    let out_filename = matches
         .opt_str("o")
-        .map(|p| FileName::Some(PathBuf::from(p)))
-        .unwrap_or(FileName::Default(inp_file_name.with_extension(BIN_EXT)))
-        .map(|filename| {
-            let parent = match filename.parent() {
-                None => "./".as_ref(),
-                Some(p) if p == Path::new("") => "./".as_ref(),
-                Some(p) => p,
-            };
-            canonicalize(parent)
-                .expect("Failed to canonicalize output filename")
-                .join(filename.file_name().expect("No filename supplied"))
-        });
+        .map(|p| {
+            CanonPathBuf::new(&p).expect("Failed to canonicalize output filename")
+        })
+        .unwrap_or(inp_filename.with_extension(BIN_EXT));
+    {
+        let inp_file_dir = inp_filename.path().parent().expect(
+            "Failed to get parent dir of input file",
+        );
+        env::set_current_dir(inp_file_dir).expect("Failed to change dir to dir of input file")
+    }
 
+    let explicit_out_filename = matches.opt_str("o").is_some();
     let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(
         Emission::Exe,
     );
-
     let link_libs = matches.opt_strs("l");
     let lib_paths = matches.opt_strs("L");
 
-    println!("    Compiling {}", canon_inp_file_name.display());
+    println!("    Compiling {}", inp_filename.path().display());
 
-    let mut src_code = String::with_capacity(4_000);
-    File::open(&inp_file_name)
-        .expect(&format!(
-            "Failed to open file `{}`",
-            inp_file_name.display()
-        ))
-        .read_to_string(&mut src_code)
-        .expect(&format!(
-            "Reading contents of `{}` failed",
-            inp_file_name.display()
-        ));
-
-    let csts = concrete_syntax_trees_from_src(&inp_file_name, &src_code);
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
-    let mut ast = parse(&csts, &mut type_var_generator);
+    let sources = AddMap::new();
+    let mut ast = parse_program(inp_filename, &sources, &mut type_var_generator);
     infer_types(&mut ast, &mut type_var_generator);
     //println!("inferred: {:#?}", ast);
-    compile(&ast, out_file_name, emission, &link_libs, &lib_paths);
+    compile(
+        &ast,
+        out_filename,
+        explicit_out_filename,
+        emission,
+        &link_libs,
+        &lib_paths,
+    );
 
     println!(
         "    Finished building target in {} secs",

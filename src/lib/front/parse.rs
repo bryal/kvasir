@@ -4,6 +4,9 @@ use self::ParseErr::*;
 use super::*;
 use super::ast::*;
 use super::lex::CST;
+use lib::CanonPathBuf;
+use lib::collections::AddMap;
+use lib::front::lex::lex_file;
 use std::collections::{HashMap, BTreeMap, HashSet};
 use std::fmt::{self, Display};
 use std::iter::once;
@@ -257,17 +260,25 @@ enum Pattern<'src> {
     Func(Ident<'src>, (Vec<Ident<'src>>, SrcPos<'src>)),
 }
 
-struct Parser<'tvg> {
+struct Parser<'tvg, 'src> {
+    /// An additive-only map of module file paths to source code strings
+    sources: &'src AddMap<CanonPathBuf, String>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'tvg mut TypeVarGen,
 }
 
-impl<'tvg> Parser<'tvg> {
-    fn new(type_var_gen: &'tvg mut TypeVarGen) -> Self {
-        Parser { type_var_gen }
+impl<'tvg, 'src> Parser<'tvg, 'src> {
+    fn new(
+        sources: &'src AddMap<CanonPathBuf, String>,
+        type_var_gen: &'tvg mut TypeVarGen,
+    ) -> Self {
+        Parser {
+            sources,
+            type_var_gen,
+        }
     }
 
-    fn gen_tvar<'src>(&mut self) -> TVar<'src> {
+    fn gen_tvar(&mut self) -> TVar<'src> {
         TVar {
             id: self.type_var_gen.gen(),
             constrs: BTreeSet::new(),
@@ -275,48 +286,47 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn gen_type_var<'src>(&mut self) -> Type<'src> {
+    fn gen_type_var(&mut self) -> Type<'src> {
         Type::Var(self.gen_tvar())
     }
 
     /// Parse a list of `CST`s as a module import
-    fn parse_import<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Import<'src> {
+    fn parse_import(
+        &mut self,
+        csts: &[CST<'src>],
+        pos: &SrcPos<'src>,
+    ) -> (&'src str, SrcPos<'src>) {
         if csts.len() != 1 {
             pos.error_exit(ArityMis(1, csts.len()))
         } else {
             match csts[0] {
-                CST::Ident(name, ref id_pos) => {
-                    Import {
-                        module: Ident::new(name, id_pos.clone()),
-                        pos: pos.clone(),
-                    }
-                }
+                CST::Ident(name, ref id_pos) => (name, id_pos.clone()),
                 _ => csts[0].pos().error_exit(Expected("identifier")),
             }
         }
     }
 
-    fn parse_imports<'src>(
+    /// Parses a set of import statements
+    ///
+    /// Returns a map from (modules to import) to
+    /// (position of import statement, position of module name)
+    fn parse_imports(
         &mut self,
         imports_csts: &[(&[CST<'src>], &SrcPos<'src>)],
-    ) -> BTreeMap<&'src str, Import<'src>> {
+    ) -> BTreeMap<&'src str, (SrcPos<'src>, SrcPos<'src>)> {
         let mut imports = BTreeMap::new();
         for &(import_csts, pos) in imports_csts {
-            let import = self.parse_import(import_csts, pos);
-            let module = import.module.s;
-            if let Some(prev) = imports.insert(module, import) {
-                pos.warn(format!("Duplicate import of module `{}`", module));
-                prev.pos.note(format!(
-                    "Previous import of module `{}` here",
-                    module
-                ));
+            let (module_name, name_pos) = self.parse_import(import_csts, pos);
+            if let Some((prev_pos, _)) = imports.insert(module_name, (pos.clone(), name_pos)) {
+                pos.warn(format!("Duplicate import of module `{}`", module_name));
+                prev_pos.note(format!("Previous import of module `{}` here", module_name));
             }
         }
         imports
     }
 
     /// Parse a list of `CST`s as an external variable declaration
-    fn parse_extern<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src> {
+    fn parse_extern(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> ExternDecl<'src> {
         if csts.len() != 2 {
             pos.error_exit(
                 "Invalid external variable declaration. Expected identifier and type",
@@ -342,12 +352,12 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn parse_externs<'src>(
+    fn parse_externs(
         &mut self,
-        decls_csts: &[(&[CST<'src>], &SrcPos<'src>)],
+        decls_csts: &[(Vec<CST<'src>>, SrcPos<'src>)],
     ) -> BTreeMap<&'src str, ExternDecl<'src>> {
         let mut externs = BTreeMap::new();
-        for &(decl_csts, pos) in decls_csts {
+        for &(ref decl_csts, ref pos) in decls_csts {
             let ext = self.parse_extern(decl_csts, pos);
             if let Some(ext) = externs.insert(ext.ident.s, ext) {
                 ext.pos.error_exit(format!(
@@ -360,7 +370,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a syntax tree as a tuple of `n` syntax trees
-    fn parse_tuple<'src, 'c>(&mut self, cst: &'c CST<'src>, n: usize) -> &'c [CST<'src>] {
+    fn parse_tuple<'c>(&mut self, cst: &'c CST<'src>, n: usize) -> &'c [CST<'src>] {
         match *cst {
             CST::SExpr(ref csts, _) if csts.len() == n => csts,
             CST::SExpr(ref csts, ref pos) => pos.error_exit(ArityMis(n, csts.len())),
@@ -368,12 +378,12 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn parse_pair<'src, 'c>(&mut self, cst: &'c CST<'src>) -> (&'c CST<'src>, &'c CST<'src>) {
+    fn parse_pair<'c>(&mut self, cst: &'c CST<'src>) -> (&'c CST<'src>, &'c CST<'src>) {
         let pair = self.parse_tuple(cst, 2);
         (&pair[0], &pair[1])
     }
 
-    fn parse_constraint<'src>(&mut self, cst: &CST<'src>) -> &'src str {
+    fn parse_constraint(&mut self, cst: &CST<'src>) -> &'src str {
         match *cst {
             CST::Ident("Num", _) => "Num",
             CST::Ident(s, ref pos) => pos.error_exit(format!("Undefined constraint {}", s)),
@@ -384,7 +394,7 @@ impl<'tvg> Parser<'tvg> {
     /// Parse a specification of constraints for a type variable
     ///
     /// E.g. `(: t Num)`
-    fn parse_constraints_spec<'src>(&mut self, csts: &[CST<'src>]) -> TVar<'src> {
+    fn parse_constraints_spec(&mut self, csts: &[CST<'src>]) -> TVar<'src> {
         match csts[0] {
             CST::Ident(s, _) if s.starts_with(char::is_lowercase) => {
                 TVar {
@@ -405,7 +415,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a syntax tree as a `Type`, keeping track och implicitly defined type variables
-    fn parse_type_with_tvars<'src>(
+    fn parse_type_with_tvars(
         &mut self,
         tvars: &mut HashMap<&'src str, (TVar<'src>, SrcPos<'src>)>,
         tree: &CST<'src>,
@@ -504,12 +514,12 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a syntax tree as a `Type`
-    fn parse_type<'src>(&mut self, tree: &CST<'src>) -> Type<'src> {
+    fn parse_type(&mut self, tree: &CST<'src>) -> Type<'src> {
         self.parse_type_with_tvars(&mut HashMap::new(), tree)
     }
 
     /// Parse a `CST` as an `Ident` (identifier)
-    fn parse_ident<'src>(&mut self, cst: &CST<'src>) -> Ident<'src> {
+    fn parse_ident(&mut self, cst: &CST<'src>) -> Ident<'src> {
         match *cst {
             CST::Ident(ident, ref pos) => Ident::new(ident, pos.clone()),
             _ => cst.pos().error_exit(Invalid("identifier")),
@@ -517,7 +527,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a syntax tree as a Pattern
-    fn parse_pattern<'src>(&mut self, cst: &CST<'src>) -> Pattern<'src> {
+    fn parse_pattern(&mut self, cst: &CST<'src>) -> Pattern<'src> {
         match *cst {
             CST::Ident(ident, ref pos) => Pattern::Var(Ident::new(ident, pos.clone())),
             CST::SExpr(ref app, _) if app.len() > 1 => {
@@ -536,7 +546,7 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn new_multary_app<'src>(
+    fn new_multary_app(
         &mut self,
         func: Expr<'src>,
         mut args: Vec<Expr<'src>>,
@@ -565,7 +575,7 @@ impl<'tvg> Parser<'tvg> {
 
     /// Parse a first `CST` and some following `CST`s as a procedure and some arguments,
     /// i.e. a function application
-    fn parse_app<'src>(
+    fn parse_app(
         &mut self,
         func_cst: &CST<'src>,
         args_csts: &[CST<'src>],
@@ -577,7 +587,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as parts of an `If` conditional
-    fn parse_if<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
+    fn parse_if(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> If<'src> {
         if csts.len() != 3 {
             pos.error_exit(ArityMis(3, csts.len()))
         } else {
@@ -592,7 +602,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse the `else` clause of a `cond`
-    fn parse_else_clause<'src>(&mut self, cst: &CST<'src>) -> Expr<'src> {
+    fn parse_else_clause(&mut self, cst: &CST<'src>) -> Expr<'src> {
         let (pred, conseq) = self.parse_pair(cst);
         if pred.ident() == Some("else") {
             self.parse_expr(conseq)
@@ -602,7 +612,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a clause of a `cond`
-    fn parse_cond_clause<'src>(&mut self, cst: &CST<'src>) -> (Expr<'src>, Expr<'src>) {
+    fn parse_cond_clause(&mut self, cst: &CST<'src>) -> (Expr<'src>, Expr<'src>) {
         let (pred_cst, conseq_cst) = self.parse_pair(cst);
         (self.parse_expr(pred_cst), self.parse_expr(conseq_cst))
     }
@@ -610,7 +620,7 @@ impl<'tvg> Parser<'tvg> {
     /// Parse a sequence of token trees as the clauses of a `cond` special form
     ///
     /// Translate to nested `If`s
-    fn parse_cond<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
+    fn parse_cond(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
         if let Some((last, init)) = csts.split_last() {
             let else_val = self.parse_else_clause(last);
             init.iter().rev().fold(else_val, |alternative, c| {
@@ -632,7 +642,7 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn new_multary_lambda<'src>(
+    fn new_multary_lambda(
         &mut self,
         mut params: Vec<(Ident<'src>, Type<'src>)>,
         params_pos: &SrcPos<'src>,
@@ -665,7 +675,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as the parts of a `Lambda`
-    fn parse_lambda<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
+    fn parse_lambda(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Lambda<'src> {
         if csts.len() != 2 {
             pos.error_exit(ArityMis(2, csts.len()))
         }
@@ -701,7 +711,7 @@ impl<'tvg> Parser<'tvg> {
     ///       ((id2        x) x))
     ///   ...)
     /// ```
-    fn parse_binding<'src>(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Binding<'src> {
+    fn parse_binding(&mut self, csts: &[CST<'src>], pos: &SrcPos<'src>) -> Binding<'src> {
         if csts.len() == 2 {
             match self.parse_pattern(&csts[0]) {
                 Pattern::Var(ident) => Binding {
@@ -734,12 +744,12 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    fn parse_bindings_to_flat_map<'src>(
+    fn parse_bindings_to_flat_map(
         &mut self,
-        defs: &[(&[CST<'src>], &SrcPos<'src>)],
+        defs: &[(Vec<CST<'src>>, SrcPos<'src>)],
     ) -> HashMap<&'src str, Binding<'src>> {
         let mut bindings = HashMap::new();
-        for &(def_csts, pos) in defs {
+        for &(ref def_csts, ref pos) in defs {
             let binding = self.parse_binding(def_csts, pos);
             let (new_id, new_pos) = (binding.ident.s, binding.pos.clone());
             if let Some(prev_binding) = bindings.insert(new_id, binding) {
@@ -754,22 +764,24 @@ impl<'tvg> Parser<'tvg> {
         bindings
     }
 
-    fn parse_bindings<'src>(
+    fn parse_bindings(
         &mut self,
-        defs: &[(&[CST<'src>], &SrcPos<'src>)],
+        defs: &[(Vec<CST<'src>>, SrcPos<'src>)],
     ) -> TopologicallyOrderedDependencyGroups<'src> {
         let bindings = self.parse_bindings_to_flat_map(defs);
         flat_bindings_to_topologically_ordered(bindings)
     }
 
-    fn parse_let_bindings<'src>(
+    fn parse_let_bindings(
         &mut self,
         csts: &[CST<'src>],
     ) -> TopologicallyOrderedDependencyGroups<'src> {
-        let mut bindings_csts = Vec::<(&[_], _)>::new();
+        let mut bindings_csts = Vec::new();
         for cst in csts {
             match *cst {
-                CST::SExpr(ref binding_pair, ref pos) => bindings_csts.push((binding_pair, pos)),
+                CST::SExpr(ref binding_pair, ref pos) => {
+                    bindings_csts.push((binding_pair.clone(), pos.clone()))
+                }
                 ref c => c.pos().error_exit(Expected("variable binding")),
             }
         }
@@ -777,7 +789,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a `let` special form and return as an invocation of a lambda
-    fn parse_let<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
+    fn parse_let(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Let<'src> {
         if csts.len() != 2 {
             pos.error_exit(ArityMis(2, csts.len()))
         }
@@ -796,11 +808,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as a `TypeAscript`
-    fn parse_type_ascript<'src>(
-        &mut self,
-        csts: &[CST<'src>],
-        pos: SrcPos<'src>,
-    ) -> TypeAscript<'src> {
+    fn parse_type_ascript(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> TypeAscript<'src> {
         if csts.len() != 2 {
             pos.error_exit(ArityMis(2, csts.len()))
         }
@@ -812,7 +820,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as a `Cons` pair
-    fn parse_cons<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cons<'src> {
+    fn parse_cons(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cons<'src> {
         if csts.len() != 2 {
             pos.error_exit(ArityMis(2, csts.len()))
         }
@@ -825,7 +833,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as a `car` operation
-    fn parse_car<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Car<'src> {
+    fn parse_car(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Car<'src> {
         if csts.len() != 1 {
             pos.error_exit(ArityMis(1, csts.len()))
         }
@@ -837,7 +845,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Parse a list of `CST`s as a `cdr` operation
-    fn parse_cdr<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cdr<'src> {
+    fn parse_cdr(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cdr<'src> {
         if csts.len() != 1 {
             pos.error_exit(ArityMis(1, csts.len()))
         }
@@ -851,7 +859,7 @@ impl<'tvg> Parser<'tvg> {
     /// Parse a type cast
     ///
     /// `(cast VAL TYPE)`, e.g. `(cast (: 1 Int32) Int64)`
-    fn parse_cast<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cast<'src> {
+    fn parse_cast(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Cast<'src> {
         if csts.len() != 2 {
             pos.error_exit(ArityMis(2, csts.len()))
         }
@@ -863,7 +871,7 @@ impl<'tvg> Parser<'tvg> {
     }
 
     /// Apply either the `>>` or `>>=` action
-    fn app_action<'src>(&mut self, f: &'static str, a: Expr<'src>, b: Expr<'src>) -> Expr<'src> {
+    fn app_action(&mut self, f: &'static str, a: Expr<'src>, b: Expr<'src>) -> Expr<'src> {
         let f_var = Expr::Variable(Variable {
             ident: Ident {
                 s: f,
@@ -879,7 +887,7 @@ impl<'tvg> Parser<'tvg> {
     ///
     /// Either an IO expression which translates to `>>`,
     /// or a `<-` assignment which translates to `>>=`.
-    fn parse_io_statement<'src>(&mut self, cst: &CST<'src>, next: Expr<'src>) -> Expr<'src> {
+    fn parse_io_statement(&mut self, cst: &CST<'src>, next: Expr<'src>) -> Expr<'src> {
         if let Some(v) = cst.application_of("<-") {
             if v.len() == 2 {
                 if let Some(id) = v[0].ident() {
@@ -912,7 +920,7 @@ impl<'tvg> Parser<'tvg> {
     ///
     /// Translate to applications of `>>` and `>>=`. These functions must be defined
     /// in source to not invoke a compiler error.
-    fn parse_io_pipe<'src>(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
+    fn parse_io_pipe(&mut self, csts: &[CST<'src>], pos: SrcPos<'src>) -> Expr<'src> {
         if let Some((last, init)) = csts.split_last() {
             let ret = self.parse_expr(last);
             init.iter().rev().fold(ret, |next, cst| {
@@ -920,13 +928,13 @@ impl<'tvg> Parser<'tvg> {
             })
         } else {
             pos.error_exit(
-                "No statements in `io-pipe`.\nMust contain at lease one statement.",
+                "No statements in `pipe`.\nMust contain at lease one statement.",
             )
         }
     }
 
     /// Parse a `CST` as an `Expr`
-    fn parse_expr<'src>(&mut self, cst: &CST<'src>) -> Expr<'src> {
+    fn parse_expr(&mut self, cst: &CST<'src>) -> Expr<'src> {
         match *cst {
             CST::SExpr(ref sexpr, ref pos) => {
                 if let Some((head, tail)) = sexpr.split_first() {
@@ -956,7 +964,7 @@ impl<'tvg> Parser<'tvg> {
 
                         // "Macros"
                         CST::Ident("cond", _) => self.parse_cond(tail, pos.clone()),
-                        CST::Ident("io-pipe", _) => self.parse_io_pipe(tail, pos.clone()),
+                        CST::Ident("pipe", _) => self.parse_io_pipe(tail, pos.clone()),
 
                         _ => Expr::App(Box::new(self.parse_app(&sexpr[0], tail, pos.clone()))),
                     }
@@ -1000,56 +1008,76 @@ impl<'tvg> Parser<'tvg> {
         }
     }
 
-    /// Separate `csts` into token trees for imports, externs, and globals
-    fn group_top_level_csts<'c, 'src>(
+    /// Separate `csts` into token trees for externs, and globals
+    ///
+    /// Recursively follow imports and get top level csts from there as well
+    fn get_top_level_csts(
         &mut self,
-        csts: &'c [CST<'src>],
-    ) -> [Vec<(&'c [CST<'src>], &'c SrcPos<'src>)>; 3] {
-        let (mut imports, mut externs, mut globals) = (Vec::new(), Vec::new(), Vec::new());
+        csts: &[CST<'src>],
+        externs: &mut Vec<(Vec<CST<'src>>, SrcPos<'src>)>,
+        globals: &mut Vec<(Vec<CST<'src>>, SrcPos<'src>)>,
+    ) {
+        let mut imports_csts = Vec::new();
         for cst in csts {
             let pos = cst.pos();
             match *cst {
                 CST::SExpr(ref sexpr, _) if !sexpr.is_empty() => {
                     match sexpr[0] {
                         CST::Ident("import", _) => {
-                            imports.push((&sexpr[1..], pos));
-                            continue;
+                            imports_csts.push((&sexpr[1..], pos));
                         }
                         CST::Ident("extern", _) => {
-                            externs.push((&sexpr[1..], pos));
-                            continue;
+                            externs.push((sexpr[1..].to_vec(), pos.clone()));
                         }
                         CST::Ident("define", _) => {
-                            globals.push((&sexpr[1..], pos));
-                            continue;
+                            globals.push((sexpr[1..].to_vec(), pos.clone()));
                         }
-                        _ => (),
+                        _ => pos.error_exit("Unexpected token-tree at top-level"),
                     }
                 }
-                _ => (),
+                _ => pos.error_exit("Unexpected token-tree at top-level"),
             }
-            pos.error_exit("Unexpected token-tree at top-level")
         }
-        [imports, externs, globals]
+        let imports = self.parse_imports(&imports_csts);
+        // Recursively get top level csts of imported modules as well
+        for (module_name, (_, _)) in imports {
+            let module_path = CanonPathBuf::new(&format!("{}.kvs", module_name)).expect(
+                "ICE: Failed to canonicalize module path",
+            );
+            if !self.sources.contains_key(&module_path) {
+                let import_csts = lex_file(module_path, &self.sources);
+                self.get_top_level_csts(&import_csts, externs, globals)
+            }
+        }
     }
 
-    /// Parse a list of `CST`s as the items of a `Module`
-    fn parse_module<'src>(&mut self, csts: &[CST<'src>]) -> Module<'src> {
+    fn parse_ast(&mut self, csts: &[CST<'src>]) -> Ast<'src> {
         // Store globals in a Vec as order matters atm, but disallow
         // multiple definitions. Use a set to keep track of defined globals
-        let groups = self.group_top_level_csts(csts);
-        let imports = self.parse_imports(&groups[0]);
-        let externs = self.parse_externs(&groups[1]);
-        let globals = self.parse_bindings(&groups[2]);
-        Module {
-            imports,
-            externs,
-            globals,
-        }
+        let (mut externs_csts, mut globals_csts) = (Vec::new(), Vec::new());
+        self.get_top_level_csts(csts, &mut externs_csts, &mut globals_csts);
+        let externs = self.parse_externs(&externs_csts);
+        let globals = self.parse_bindings(&globals_csts);
+        Ast { externs, globals }
+    }
+
+    /// Parse the file `filename`, and recursively parse imports as well
+    fn parse_file(&mut self, filename: CanonPathBuf) -> Ast<'src> {
+        let csts = lex_file(filename, &self.sources);
+        self.parse_ast(&csts)
     }
 }
 
-pub fn parse<'src>(csts: &[CST<'src>], type_var_generator: &mut TypeVarGen) -> Module<'src> {
-    let mut parser = Parser::new(type_var_generator);
-    parser.parse_module(csts)
+/// Returns the Abstract Syntax Tree of the program with entry point in `filename`
+///
+/// Given the name of a file that contains the program entry point,
+/// read, lex, and parse the source, and include imported modules
+/// as needed
+pub fn parse_program<'src>(
+    filename: CanonPathBuf,
+    sources: &'src AddMap<CanonPathBuf, String>,
+    type_var_gen: &mut TypeVarGen,
+) -> Ast<'src> {
+    let mut parser = Parser::new(sources, type_var_gen);
+    parser.parse_file(filename)
 }
