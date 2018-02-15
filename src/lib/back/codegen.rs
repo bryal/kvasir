@@ -481,7 +481,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         for (id, decl) in externs.iter() {
             // TODO: External non-function variable declarations?
             if decl.typ.get_func().is_none() {
-                decl.pos.error("Non-function externs not yet implemented");
+                decl.pos
+                    .print_error("Non-function externs not yet implemented");
                 unimplemented!()
             }
             env.externs.insert(
@@ -1143,8 +1144,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 if main.typ.is_monomorphic() {
                     main.pos.error_exit(error_msg)
                 } else {
-                    main.pos.error(error_msg);
-                    main.pos.help(
+                    main.pos.print_error(error_msg);
+                    main.pos.print_help(
                         "Try adding type annotations to enforce correct type \
                          during type-checking.\n\
                          E.g. `(define main (: (lambda (_) ...) (-> Nil Nil)))`",

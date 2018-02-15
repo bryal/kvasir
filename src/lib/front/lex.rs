@@ -35,14 +35,12 @@ impl fmt::Display for LexErr {
             InvalidEscapeSeq => write!(f, "Invalid escape sequence"),
             UntermStr => write!(f, "Unterminated string literal"),
             UntermRawStr => write!(f, "Unterminated raw string literal"),
-            InvalidRawStrDelim(c) => {
-                write!(
-                    f,
-                    "Invalid character found in raw string delimitation: `{}`. Only `#` is \
-                        allowed",
-                    c
-                )
-            }
+            InvalidRawStrDelim(c) => write!(
+                f,
+                "Invalid character found in raw string delimitation: `{}`. Only `#` is \
+                 allowed",
+                c
+            ),
             InvalidNum => write!(f, "Invalid numeric literal"),
             InvalidIdent => write!(f, "Invalid ident"),
             UndelimItem => write!(f, "Undelimited item"),
@@ -277,36 +275,11 @@ pub enum CST<'s> {
 impl<'s> CST<'s> {
     pub fn pos(&self) -> &SrcPos<'s> {
         match *self {
-            CST::SExpr(_, ref p) |
-            CST::Ident(_, ref p) |
-            CST::Num(_, ref p) |
-            CST::Str(_, ref p) => p,
+            CST::SExpr(_, ref p)
+            | CST::Ident(_, ref p)
+            | CST::Num(_, ref p)
+            | CST::Str(_, ref p) => p,
         }
-    }
-
-    pub fn ident(&self) -> Option<&'s str> {
-        match *self {
-            CST::Ident(s, _) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn sexpr<'c>(&'c self) -> Option<&'c [CST<'s>]> {
-        match *self {
-            CST::SExpr(ref v, _) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// If the CST is an application of the function/form `f`, return the argument list
-    pub fn application_of<'c>(&'c self, f: &str) -> Option<&'c [CST<'s>]> {
-        self.sexpr().and_then(|v| {
-            v.first().and_then(|c| if c.ident() == Some(f) {
-                Some(&v[1..])
-            } else {
-                None
-            })
-        })
     }
 
     /// Construct a new syntax tree from a token with a position, and the tokens following
@@ -320,20 +293,18 @@ impl<'s> CST<'s> {
             Token::Ident(ident) => CST::Ident(ident, pos),
             Token::Num(num) => CST::Num(num, pos),
             Token::Str(s) => CST::Str(s, pos),
-            Token::Quote => {
-                CST::SExpr(
-                    vec![
-                        CST::Ident("quote", pos.clone()),
-                        CST::from_token(
-                            nexts.next().unwrap_or_else(
-                                || pos.error_exit(Unexpected("quote")),
-                            ),
-                            nexts
-                        ),
-                    ],
-                    pos,
-                )
-            }
+            Token::Quote => CST::SExpr(
+                vec![
+                    CST::Ident("quote", pos.clone()),
+                    CST::from_token(
+                        nexts
+                            .next()
+                            .unwrap_or_else(|| pos.error_exit(Unexpected("quote"))),
+                        nexts,
+                    ),
+                ],
+                pos,
+            ),
             _ => pos.error_exit(Unexpected("token")),
         }
     }
@@ -343,20 +314,17 @@ impl<'s> fmt::Display for CST<'s> {
         match *self {
             CST::Ident(s, _) | CST::Num(s, _) => write!(f, "{}", s),
             CST::Str(ref s, _) => write!(f, "{}", s),
-            CST::SExpr(ref v, _) => {
-                write!(
-                    f,
-                    "({})",
-                    v.iter()
-                        .map(|e| e.to_string())
-                        .intersperse(" ".into())
-                        .collect::<String>()
-                )
-            }
+            CST::SExpr(ref v, _) => write!(
+                f,
+                "({})",
+                v.iter()
+                    .map(|e| e.to_string())
+                    .intersperse(" ".into())
+                    .collect::<String>()
+            ),
         }
     }
 }
-
 
 /// Construct trees from `tokens` until a lone `delim` is encountered.
 ///
@@ -365,9 +333,9 @@ fn tokens_to_trees_until<'s>(
     tokens: &mut Tokens<'s>,
     start_and_delim: Option<(SrcPos, &Token)>,
 ) -> (Vec<CST<'s>>, Option<usize>) {
-    let (start, delim) = start_and_delim.map(|(s, t)| (Some(s), Some(t))).unwrap_or(
-        (None, None),
-    );
+    let (start, delim) = start_and_delim
+        .map(|(s, t)| (Some(s), Some(t)))
+        .unwrap_or((None, None));
 
     let mut trees = Vec::new();
 

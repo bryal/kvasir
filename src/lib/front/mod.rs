@@ -4,14 +4,16 @@
 //       compiler state as an argument, and can manipulate the AST as well as attributes and such
 
 use std::cmp::min;
-use std::fmt::{self, Display, Debug};
+use std::fmt::{self, Debug, Display};
 use std::iter::{once, repeat};
 use std::process;
 use std::path::Path;
 use std::collections::BTreeSet;
-use term::{self, color};
+use std::io::{self, Write};
+use term::{self, color, Terminal, TerminfoTerminal};
 use itertools::Itertools;
 
+pub mod dependency_graph;
 pub mod lex;
 pub mod ast;
 pub mod parse;
@@ -99,18 +101,9 @@ impl<'src> SrcPos<'src> {
         }
     }
 
-    /// Returns a SrcPos of the position of the start of `self`
-    pub fn pos_at_start(&self) -> Self {
-        SrcPos {
-            end: None,
-            ..self.clone()
-        }
-    }
-
     fn to(&self, other: &Self) -> Self {
         assert_eq!(
-            self.filename,
-            other.filename,
+            self.filename, other.filename,
             "ICE: Trying to construct position interval between positions in different files"
         );
         SrcPos {
@@ -137,7 +130,7 @@ impl<'src> SrcPos<'src> {
         }
         unreachable!(
             "Internal compiler error: line_len_row_col: Pos {:?} not reached. src.len(): \
-                      {}",
+             {}",
             self,
             self.src.len()
         )
@@ -157,12 +150,13 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    fn message<E: Display>(&self, msg: E, kind: &str, color: color::Color) {
+    fn write_message<E: Display, W: Write>(&self, w: &mut W, msg: E, kind: &str, color: color::Color) {
         let (line, line_len, row, col) = self.line_len_row_col();
-        let mut t = term::stdout().expect("Could not acquire access to stdout");
+        let mut t =
+            TerminfoTerminal::new(w).expect("Failed to create terminfo terminal of writer `w`");
 
         t.fg(color).ok();
-        print!("{}: ", kind);
+        write!(t, "{}: ", kind).ok();
         t.reset().ok();
         let nl_align = once('\n')
             .chain(repeat(' ').take(kind.len() + 2))
@@ -171,11 +165,12 @@ impl<'src> SrcPos<'src> {
             .lines()
             .intersperse(&nl_align)
             .collect::<String>();
-        println!("{}", aligned_msg);
-        println!("  --> {}:{}:{}", self.filename.display(), row, col);
-        println!("{}: {}", row, line);
+        writeln!(t, "{}", aligned_msg).ok();
+        writeln!(t, "  --> {}:{}:{}", self.filename.display(), row, col).ok();
+        writeln!(t, "{}: {}", row, line).ok();
         t.fg(color).ok();
-        println!(
+        writeln!(
+            t,
             "{}^{}",
             repeat(' ')
                 .take(col + (row as f32).log10() as usize + 2)
@@ -186,7 +181,7 @@ impl<'src> SrcPos<'src> {
                     line_len - col,
                 ))
                 .collect::<String>()
-        );
+        ).ok();
         t.reset().ok();
     }
 
@@ -204,30 +199,45 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    pub fn error<E: Display>(&self, msg: E) {
-        self.message(msg, "Error", color::BRIGHT_RED);
+    pub fn write_error<E: Display, W: io::Write>(&self, w: &mut W, msg: E) {
+        self.write_message(w, msg, "Error", color::BRIGHT_RED);
+    }
+
+    pub fn print_error<E: Display>(&self, msg: E) {
+        self.write_error(&mut io::stdout(), msg)
     }
 
     /// Like `SrcPos::error`, but exits after message has been printed
     pub fn error_exit<E: Display>(&self, msg: E) -> ! {
-        self.error(msg);
-
+        self.print_error(msg);
         exit()
     }
 
     /// Like `SrcPos::error`, but text is yellow and kind is "Warning"
-    pub fn warn<S: Display>(&self, msg: S) {
-        self.message(msg, "Warning", color::BRIGHT_YELLOW);
+    pub fn write_warn<S: Display, W: Write>(&self, w: &mut W, msg: S) {
+        self.write_message(w, msg, "Warning", color::BRIGHT_YELLOW);
+    }
+
+    pub fn print_warn<S: Display>(&self, msg: S) {
+        self.write_warn(&mut io::stdout(), msg);
     }
 
     /// Like `SrcPos::error`, but text is green and kind is "Note"
-    pub fn note<S: Display>(&self, msg: S) {
-        self.message(msg, "Note", color::BRIGHT_GREEN);
+    pub fn write_note<S: Display, W: Write>(&self, w: &mut W, msg: S) {
+        self.write_message(w, msg, "Note", color::BRIGHT_GREEN);
+    }
+
+    pub fn print_note<S: Display>(&self, msg: S) {
+        self.write_note(&mut io::stdout(), msg);
     }
 
     /// Like `SrcPos::error`, but text is cyan and kind is "Help"
-    pub fn help<S: Display>(&self, msg: S) {
-        self.message(msg, "Help", color::BRIGHT_CYAN);
+    pub fn write_help<S: Display, W: Write>(&self, w: &mut W, msg: S) {
+        self.write_message(w, msg, "Help", color::BRIGHT_CYAN);
+    }
+
+    pub fn print_help<S: Display>(&self, msg: S) {
+        self.write_help(&mut io::stdout(), msg);
     }
 }
 impl<'src> Debug for SrcPos<'src> {
