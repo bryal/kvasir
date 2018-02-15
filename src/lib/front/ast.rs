@@ -1,6 +1,6 @@
 use super::SrcPos;
-use itertools::{Itertools, zip};
-use std::collections::{HashMap, BTreeMap, BTreeSet, HashSet};
+use itertools::{zip, Itertools};
+use std::collections::{BTreeMap, BTreeSet};
 use std::{borrow, fmt, hash, mem, path};
 use std::iter::once;
 
@@ -159,7 +159,7 @@ impl<'src> Type<'src> {
         }
     }
 
-    fn is_monomorphic_in_context(&self, bound: &mut HashSet<u64>) -> bool {
+    fn is_monomorphic_in_context(&self, bound: &mut BTreeSet<u64>) -> bool {
         match *self {
             Type::Var(ref v) => bound.contains(&v.id),
             Type::Const(_, _) => true,
@@ -168,7 +168,7 @@ impl<'src> Type<'src> {
                 match **f {
                     TypeFunc::Const(_) => all_args_mono,
                     TypeFunc::Poly(ref p) => {
-                        let mut dup = HashSet::new();
+                        let mut dup = BTreeSet::new();
                         for &TVar { id: param, .. } in &p.params {
                             if !bound.insert(param) {
                                 dup.insert(param);
@@ -188,21 +188,19 @@ impl<'src> Type<'src> {
 
     /// Returns whether type is completly monomorphic
     pub fn is_monomorphic(&self) -> bool {
-        self.is_monomorphic_in_context(&mut HashSet::new())
+        self.is_monomorphic_in_context(&mut BTreeSet::new())
     }
 
-    pub fn canonicalize_in_context(&self, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
+    pub fn canonicalize_in_context(&self, s: &mut BTreeMap<u64, Type<'src>>) -> Type<'src> {
         match *self {
             Type::Const(_, _) => self.clone(),
             Type::Var(ref v) => s.get(&v.id).unwrap_or(self).clone(),
-            Type::App(box TypeFunc::Const(c), ref args) => {
-                Type::App(
-                    Box::new(TypeFunc::Const(c)),
-                    args.iter()
-                        .map(|arg| arg.canonicalize_in_context(s))
-                        .collect(),
-                )
-            }
+            Type::App(box TypeFunc::Const(c), ref args) => Type::App(
+                Box::new(TypeFunc::Const(c)),
+                args.iter()
+                    .map(|arg| arg.canonicalize_in_context(s))
+                    .collect(),
+            ),
             Type::App(box TypeFunc::Poly(ref p), ref args) => {
                 let shadoweds = zip(&p.params, args)
                     .filter_map(|(param, arg)| {
@@ -213,12 +211,10 @@ impl<'src> Type<'src> {
                 s.extend(shadoweds);
                 b
             }
-            Type::Poly(ref p) => {
-                Type::Poly(Box::new(Poly {
-                    params: p.params.clone(),
-                    body: p.body.canonicalize_in_context(s),
-                }))
-            }
+            Type::Poly(ref p) => Type::Poly(Box::new(Poly {
+                params: p.params.clone(),
+                body: p.body.canonicalize_in_context(s),
+            })),
         }
     }
 
@@ -227,7 +223,7 @@ impl<'src> Type<'src> {
     /// # Examples
     /// `canonicalize (app (poly (t u) (-> t u)) Int Float) == (-> Int Float)`
     pub fn canonicalize(&self) -> Type<'src> {
-        self.canonicalize_in_context(&mut HashMap::new())
+        self.canonicalize_in_context(&mut BTreeMap::new())
     }
 
     /// If a type constant, return the name
@@ -291,7 +287,10 @@ impl<'src> Type<'src> {
     pub fn num_to_int64(&self) -> Self {
         match *self {
             Type::Var(TVar { ref constrs, .. })
-                if constrs.len() == 1 && constrs.contains("Num") => Type::Const("Int64", None),
+                if constrs.len() == 1 && constrs.contains("Num") =>
+            {
+                Type::Const("Int64", None)
+            }
             _ => self.clone(),
         }
     }
@@ -313,15 +312,18 @@ impl<'src> Type<'src> {
 
     /// If the type is of the form `(-> (Cons A B) C)`, return the tuple `(A, B, C)`
     pub fn get_cons_binary_func(&self) -> Option<(&Type<'src>, &Type<'src>, &Type<'src>)> {
-        self.get_func().and_then(
-            |(c, r)| c.get_cons().map(|(a, b)| (a, b, r)),
-        )
+        self.get_func()
+            .and_then(|(c, r)| c.get_cons().map(|(a, b)| (a, b, r)))
     }
 
     /// If binop, by the definition of binops as : S x S -> S, return the operand type
     pub fn get_cons_binop(&self) -> Option<&Self> {
         if let Some((a, b, r)) = self.get_cons_binary_func() {
-            if a == b && b == r { Some(a) } else { None }
+            if a == b && b == r {
+                Some(a)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -356,24 +358,22 @@ impl<'src> Type<'src> {
     pub fn fulfills_constraints(&self, cs: &BTreeSet<&str>) -> bool {
         use self::Type::*;
         cs.iter().all(|c| match *c {
-            "Num" => {
-                match *self {
-                    Const("Int8", _) |
-                    Const("Int16", _) |
-                    Const("Int32", _) |
-                    Const("Int64", _) |
-                    Const("IntPtr", _) |
-                    Const("UInt8", _) |
-                    Const("UInt16", _) |
-                    Const("UInt32", _) |
-                    Const("UInt64", _) |
-                    Const("UIntPtr", _) |
-                    Const("Bool", _) |
-                    Const("Float32", _) |
-                    Const("Float64", _) => true,
-                    _ => false,
-                }
-            }
+            "Num" => match *self {
+                Const("Int8", _)
+                | Const("Int16", _)
+                | Const("Int32", _)
+                | Const("Int64", _)
+                | Const("IntPtr", _)
+                | Const("UInt8", _)
+                | Const("UInt16", _)
+                | Const("UInt32", _)
+                | Const("UInt64", _)
+                | Const("UIntPtr", _)
+                | Const("Bool", _)
+                | Const("Float32", _)
+                | Const("Float64", _) => true,
+                _ => false,
+            },
             _ => unimplemented!(),
         })
     }
@@ -522,13 +522,13 @@ pub struct Binding<'src> {
     pub val: Expr<'src>,
     /// If this binding is polymorphic, here will be mappings from
     /// application arguments to monomorphic instantiation of `val`
-    pub mono_insts: HashMap<Vec<Type<'src>>, Expr<'src>>,
+    pub mono_insts: BTreeMap<Vec<Type<'src>>, Expr<'src>>,
     pub pos: SrcPos<'src>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Group<'src> {
-    Circular(HashMap<&'src str, Binding<'src>>),
+    Circular(BTreeMap<&'src str, Binding<'src>>),
     Uncircular(&'src str, Binding<'src>),
 }
 
