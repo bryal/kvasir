@@ -1,9 +1,9 @@
-use lib::front::{SrcPos, error_exit, exit};
+use lib::front::{error_exit, exit, SrcPos};
 use lib::front::ast::{self, Expr};
 use llvm_sys;
 use llvm_sys::prelude::*;
 use llvm_sys::target::LLVMTargetDataRef;
-use std::{fmt, mem, cmp};
+use std::{cmp, fmt, mem};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
@@ -285,8 +285,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
             ast::Type::Const("Int64", _) => Type::get::<i64>(self.ctx),
-            ast::Type::Const("IntPtr", _) |
-            ast::Type::Const("UIntPtr", _) => self.gen_int_ptr_type(),
+            ast::Type::Const("IntPtr", _) | ast::Type::Const("UIntPtr", _) => {
+                self.gen_int_ptr_type()
+            }
             ast::Type::Const("UInt8", _) => Type::get::<u8>(self.ctx),
             ast::Type::Const("UInt16", _) => Type::get::<u16>(self.ctx),
             ast::Type::Const("UInt32", _) => Type::get::<u32>(self.ctx),
@@ -296,24 +297,20 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Float64", _) => Type::get::<f64>(self.ctx),
             ast::Type::Const("Nil", _) => self.named_types.nil,
             ast::Type::Const("RealWorld", _) => self.named_types.real_world,
-            ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => {
-                match s {
-                    "->" => {
-                        let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
-                        let captures = type_rc_generic(self.ctx);
-                        StructType::new(self.ctx, &[fp, captures], false)
-                    }
-                    "Cons" => {
-                        StructType::new(
-                            self.ctx,
-                            &[self.gen_type(&ts[0]), self.gen_type(&ts[1])],
-                            false,
-                        )
-                    }
-                    "Ptr" => PointerType::new(self.gen_type(&ts[0])),
-                    _ => panic!("ICE: Type function `{}` not implemented", s),
+            ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
+                "->" => {
+                    let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
+                    let captures = type_rc_generic(self.ctx);
+                    StructType::new(self.ctx, &[fp, captures], false)
                 }
-            }
+                "Cons" => StructType::new(
+                    self.ctx,
+                    &[self.gen_type(&ts[0]), self.gen_type(&ts[1])],
+                    false,
+                ),
+                "Ptr" => PointerType::new(self.gen_type(&ts[0])),
+                _ => panic!("ICE: Type function `{}` not implemented", s),
+            },
             _ => panic!("ICE: Type `{}` is not yet implemented", typ),
         }
     }
@@ -330,10 +327,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     }
 
     fn gen_func_decl(&self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
-        let (arg, ret) = typ.get_func().expect(&format!(
-            "ICE: Invalid function type `{}`",
-            typ
-        ));
+        let (arg, ret) = typ.get_func()
+            .expect(&format!("ICE: Invalid function type `{}`", typ));
         let func_typ = self.gen_func_type(arg, ret);
         self.module.add_function(&id, func_typ)
     }
@@ -344,10 +339,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
         );
-        let (at, rt) = typ.get_func().expect(&format!(
-            "ICE: Invalid function type `{}`",
-            typ
-        ));
+        let (at, rt) = typ.get_func()
+            .expect(&format!("ICE: Invalid function type `{}`", typ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let func_type = FunctionType::new(ret_type, &[arg_type]);
         self.module.add_function(&id, func_type)
@@ -360,16 +353,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         id: String,
         func_type: &ast::Type,
     ) -> &'ctx Function {
-        let (at, rt) = func_type.get_func().expect(&format!(
-            "ICE: Invalid function type `{}`",
-            func_type
-        ));
+        let (at, rt) = func_type
+            .get_func()
+            .expect(&format!("ICE: Invalid function type `{}`", func_type));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
-        let closure = self.module.add_function(
-            &format!("{}_closure", id),
-            &clos_typ,
-        );
+        let closure = self.module
+            .add_function(&format!("{}_closure", id), &clos_typ);
         let entry = closure.append("entry");
         self.builder.position_at_end(entry);
         closure[0].set_name("_NO_CAPTURES");
@@ -541,11 +531,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             ast::Type::Const("Bool", _) => CodeGenerator::parse_gen_lit::<bool>,
             ast::Type::Const("Float32", _) => CodeGenerator::parse_gen_lit::<f32>,
             ast::Type::Const("Float64", _) => CodeGenerator::parse_gen_lit::<f64>,
-            _ => {
-                num.pos.error_exit(
-                    ICE("type of numeric literal is not numeric".into()),
-                )
-            }
+            _ => num.pos
+                .error_exit(ICE("type of numeric literal is not numeric".into())),
         };
         parser(self, &num.lit, &num.typ, &num.pos)
     }
@@ -573,9 +560,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             // NOTE: Ugly hack to fix generic codegen for some binops
             _ if arithm_binops.contains(var.ident.s) => {
                 let maybe_op_typ = type_canon.get_cons_binop().map(|t| t.num_to_int64());
-                let op_typ = maybe_op_typ.unwrap_or_else(|| {
-                    panic!("ICE: binop has bad type {}", type_canon)
-                });
+                let op_typ = maybe_op_typ
+                    .unwrap_or_else(|| panic!("ICE: binop has bad type {}", type_canon));
                 assert!(
                     op_typ.is_int() || op_typ.is_uint() || op_typ.is_float(),
                     "ICE: binop has bad type {}",
@@ -589,9 +575,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 self.gen_variable(env, &var2)
             }
             _ if relational_binops.contains(var.ident.s) => {
-                let maybe_op_typ = type_canon.get_cons_relational_binop().map(
-                    |t| t.num_to_int64(),
-                );
+                let maybe_op_typ = type_canon
+                    .get_cons_relational_binop()
+                    .map(|t| t.num_to_int64());
                 let op_typ = maybe_op_typ.unwrap_or_else(|| {
                     panic!("ICE: binary relational op has bad type {}", type_canon)
                 });
@@ -620,24 +606,20 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            Some(Var::Extern(e)) => {
-                Value::new_struct(
-                    self.ctx,
-                    &[e.closure, Value::new_undef(type_rc_generic(self.ctx))],
-                    false,
-                )
-            }
+            Some(Var::Extern(e)) => Value::new_struct(
+                self.ctx,
+                &[e.closure, Value::new_undef(type_rc_generic(self.ctx))],
+                false,
+            ),
             Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
-            None => {
-                panic!(
-                    "ICE: Undefined variable at codegen: {} inst `{:?}`\ninsts of {}: {:#?}",
-                    var.ident.s,
-                    inst,
-                    var.ident.s,
-                    env.get_var_insts(var.ident.s)
-                )
-            }
+            None => panic!(
+                "ICE: Undefined variable at codegen: {} inst `{:?}`\ninsts of {}: {:#?}",
+                var.ident.s,
+                inst,
+                var.ident.s,
+                env.get_var_insts(var.ident.s)
+            ),
         }
     }
 
@@ -697,9 +679,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let inst = typ.get_inst_args().unwrap_or(&[]);
         let canon = typ.canonicalize();
         let (at, rt) = canon.get_func().expect(&format!(
-                "ICE: Invalid function type `{}`",
-                app.func.get_type(),
-            ));
+            "ICE: Invalid function type `{}`",
+            app.func.get_type(),
+        ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let arg = self.gen_expr(env, &app.arg, None);
 
@@ -738,10 +720,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
         let captures_ptr_generic = &*func[0];
         captures_ptr_generic.set_name("captures_generic");
-        let captures_ptr = self.builder.build_bit_cast(
-            captures_ptr_generic,
-            captures_ptr_type,
-        );
+        let captures_ptr = self.builder
+            .build_bit_cast(captures_ptr_generic, captures_ptr_type);
         captures_ptr.set_name("captures");
         let param = &*func[1];
         param.set_name(lam.param_ident.s);
@@ -779,11 +759,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         env.vars = old_vars;
         *self.current_func.borrow_mut() = parent_func;
         *self.current_block.borrow_mut() = parent_block;
-        self.builder.position_at_end(
-            self.current_block.borrow().expect(
-                "ICE: no current_block",
-            ),
-        );
+        self.builder
+            .position_at_end(self.current_block.borrow().expect("ICE: no current_block"));
 
         func
     }
@@ -797,13 +774,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
         match env.get("malloc", &[]) {
             Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[n.compile(self.ctx)]),
-            Some(Var::Val(v)) => {
-                self.build_app(
-                    v,
-                    (n.compile(self.ctx), Type::get::<usize>(self.ctx)),
-                    PointerType::new(Type::get::<u8>(self.ctx)),
-                )
-            }
+            Some(Var::Val(v)) => self.build_app(
+                v,
+                (n.compile(self.ctx), Type::get::<usize>(self.ctx)),
+                PointerType::new(Type::get::<u8>(self.ctx)),
+            ),
             None => panic!("ICE: No allocator defined or declared"),
         }
     }
@@ -859,13 +834,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 false,
             )),
         );
-        self.builder.build_gep(
-            rc,
-            &[
-                0usize.compile(self.ctx),
-                1u32.compile(self.ctx),
-            ],
-        )
+        self.builder
+            .build_gep(rc, &[0usize.compile(self.ctx), 1u32.compile(self.ctx)])
     }
 
     /// Build instructions to cast a pointer value to a generic
@@ -889,9 +859,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                     "ICE: Free var not found in env\n\
                      var: {}, inst: {:?}\n\
                      env: {:?}",
-                    fv,
-                    inst,
-                    env
+                    fv, inst, env
                 )))
             }
         }
@@ -954,10 +922,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures = self.gen_lambda_env_capture(env, &free_vars);
         let captures_rc = self.build_rc(env, captures);
-        let captures_rc_generic = self.builder.build_bit_cast(
-            captures_rc,
-            type_rc_generic(self.ctx),
-        );
+        let captures_rc_generic = self.builder
+            .build_bit_cast(captures_rc, type_rc_generic(self.ctx));
         self.build_struct(&[func_ptr, captures_rc_generic])
     }
 
@@ -1026,12 +992,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
 
     /// Generate LLVM IR for the construction of a `cons` pair
     fn gen_cons(&self, env: &mut Env<'src, 'ctx>, cons: &'ast ast::Cons<'src>) -> &'ctx Value {
-        self.build_struct(
-            &[
-                self.gen_expr(env, &cons.car, Some("car")),
-                self.gen_expr(env, &cons.cdr, Some("cdr")),
-            ],
-        )
+        self.build_struct(&[
+            self.gen_expr(env, &cons.car, Some("car")),
+            self.gen_expr(env, &cons.cdr, Some("cdr")),
+        ])
     }
 
     /// Generate LLVM IR for the extraction of the first element of a `cons` pair
@@ -1107,8 +1071,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         res.unwrap_or_else(|| {
             c.pos.error_exit(format!(
                 "Invalid cast\nCannot cast from {} to {}",
-                from_type,
-                to_type
+                from_type, to_type
             ))
         })
     }
@@ -1175,8 +1138,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             if main.typ != expect {
                 let error_msg = format!(
                     "main function has wrong type. Expected type `{}`, found type `{}`",
-                    expect,
-                    main.typ
+                    expect, main.typ
                 );
                 if main.typ.is_monomorphic() {
                     main.pos.error_exit(error_msg)
@@ -1213,9 +1175,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         self.gen_bindings(&mut env, &global_bindings);
 
         // Call user defined `main`
-        let user_main = env.get_var("main", &[]).expect(
-            "ICE: No monomorphic user defined `main`",
-        );
+        let user_main = env.get_var("main", &[])
+            .expect("ICE: No monomorphic user defined `main`");
         self.build_app(
             user_main,
             (self.new_nil_val(), self.named_types.nil),
