@@ -1,4 +1,4 @@
-//! Type inference
+//! Type check and inference
 
 // TODO: Almost all `infer_types` takes const map + var stack + caller stack.
 //       Maybe encapsulate this using some kind of state
@@ -850,7 +850,18 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 }
 
+fn assert_externs_monomorphic(externs: &BTreeMap<&str, ExternDecl>) {
+    for ext in externs.values() {
+        if !ext.typ.is_monomorphic() {
+            ext.pos.error_exit(
+                "Type of external declaration must be monomorphic",
+            )
+        }
+    }
+}
+
 pub fn infer_types(ast: &mut Ast, type_var_generator: &mut TypeVarGen) {
+    assert_externs_monomorphic(&ast.externs);
     let mut inferrer = Inferrer::new(&mut ast.externs, type_var_generator);
     inferrer.infer_bindings(&mut ast.globals);
 
