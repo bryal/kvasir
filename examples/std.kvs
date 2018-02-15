@@ -134,7 +134,7 @@
 (define (break-while-io io)
   (iomap left io))
 
-;;; Misc
+;;; Section Misc
 
 (define undef (: (lambda (_) (undef nil))
                  (-> Nil t)))
@@ -164,6 +164,9 @@
 (define (>= x y) (gteq (cons x y)))
 (define (< x y) (lt (cons x y)))
 (define (<= x y) (lteq (cons x y)))
+
+(define (remainder n d)
+  (- n (* (/ n d) d)))
 
 ;; CPU clock ticks
 (extern _clock (-> RealWorld (Cons UInt64 RealWorld)))

@@ -63,9 +63,6 @@
                               (fib-iter b (+ a b) (- i 1)))))
     (fib-iter 0 1 n)))
 
-(define (remainder n d)
-  (- n (* (/ n d) d)))
-
 (define (even? n)
   (= (remainder n 2) 0))
 
@@ -89,5 +86,5 @@
   (= (remainder b a) 0))
 
 (define main
-  (pipe (display "foo")
-        (display "bar")))
+  (>> (display "Hello")
+      (display "fool")))
