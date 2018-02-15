@@ -86,5 +86,11 @@
   (= (remainder b a) 0))
 
 (define main
-  (>> (display "Hello")
-      (display "fool")))
+  (>>= (random 10)
+       (lambda (target)
+         (>> (display "Hello guess random number!")
+             (>>= read-int64
+                  (lambda (x)
+                    (if (= x target)
+                        (display "yes")
+                        (display "fool"))))))))
