@@ -114,6 +114,26 @@ impl<'src> SrcPos<'src> {
         }
     }
 
+    /// [0 .. 10].after([0 .. 3]) = [4 .. 10]
+    /// [0 .. 10].after([2 .. 4]) = [5 .. 10]
+    fn after(&self, child: &Self) -> Self {
+        assert_eq!(
+            self.filename, child.filename,
+            "ICE: In `after`, child and parent SrcPos are in different files"
+        );
+        let p_start = self.start;
+        let p_end = self.end.expect("ICE: Parent srcpos in `after` is not an interval");
+        let c_start = child.start;
+        let c_end = child.end.unwrap_or(c_start);
+        assert!(c_start >= p_start && c_end <= p_end, "ICE: Child srcpos in `after` is not an element/subset of parent");
+        SrcPos {
+            filename: self.filename,
+            src: self.src,
+            start: c_end,
+            end: Some(p_end)
+        }
+    }
+
     /// Note: for compatibility with tooling, columns are 1-indexed on print
     fn line_len_row_col(&self) -> (&'src str, usize, usize, usize) {
         let mut line_start = 0;

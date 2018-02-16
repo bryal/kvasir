@@ -550,15 +550,15 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             pos: pos.clone(),
         };
         Ok(init.iter()
-            .rev()
-            .cloned()
-            .fold(innermost, |inner, param| Lambda {
-                param_ident: param.0,
-                param_type: param.1,
-                body: Expr::Lambda(Box::new(inner)),
-                typ: self.gen_type_var(),
-                pos: pos.clone(),
-            }))
+           .rev()
+           .cloned()
+           .fold(innermost, |inner, param| Lambda {
+               param_ident: param.0,
+               param_type: param.1,
+               body: Expr::Lambda(Box::new(inner)),
+               typ: self.gen_type_var(),
+               pos: pos.clone(),
+           }))
     }
 
     /// Parse a list of `CST`s as the parts of a `Lambda`
@@ -572,6 +572,46 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             .collect::<PRes<Vec<_>>>()?;
         let body = self.parse_expr(b)?;
         self.new_multary_lambda(&params, params_pos, body, pos)
+    }
+
+    fn parse_binding(
+        &mut self,
+        patt: &CST<'s>,
+        maybe_typ: Option<&CST<'s>>,
+        val: &CST<'s>,
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Binding<'s>> {
+        let typ = maybe_typ
+            .map(|c| self.parse_type(c))
+            .unwrap_or_else(|| Ok(self.gen_type_var()))?;
+        Ok(match self.parse_pattern(patt)? {
+            Pattern::Var(ident) => Binding {
+                ident: ident,
+                typ: typ,
+                val: self.parse_expr(val)?,
+                mono_insts: BTreeMap::new(),
+                pos: pos.clone(),
+            },
+            Pattern::Func(f_id, (params_ids, params_pos)) => {
+                let params = params_ids
+                    .into_iter()
+                    .map(|id| (id, self.gen_type_var()))
+                    .collect::<Vec<_>>();
+                let body = self.parse_expr(val)?;
+                Binding {
+                    ident: f_id,
+                    typ: typ,
+                    val: Expr::Lambda(Box::new(self.new_multary_lambda(
+                        &params,
+                        &params_pos,
+                        body,
+                        pos,
+                    )?)),
+                    mono_insts: BTreeMap::new(),
+                    pos: pos.clone(),
+                }
+            }
+        })
     }
 
     /// Parse a list of syntax trees as a variable binding
@@ -591,45 +631,31 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     ///       ((id2        x) x))
     ///   ...)
     /// ```
-    fn parse_binding(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Binding<'s>> {
-        let (a, b) = two(csts, pos)?;
-        Ok(match self.parse_pattern(a)? {
-            Pattern::Var(ident) => Binding {
-                ident: ident,
-                typ: self.gen_type_var(),
-                val: self.parse_expr(b)?,
-                mono_insts: BTreeMap::new(),
-                pos: pos.clone(),
-            },
-            Pattern::Func(f_id, (params_ids, params_pos)) => {
-                let params = params_ids
-                    .into_iter()
-                    .map(|id| (id, self.gen_type_var()))
-                    .collect::<Vec<_>>();
-                let body = self.parse_expr(b)?;
-                Binding {
-                    ident: f_id,
-                    typ: self.gen_type_var(),
-                    val: Expr::Lambda(Box::new(self.new_multary_lambda(
-                        &params,
-                        &params_pos,
-                        body,
-                        pos,
-                    )?)),
-                    mono_insts: BTreeMap::new(),
-                    pos: pos.clone(),
-                }
-            }
-        })
+    fn parse_untyped_binding(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Binding<'s>> {
+        let (patt, val) = two(csts, pos)?;
+        self.parse_binding(patt, None, val, pos)
+    }
+
+    fn parse_typed_binding(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Binding<'s>> {
+        let (patt, typ, val) = three(csts, pos)?;
+        self.parse_binding(patt, Some(typ), val, pos)
     }
 
     fn parse_bindings_to_flat_map(
         &mut self,
-        defs: &[(&[CST<'s>], SrcPos<'s>)],
+        defs: &[(bool, &[CST<'s>], SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, Binding<'s>>> {
         let mut bindings = BTreeMap::new();
-        for &(ref def_csts, ref pos) in defs {
-            let binding = self.parse_binding(def_csts, pos)?;
+        for &(is_typed, ref def_csts, ref pos) in defs {
+            let binding = if is_typed {
+                self.parse_typed_binding(def_csts, pos)?
+            } else {
+                self.parse_untyped_binding(def_csts, pos)?
+            };
             let (name, pos) = (binding.ident.s, binding.pos.clone());
             if let Some(prev_binding) = bindings.insert(name, binding) {
                 return Err(VarDuplDef {
@@ -644,7 +670,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_bindings(
         &mut self,
-        defs: &[(&[CST<'s>], SrcPos<'s>)],
+        defs: &[(bool, &[CST<'s>], SrcPos<'s>)],
     ) -> PRes<'s, TopologicallyOrderedDependencyGroups<'s>> {
         self.parse_bindings_to_flat_map(defs)
             .map(flat_bindings_to_topologically_ordered)
@@ -657,7 +683,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         let mut bindings_csts = Vec::new();
         for cst in csts {
             let binding_pair = sexpr(cst)?;
-            bindings_csts.push((binding_pair.clone(), cst.pos().clone()))
+            bindings_csts.push((false, binding_pair.clone(), cst.pos().clone()))
         }
         self.parse_bindings(&bindings_csts)
     }
@@ -790,7 +816,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         &mut self,
         csts: &'c [CST<'s>],
         externs: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-        globals: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+        globals: &mut Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
     ) -> PRes<'s, ()> {
         let mut imports_csts = Vec::new();
         for cst in csts {
@@ -800,7 +826,8 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             match first_s {
                 "import" => imports_csts.push((rest.to_vec(), pos)),
                 "extern" => externs.push((rest.to_vec(), pos.clone())),
-                "define" => globals.push((rest.to_vec(), pos.clone())),
+                "define" => globals.push((false, rest.to_vec(), pos.clone())),
+                "define:" => globals.push((true, rest.to_vec(), pos.clone())),
                 _ => return Err(InvalidTopLevelItem(pos.clone())),
             }
         }
@@ -825,10 +852,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         csts: &'c [CST<'s>],
     ) -> PRes<
         's,
-        (
-            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-        ),
+    (
+        Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+        Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
+    ),
     > {
         let (mut externs, mut globals) = (Vec::new(), Vec::new());
         self._get_top_level_csts(csts, &mut externs, &mut globals)?;
@@ -840,7 +867,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         let externs = self.parse_externs(&externs_csts)?;
         let globals_csts_slc = globals_csts
             .iter()
-            .map(|&(ref v, ref p)| (v.as_slice(), p.clone()))
+            .map(|&(is_typed, ref v, ref p)| (is_typed, v.as_slice(), p.clone()))
             .collect::<Vec<_>>();
         let globals = self.parse_bindings(&globals_csts_slc)?;
         Ok(Ast { externs, globals })

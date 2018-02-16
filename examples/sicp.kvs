@@ -6,7 +6,7 @@
 (define (max x y)
   (if (> x y)
       x
-      y))
+    y))
 
 (define (square x) (* x x))
 
@@ -16,7 +16,7 @@
 (define (foo x y z)
   (if (> x y)
       (sum-squares x (max y z))
-      (sum-squares y (max x z))))
+    (sum-squares y (max x z))))
 ;;;
 
 ;;; 1.4
@@ -27,7 +27,7 @@
 (define (abs x)
   (if (< x 0)
       (- 0 x)
-      x))
+    x))
 
 (define (average x y)
   (/ (+ x y) 2))
@@ -40,14 +40,14 @@
         ((sqrt-iter guess x)
          (if (good-enough? guess x)
              guess
-             (sqrt-iter (improve guess x) x))))
+           (sqrt-iter (improve guess x) x))))
     (sqrt-iter 1.0 x)))
 
 (define (factorial n)
   (let (((iter p i)
          (if (= i 0)
              p
-             (iter (* i p) (- i 1)))))
+           (iter (* i p) (- i 1)))))
     (iter 1 n)))
 
 (define (A x y)
@@ -60,7 +60,7 @@
 (define (fib n)
   (let (((fib-iter a b i) (if (= i 0)
                               a
-                              (fib-iter b (+ a b) (- i 1)))))
+                            (fib-iter b (+ a b) (- i 1)))))
     (fib-iter 0 1 n)))
 
 (define (even? n)
@@ -80,7 +80,7 @@
 (define (gcd a b)
   (if (= b 0)
       a
-      (gcd b (remainder a b))))
+    (gcd b (remainder a b))))
 
 (define (divides? a b)
   (= (remainder b a) 0))
@@ -93,4 +93,4 @@
                   (lambda (x)
                     (if (= x target)
                         (display "yes")
-                        (display "fool"))))))))
+                      (display "fool"))))))))

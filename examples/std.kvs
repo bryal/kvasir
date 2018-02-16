@@ -61,10 +61,9 @@
 (extern pcg32_random (-> RealWorld (Cons UInt32 RealWorld)))
 
 ;;? Seed the global rng
-(define seed-rng
-  (: (lambda (initstate real-world)
-       (pcg32_srandom (cons (cons initstate 42) real-world)))
-     (-> UInt64 RealWorld (Cons Nil RealWorld))))
+(define: (seed-rng initstate real-world)
+    (-> UInt64 RealWorld (Cons Nil RealWorld))
+  (pcg32_srandom (cons (cons initstate 42) real-world)))
 
 ;;? Generate a random number in [0, n) using the global rng
 (define (random n)
@@ -98,7 +97,7 @@
   (cons (lambda (i)
           (if (< i m)
               (cons (right i) (+ i 1))
-              (cons (left i) i)))
+            (cons (left i) i)))
         n))
 
 (define (for iterator f state)
@@ -107,7 +106,7 @@
         (iterator2 (cdr r)))
     (if (is-right maybe-item)
         (for iterator2 f (f (unwrap maybe-item) state))
-        state)))
+      state)))
 
 (define (for-io iterator f real-world)
   (let ((r (next iterator))
@@ -115,7 +114,7 @@
         (iterator2 (cdr r)))
     (if (is-right maybe-item)
         (for-io iterator2 f (cdr (f (unwrap maybe-item) real-world)))
-        (cons nil real-world))))
+      (cons nil real-world))))
 
 (define (loop-n-times-io n f)
   (for-io (range 0 n)
@@ -126,7 +125,7 @@
         (real-world2 (cdr r)))
     (if (is-right (car r))
         (do-while-io f real-world2)
-        (cons nil real-world2))))
+      (cons nil real-world2))))
 
 (define (continue-while-io io)
   (iomap right io))
@@ -136,20 +135,41 @@
 
 ;;; Section Misc
 
-(define undef (: (lambda (_) (undef nil))
-                 (-> Nil t)))
+(define: (undef _)
+    (-> Nil t)
+  (undef nil))
 
-(define add (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
-(define sub (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
-(define mul (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
-(define div (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) t)))
+(define: (add _)
+    (-> (Cons (: t Num) t) t)
+  (undef nil))
+(define: (sub _)
+    (-> (Cons (: t Num) t) t)
+  (undef nil))
+(define: (mul _)
+    (-> (Cons (: t Num) t) t)
+  (undef nil))
+(define: (div _)
+    (-> (Cons (: t Num) t) t)
+  (undef nil))
 
-(define eq   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
-(define neq  (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
-(define gt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
-(define gteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
-(define lt   (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
-(define lteq (: (lambda (_) (undef nil)) (-> (Cons (: t Num) t) Bool)))
+(define: (eq _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
+(define: (neq _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
+(define: (gt _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
+(define: (gteq _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
+(define: (lt _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
+(define: (lteq _)
+    (-> (Cons (: t Num) t) Bool)
+  (undef nil))
 
 (define (not b) (if b false true))
 
