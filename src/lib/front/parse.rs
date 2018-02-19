@@ -9,6 +9,7 @@ use lib::front::lex::lex_file;
 use std::collections::BTreeMap;
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
+#[derive(PartialEq, Eq)]
 enum PErr<'s> {
     /// Mismatch in the amount of parameters given. Some amount was expected, another was given
     ArityMis(SrcPos<'s>, usize, usize),
@@ -30,15 +31,27 @@ enum PErr<'s> {
     InvalidPatt(SrcPos<'s>),
     /// Invalid top level item
     InvalidTopLevelItem(SrcPos<'s>),
+    /// Invalid Algebraic Data Type identifier
+    InvalidAdtIdent(SrcPos<'s>, &'s str),
+    /// Invalid algebraic data type variant constructor identifier
+    InvalidAdtConstrIdent(SrcPos<'s>, &'s str),
+    /// Invalid algebraic data type variant
+    InvalidAdtVariant(SrcPos<'s>),
     /// Duplicate constraints definition for type variable
     TVarDuplDef {
         pos: SrcPos<'s>,
         name: &'s str,
         prev_pos: SrcPos<'s>,
     },
+    /// Duplicate definition of algebraic data type
+    DataTypeDuplDef {
+        pos: SrcPos<'s>,
+        name: &'s str,
+        prev_pos: SrcPos<'s>,
+    },
     /// Undefined type constructor
     UndefTypeCon(SrcPos<'s>, &'s str),
-    /// Duplicate definition of a variable
+    /// Duplicate definition of a nnnnnvariable
     VarDuplDef {
         pos: SrcPos<'s>,
         name: &'s str,
@@ -70,6 +83,17 @@ impl<'s> PErr<'s> {
             InvalidType(ref pos) => pos.write_error(w, "Invalid type"),
             InvalidPatt(ref pos) => pos.write_error(w, "Invalid pattern"),
             InvalidTopLevelItem(ref pos) => pos.write_error(w, "Invalid top level item"),
+            InvalidAdtIdent(ref pos, name) => {
+                pos.write_error(w, format!("Invalid Algebraic Data Type name `{}`", name))
+            }
+            InvalidAdtConstrIdent(ref pos, name) => pos.write_error(
+                w,
+                format!(
+                    "Invalid Algebraic Data Type variant constructor name `{}`",
+                    name
+                ),
+            ),
+            InvalidAdtVariant(ref pos) => pos.write_error(w, "Invalid Algebraic Data Type variant"),
             TVarDuplDef {
                 ref pos,
                 name,
@@ -89,6 +113,20 @@ impl<'s> PErr<'s> {
                      the type variable, \nand add them to the first instance instead.\n\
                      The first instance of the type variable is here:",
                 )
+            }
+            DataTypeDuplDef {
+                ref pos,
+                name,
+                ref prev_pos,
+            } => {
+                pos.write_error(
+                    w,
+                    format!(
+                        "Data type `{}` has already been defined in this scope",
+                        name
+                    ),
+                );
+                prev_pos.write_note(w, "The first definition of the data type is here:")
             }
             UndefTypeCon(ref pos, c) => {
                 pos.write_error(w, format!("Undefined type constructor `{}`", c))
@@ -550,15 +588,15 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             pos: pos.clone(),
         };
         Ok(init.iter()
-           .rev()
-           .cloned()
-           .fold(innermost, |inner, param| Lambda {
-               param_ident: param.0,
-               param_type: param.1,
-               body: Expr::Lambda(Box::new(inner)),
-               typ: self.gen_type_var(),
-               pos: pos.clone(),
-           }))
+            .rev()
+            .cloned()
+            .fold(innermost, |inner, param| Lambda {
+                param_ident: param.0,
+                param_type: param.1,
+                body: Expr::Lambda(Box::new(inner)),
+                typ: self.gen_type_var(),
+                pos: pos.clone(),
+            }))
     }
 
     /// Parse a list of `CST`s as the parts of a `Lambda`
@@ -812,11 +850,88 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
+    /// Parse the members of an algebraic data type variant
+    fn parse_data_type_variant_members(
+        &mut self,
+        cs: &[CST<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Vec<Type<'s>>> {
+        first(cs, pos)?;
+        cs.iter().map(|c| self.parse_type(c)).collect()
+    }
+
+    /// Parse a variant of a data type definition
+    fn parse_data_type_variant(&mut self, c: &CST<'s>) -> PRes<'s, AdtVariant<'s>> {
+        match *c {
+            CST::Ident(s, ref p) => Ok(AdtVariant {
+                name: Ident {
+                    s: s,
+                    pos: p.clone(),
+                },
+                members: vec![],
+                pos: p.clone(),
+            }),
+            CST::SExpr(ref cs, ref p) => {
+                let (name_c, members_cs) = split_first(cs, p)?;
+                let name = ident(name_c)?;
+                if !name.s.starts_with(char::is_uppercase) {
+                    return Err(InvalidAdtConstrIdent(name.pos, name.s));
+                }
+                let name_pos = name.pos.clone();
+                Ok(AdtVariant {
+                    name: name,
+                    members: self.parse_data_type_variant_members(members_cs, &p.after(&name_pos))?,
+                    pos: p.clone(),
+                })
+            }
+            _ => Err(InvalidAdtVariant(c.pos().clone())),
+        }
+    }
+
+    /// Parse a list of variants of a data type definition
+    fn parse_data_type_variants(&mut self, cs: &[CST<'s>]) -> PRes<'s, Vec<AdtVariant<'s>>> {
+        cs.iter().map(|c| self.parse_data_type_variant(c)).collect()
+    }
+
+    /// Parse a data type definition
+    fn parse_data_type_def(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, AdtDef<'s>> {
+        let (name_c, variants_c) = split_first(csts, pos)?;
+        let name = ident(name_c)?;
+        if !name.s.starts_with(char::is_uppercase) {
+            return Err(InvalidAdtIdent(name.pos.clone(), name.s));
+        }
+        Ok(AdtDef {
+            name,
+            variants: self.parse_data_type_variants(variants_c)?,
+            pos: pos.clone(),
+        })
+    }
+
+    fn parse_data_type_defs(
+        &mut self,
+        defs_csts: &[(Vec<CST<'s>>, SrcPos<'s>)],
+    ) -> PRes<'s, BTreeMap<&'s str, AdtDef<'s>>> {
+        let mut datas = BTreeMap::new();
+        for &(ref def_csts, ref pos) in defs_csts {
+            let def = self.parse_data_type_def(def_csts, pos)?;
+            let def_pos = def.pos.clone();
+            if let Some(prev_def) = datas.insert(def.name.s, def) {
+                return Err(DataTypeDuplDef {
+                    pos: def_pos,
+                    name: prev_def.name.s,
+                    prev_pos: prev_def.pos.clone(),
+                });
+            }
+        }
+        Ok(datas)
+    }
+
     fn _get_top_level_csts<'c>(
         &mut self,
         csts: &'c [CST<'s>],
         externs: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
         globals: &mut Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
+        datas: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
     ) -> PRes<'s, ()> {
         let mut imports_csts = Vec::new();
         for cst in csts {
@@ -828,6 +943,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 "extern" => externs.push((rest.to_vec(), pos.clone())),
                 "define" => globals.push((false, rest.to_vec(), pos.clone())),
                 "define:" => globals.push((true, rest.to_vec(), pos.clone())),
+                "data" => datas.push((rest.to_vec(), pos.clone())),
                 _ => return Err(InvalidTopLevelItem(pos.clone())),
             }
         }
@@ -838,7 +954,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 .expect("ICE: Failed to canonicalize module path");
             if !self.sources.contains_key(&module_path) {
                 let import_csts = lex_file(module_path, &self.sources);
-                self._get_top_level_csts(&import_csts, externs, globals)?
+                self._get_top_level_csts(&import_csts, externs, globals, datas)?
             }
         }
         Ok(())
@@ -852,25 +968,28 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         csts: &'c [CST<'s>],
     ) -> PRes<
         's,
-    (
-        Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-        Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
-    ),
+        (
+            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+            Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
+            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+        ),
     > {
-        let (mut externs, mut globals) = (Vec::new(), Vec::new());
-        self._get_top_level_csts(csts, &mut externs, &mut globals)?;
-        Ok((externs, globals))
+        let (mut externs, mut globals, mut datas) = (Vec::new(), Vec::new(), Vec::new());
+        self._get_top_level_csts(csts, &mut externs, &mut globals, &mut datas)?;
+        Ok((externs, globals, datas))
     }
 
     fn parse_ast(&mut self, csts: &[CST<'s>]) -> PRes<'s, Ast<'s>> {
-        let (externs_csts, globals_csts) = self.get_top_level_csts(csts)?;
-        let externs = self.parse_externs(&externs_csts)?;
+        let (externs_csts, globals_csts, datas_csts) = self.get_top_level_csts(csts)?;
         let globals_csts_slc = globals_csts
             .iter()
             .map(|&(is_typed, ref v, ref p)| (is_typed, v.as_slice(), p.clone()))
             .collect::<Vec<_>>();
-        let globals = self.parse_bindings(&globals_csts_slc)?;
-        Ok(Ast { externs, globals })
+        Ok(Ast {
+            externs: self.parse_externs(&externs_csts)?,
+            globals: self.parse_bindings(&globals_csts_slc)?,
+            datas: self.parse_data_type_defs(&datas_csts)?,
+        })
     }
 
     /// Parse the file `filename`, and recursively parse imports as well
@@ -899,3 +1018,50 @@ pub fn parse_program<'s>(
 
 // TODO: Fix all passings of `pos` to functions like `first`, `split_first`, `two`, etc.
 //       Many are wrong!
+
+#[cfg(test)]
+mod test {
+    use lib::collections::AddMap;
+    use lib::front::lex::CST;
+    use lib::front::*;
+    use lib::front::ast::*;
+    use super::Parser;
+
+    fn dummy_cident(s: &str) -> CST {
+        CST::Ident(s, SrcPos::new_dummy())
+    }
+
+    fn dummy_ident(s: &str) -> Ident {
+        Ident {
+            s,
+            pos: SrcPos::new_dummy(),
+        }
+    }
+
+    #[test]
+    fn test_parse_data_type_def() {
+        let sources = AddMap::new();
+        let mut tvg = TypeVarGen::new(0);
+        let mut parser = Parser::new(&sources, &mut tvg);
+        assert_eq!(
+            parser.parse_data_type_def(
+                &[dummy_cident("Foo"), dummy_cident("Foo"),],
+                &SrcPos::new_dummy()
+            ),
+            Ok(AdtDef {
+                name: Ident {
+                    s: "Foo",
+                    pos: SrcPos::new_dummy(),
+                },
+                variants: vec![
+                    AdtVariant {
+                        name: dummy_ident("Foo"),
+                        members: vec![],
+                        pos: SrcPos::new_dummy(),
+                    },
+                ],
+                pos: SrcPos::new_dummy(),
+            })
+        )
+    }
+}

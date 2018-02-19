@@ -92,6 +92,7 @@ impl<'src> SrcPos<'src> {
         }
     }
 
+    #[cfg(test)]
     fn new_dummy() -> Self {
         SrcPos {
             filename: Path::new("DUMMY"),

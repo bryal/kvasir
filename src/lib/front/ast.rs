@@ -445,7 +445,7 @@ impl<'src> fmt::Display for Ident<'src> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct ExternDecl<'src> {
     pub ident: Ident<'src>,
     /// The type of the external variable being declared.
@@ -456,38 +456,38 @@ pub struct ExternDecl<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Nil<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct NumLit<'src> {
     pub lit: &'src str,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct StrLit<'src> {
     pub lit: borrow::Cow<'src, str>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Variable<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Bool<'src> {
     pub val: bool,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct App<'src> {
     pub func: Expr<'src>,
     pub arg: Expr<'src>,
@@ -496,7 +496,7 @@ pub struct App<'src> {
 }
 
 /// if-then-else expression
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct If<'src> {
     pub predicate: Expr<'src>,
     pub consequent: Expr<'src>,
@@ -505,7 +505,7 @@ pub struct If<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Lambda<'src> {
     pub param_ident: Ident<'src>,
     pub param_type: Type<'src>,
@@ -515,7 +515,7 @@ pub struct Lambda<'src> {
 }
 
 /// A binding of a name to a value, i.e. a variable definition.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Binding<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
@@ -526,7 +526,7 @@ pub struct Binding<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Group<'src> {
     Circular(BTreeMap<&'src str, Binding<'src>>),
     Uncircular(&'src str, Binding<'src>),
@@ -617,7 +617,7 @@ impl<'src> Group<'src> {
 /// Now that all bindings in group has been inferred, we generalize. The only free type variable is
 /// `a`. Both `f` and `g` are given the same type parameters, and the result is
 /// `(: f (for (a) (-> Int a a)))` and `(: g (for (a) (-> Int a a)))`.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct TopologicallyOrderedDependencyGroups<'src>(pub Vec<Group<'src>>);
 
 impl<'src> TopologicallyOrderedDependencyGroups<'src> {
@@ -661,7 +661,7 @@ impl<'src> TopologicallyOrderedDependencyGroups<'src> {
 }
 
 /// A `let` special form
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Let<'src> {
     pub bindings: TopologicallyOrderedDependencyGroups<'src>,
     pub body: Expr<'src>,
@@ -672,14 +672,14 @@ pub struct Let<'src> {
 /// A type ascription.
 ///
 /// Ascribes a specific type to an expression
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct TypeAscript<'src> {
     pub typ: Type<'src>,
     pub expr: Expr<'src>,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Cons<'src> {
     pub typ: Type<'src>,
     pub car: Expr<'src>,
@@ -687,14 +687,14 @@ pub struct Cons<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Car<'src> {
     pub typ: Type<'src>,
     pub expr: Expr<'src>,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Cdr<'src> {
     pub typ: Type<'src>,
     pub expr: Expr<'src>,
@@ -702,14 +702,14 @@ pub struct Cdr<'src> {
 }
 
 /// A type cast
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Cast<'src> {
     pub expr: Expr<'src>,
     pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -801,8 +801,26 @@ impl<'src> Expr<'src> {
     }
 }
 
+/// A variant of an algebraic data type
+///
+/// An ADT variant is equivalent to a constructor and a destructor
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct AdtVariant<'src> {
+    pub name: Ident<'src>,
+    pub members: Vec<Type<'src>>,
+    pub pos: SrcPos<'src>,
+}
+
+/// Algebraic Data Type definition
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct AdtDef<'src> {
+    pub name: Ident<'src>,
+    pub variants: Vec<AdtVariant<'src>>,
+    pub pos: SrcPos<'src>,
+}
+
 /// A module of definitions and declarations of functions and variables
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Ast<'src> {
     /// External variable declarations
     ///
@@ -814,4 +832,6 @@ pub struct Ast<'src> {
     /// The bindings are grouped by circularity of definitions, and
     /// the groups are ordered topologically by inter-group dependency.
     pub globals: TopologicallyOrderedDependencyGroups<'src>,
+    /// Algebraic Data Type definitions
+    pub datas: BTreeMap<&'src str, AdtDef<'src>>,
 }

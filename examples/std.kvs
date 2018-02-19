@@ -3,6 +3,10 @@
 ;;; Represent strings as a pair of (pointer to string data) and length
 ;;; I.e. (Cons UIntPtr (Ptr UInt8))
 
+(data String
+  Empty
+  (Cons UInt8 String))
+
 (extern c_display (-> (Cons (Cons UIntPtr (Ptr UInt8)) RealWorld)
                       (Cons Nil RealWorld)))
 

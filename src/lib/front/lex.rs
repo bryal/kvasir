@@ -376,9 +376,3 @@ pub fn lex_file<'s>(
     let (filename_ref, src_ref) = sources.add(filename, src_code);
     lex_src(filename_ref.path(), src_ref)
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use super::Token::*;
-}
