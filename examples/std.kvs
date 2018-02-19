@@ -7,10 +7,10 @@
   Empty
   (Cons UInt8 String))
 
-(extern c_display (-> (Cons (Cons UIntPtr (Ptr UInt8)) RealWorld)
-                      (Cons Nil RealWorld)))
-
-(define (display s real-world) (c_display (cons s real-world)))
+(define (concat s1 s2)
+  (match s1
+         (Empty s2)
+         ((Cons c s1') (Cons c (concat s1' s2)))))
 
 ;;; Section Input/output
 
@@ -19,6 +19,11 @@
 (extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
 (extern print_uint64 (-> (Cons UInt64 RealWorld) (Cons Nil RealWorld)))
 (extern print_float64 (-> (Cons Float64 RealWorld) (Cons Nil RealWorld)))
+
+(extern c_display (-> (Cons String RealWorld)
+                      (Cons Nil RealWorld)))
+
+(define (display s real-world) (c_display (cons s real-world)))
 
 (define read-int64 read_int64)
 (define read-uint64 read_uint64)
