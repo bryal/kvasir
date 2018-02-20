@@ -181,12 +181,13 @@ fn wrap_vars_types_in_apps<'src>(
 }
 
 /// The definition of a type name
-enum TypeDef {
+enum TypeDef<'src> {
     /// It's a core type that can be handled by the code generation backend. E.g. the numeric
     /// types `Int32`, `Float64`, etc.
     Core,
+    /// An algebraic data type with variants and members
+    Adt(AdtDef<'src>),
     // TODO: Type alias
-    // TODO: Algebraic datatype
 }
 
 struct Inferrer<'a, 'src: 'a> {
@@ -207,15 +208,11 @@ struct Inferrer<'a, 'src: 'a> {
 impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn new(
         externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
+        data_type_defs: &BTreeMap<&'src str, AdtDef<'src>>,
         type_var_gen: &'a mut TypeVarGen,
     ) -> Self {
         use self::TypeDef::*;
-        Inferrer {
-            var_env: HashMap::new(),
-            externs: externs,
-            type_var_map: HashMap::new(),
-            type_var_gen: type_var_gen,
-            type_defs: hashmap! {
+        let mut type_defs = btreemap! {
                 "Int8" => Core,
                 "Int16" => Core,
                 "Int32" => Core,
@@ -231,7 +228,18 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 "Float64" => Core,
                 "Nil" => Core,
                 "RealWorld" => Core,
-            },
+        };
+        type_defs.extend(
+            data_type_defs
+                .iter()
+                .map(|(&k, v)| (k, TypeDef::Adt(v.clone()))),
+        );
+        Inferrer {
+            var_env: BTreeMap::new(),
+            externs,
+            type_var_map: BTreeMap::new(),
+            type_var_gen,
+            type_defs,
         }
     }
 
@@ -819,7 +827,7 @@ fn assert_externs_monomorphic(externs: &BTreeMap<&str, ExternDecl>) {
 
 pub fn infer_types(ast: &mut Ast, type_var_generator: &mut TypeVarGen) {
     assert_externs_monomorphic(&ast.externs);
-    let mut inferrer = Inferrer::new(&mut ast.externs, type_var_generator);
+    let mut inferrer = Inferrer::new(&mut ast.externs, &mut ast.adts, type_var_generator);
     inferrer.infer_bindings(&mut ast.globals);
 
     // Apply all substitutions recursively to get rid of reduntant, indirect type variables

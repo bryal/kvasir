@@ -911,11 +911,11 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         &mut self,
         defs_csts: &[(Vec<CST<'s>>, SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, AdtDef<'s>>> {
-        let mut datas = BTreeMap::new();
+        let mut adts = BTreeMap::new();
         for &(ref def_csts, ref pos) in defs_csts {
             let def = self.parse_data_type_def(def_csts, pos)?;
             let def_pos = def.pos.clone();
-            if let Some(prev_def) = datas.insert(def.name.s, def) {
+            if let Some(prev_def) = adts.insert(def.name.s, def) {
                 return Err(DataTypeDuplDef {
                     pos: def_pos,
                     name: prev_def.name.s,
@@ -923,7 +923,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 });
             }
         }
-        Ok(datas)
+        Ok(adts)
     }
 
     fn _get_top_level_csts<'c>(
@@ -931,7 +931,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         csts: &'c [CST<'s>],
         externs: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
         globals: &mut Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
-        datas: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+        adts: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
     ) -> PRes<'s, ()> {
         let mut imports_csts = Vec::new();
         for cst in csts {
@@ -943,7 +943,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 "extern" => externs.push((rest.to_vec(), pos.clone())),
                 "define" => globals.push((false, rest.to_vec(), pos.clone())),
                 "define:" => globals.push((true, rest.to_vec(), pos.clone())),
-                "data" => datas.push((rest.to_vec(), pos.clone())),
+                "data" => adts.push((rest.to_vec(), pos.clone())),
                 _ => return Err(InvalidTopLevelItem(pos.clone())),
             }
         }
@@ -954,7 +954,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 .expect("ICE: Failed to canonicalize module path");
             if !self.sources.contains_key(&module_path) {
                 let import_csts = lex_file(module_path, &self.sources);
-                self._get_top_level_csts(&import_csts, externs, globals, datas)?
+                self._get_top_level_csts(&import_csts, externs, globals, adts)?
             }
         }
         Ok(())
@@ -974,13 +974,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
         ),
     > {
-        let (mut externs, mut globals, mut datas) = (Vec::new(), Vec::new(), Vec::new());
-        self._get_top_level_csts(csts, &mut externs, &mut globals, &mut datas)?;
-        Ok((externs, globals, datas))
+        let (mut externs, mut globals, mut adts) = (Vec::new(), Vec::new(), Vec::new());
+        self._get_top_level_csts(csts, &mut externs, &mut globals, &mut adts)?;
+        Ok((externs, globals, adts))
     }
 
     fn parse_ast(&mut self, csts: &[CST<'s>]) -> PRes<'s, Ast<'s>> {
-        let (externs_csts, globals_csts, datas_csts) = self.get_top_level_csts(csts)?;
+        let (externs_csts, globals_csts, adts_csts) = self.get_top_level_csts(csts)?;
         let globals_csts_slc = globals_csts
             .iter()
             .map(|&(is_typed, ref v, ref p)| (is_typed, v.as_slice(), p.clone()))
@@ -988,7 +988,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(Ast {
             externs: self.parse_externs(&externs_csts)?,
             globals: self.parse_bindings(&globals_csts_slc)?,
-            datas: self.parse_data_type_defs(&datas_csts)?,
+            adts: self.parse_data_type_defs(&adts_csts)?,
         })
     }
 

@@ -8,9 +8,7 @@ use std::iter::once;
 lazy_static!{
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil", None);
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool", None);
-    pub static ref TYPE_STRING: Type<'static> = Type::new_cons(
-        Type::Const("UIntPtr", None),
-        Type::new_ptr(Type::Const("UInt8", None)));
+    pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
     pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld", None);
 }
 
@@ -106,6 +104,8 @@ pub enum Type<'src> {
     /// and constrained by a set of type classes
     Var(TVar<'src>),
     /// A monotype constant, like `int`, or `string`
+    ///
+    /// Can also refer to user-defined algebraic data types
     Const(&'src str, Option<SrcPos<'src>>),
     /// An application of a type function over one/some/no monotype(s)
     App(Box<TypeFunc<'src>>, Vec<Type<'src>>),
@@ -833,5 +833,5 @@ pub struct Ast<'src> {
     /// the groups are ordered topologically by inter-group dependency.
     pub globals: TopologicallyOrderedDependencyGroups<'src>,
     /// Algebraic Data Type definitions
-    pub datas: BTreeMap<&'src str, AdtDef<'src>>,
+    pub adts: BTreeMap<&'src str, AdtDef<'src>>,
 }
