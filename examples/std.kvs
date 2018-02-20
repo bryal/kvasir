@@ -9,8 +9,8 @@
 
 (define (concat s1 s2)
   (match s1
-         (Empty s2)
-         ((Cons c s1') (Cons c (concat s1' s2)))))
+    [Empty        s2]
+    [(Cons c s1') (Cons c (concat s1' s2))]))
 
 ;;; Section Input/output
 
@@ -46,9 +46,9 @@
 
 (define (>>= io f)
   (lambda (real-world)
-    (let ((r (io real-world))
-          (v (car r))
-          (real-world2 (cdr r)))
+    (let [[r           (io real-world)]
+          [v           (car r)]
+          [real-world2 (cdr r)]]
       (f v real-world2))))
 
 (define (return x)
@@ -57,9 +57,9 @@
 
 (define (iomap f io)
   (lambda (real-world)
-    (let ((r (io real-world))
-          (v (car r))
-          (real-world2 (cdr r)))
+    (let [[r           (io real-world)]
+          [v           (car r)]
+          [real-world2 (cdr r)]]
       (cons (f v) real-world2))))
 
 ;;; Section Random number generation
@@ -94,11 +94,11 @@
 ;;; Section Iteration
 
 (define (next iterator)
-  (let ((f (car iterator))
-        (state (cdr iterator))
-        (r (f state))
-        (item (car r))
-        (state2 (cdr r)))
+  (let [[f      (car iterator)]
+        [state  (cdr iterator)]
+        [r      (f state)]
+        [item   (car r)]
+        [state2 (cdr r)]]
     (cons item (cons f state2))))
 
 ;;? Returns an iterator of the numbers from `n` to `m`
@@ -110,17 +110,17 @@
         n))
 
 (define (for iterator f state)
-  (let ((r (next iterator))
-        (maybe-item (car r))
-        (iterator2 (cdr r)))
+  (let [[r          (next iterator)]
+        [maybe-item (car r)]
+        [iterator2  (cdr r)]]
     (if (is-right maybe-item)
         (for iterator2 f (f (unwrap maybe-item) state))
       state)))
 
 (define (for-io iterator f real-world)
-  (let ((r (next iterator))
-        (maybe-item (car r))
-        (iterator2 (cdr r)))
+  (let [[r          (next iterator)]
+        [maybe-item (car r)]
+        [iterator2  (cdr r)]]
     (if (is-right maybe-item)
         (for-io iterator2 f (cdr (f (unwrap maybe-item) real-world)))
       (cons nil real-world))))
@@ -130,8 +130,8 @@
           (lambda (_) f)))
 
 (define (do-while-io f real-world)
-  (let ((r (f real-world))
-        (real-world2 (cdr r)))
+  (let [[r           (f real-world)]
+        [real-world2 (cdr r)]]
     (if (is-right (car r))
         (do-while-io f real-world2)
       (cons nil real-world2))))
