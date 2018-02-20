@@ -181,7 +181,7 @@ fn is_delim_char(c: char) -> bool {
 /// Returns whether `c` is a valid character of an ident
 fn is_ident_char(c: char) -> bool {
     match c {
-        '\'' | '"' => false,
+        '"' => false,
         _ if is_delim_char(c) => false,
         _ => true,
     }
