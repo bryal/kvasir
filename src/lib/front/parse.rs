@@ -531,8 +531,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of `CST`s as parts of an `If` conditional
-    fn parse_if(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, If<'s>> {
-        let (p, c, a) = three(csts, pos)?;
+    fn parse_if(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, If<'s>> {
+        let (p, c, a) = three(csts, args_pos)?;
         Ok(If {
             predicate: self.parse_expr(p)?,
             consequent: self.parse_expr(c)?,
@@ -558,8 +563,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse a sequence of token trees as the clauses of a `cond` special form
     ///
     /// Translate to nested `If`s
-    fn parse_cond(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
-        let (last, init) = split_last(csts, pos)?;
+    fn parse_cond(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Expr<'s>> {
+        let (last, init) = split_last(csts, args_pos)?;
         let else_val = self.parse_else_clause(last);
         init.iter().rev().fold(else_val, |alternative, c| {
             let (predicate, consequent) = self.parse_cond_clause(c)?;
@@ -603,8 +613,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of `CST`s as the parts of a `Lambda`
-    fn parse_lambda(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Lambda<'s>> {
-        let (a, b) = two(csts, pos)?;
+    fn parse_lambda(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Lambda<'s>> {
+        let (a, b) = two(csts, args_pos)?;
         let params_csts = sexpr(a)?;
         let params_pos = a.pos();
         let params = params_csts
@@ -730,8 +745,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a `let` special form and return as an invocation of a lambda
-    fn parse_let(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Let<'s>> {
-        let (a, b) = two(csts, &pos)?;
+    fn parse_let(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Let<'s>> {
+        let (a, b) = two(csts, args_pos)?;
         let binds_csts = sexpr(a)?;
         Ok(Let {
             bindings: self.parse_let_bindings(binds_csts)?,
@@ -746,8 +766,9 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         &mut self,
         csts: &[CST<'s>],
         pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
     ) -> PRes<'s, TypeAscript<'s>> {
-        let (a, b) = two(csts, pos)?;
+        let (a, b) = two(csts, args_pos)?;
         Ok(TypeAscript {
             typ: self.parse_type(b)?,
             expr: self.parse_expr(a)?,
@@ -756,8 +777,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of `CST`s as a `Cons` pair
-    fn parse_cons(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Cons<'s>> {
-        let (a, b) = two(csts, pos)?;
+    fn parse_cons(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Cons<'s>> {
+        let (a, b) = two(csts, args_pos)?;
         Ok(Cons {
             typ: self.gen_type_var(),
             car: self.parse_expr(a)?,
@@ -767,19 +793,29 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of `CST`s as a `car` operation
-    fn parse_car(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Car<'s>> {
+    fn parse_car(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Car<'s>> {
         Ok(Car {
             typ: self.gen_type_var(),
-            expr: self.parse_expr(one(csts, pos)?)?,
+            expr: self.parse_expr(one(csts, args_pos)?)?,
             pos: pos.clone(),
         })
     }
 
     /// Parse a list of `CST`s as a `cdr` operation
-    fn parse_cdr(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Cdr<'s>> {
+    fn parse_cdr(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Cdr<'s>> {
         Ok(Cdr {
             typ: self.gen_type_var(),
-            expr: self.parse_expr(one(csts, pos)?)?,
+            expr: self.parse_expr(one(csts, args_pos)?)?,
             pos: pos.clone(),
         })
     }
@@ -787,8 +823,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse a type cast
     ///
     /// `(cast VAL TYPE)`, e.g. `(cast (: 1 Int32) Int64)`
-    fn parse_cast(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Cast<'s>> {
-        let (a, b) = two(csts, pos)?;
+    fn parse_cast(
+        &mut self,
+        csts: &[CST<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Cast<'s>> {
+        let (a, b) = two(csts, args_pos)?;
         Ok(Cast {
             expr: self.parse_expr(a)?,
             typ: self.parse_type(b)?,
@@ -802,23 +843,29 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         tail: &[CST<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Expr<'s>> {
-        let form = ident_s(head)?;
-        match form {
-            "if" => Ok(Expr::If(Box::new(self.parse_if(tail, &pos)?))),
-            "lambda" => Ok(Expr::Lambda(Box::new(self.parse_lambda(tail, pos)?))),
-            "let" => Ok(Expr::Let(Box::new(self.parse_let(tail, pos)?))),
+        let form = ident(head)?;
+        let tail_pos = pos.after(&form.pos);
+        match form.s {
+            "if" => Ok(Expr::If(Box::new(self.parse_if(tail, pos, &tail_pos)?))),
+            "lambda" => Ok(Expr::Lambda(Box::new(self.parse_lambda(
+                tail,
+                pos,
+                &tail_pos,
+            )?))),
+            "let" => Ok(Expr::Let(Box::new(self.parse_let(tail, pos, &tail_pos)?))),
             ":" => Ok(Expr::TypeAscript(Box::new(self.parse_type_ascript(
                 tail,
                 pos,
+                &tail_pos,
             )?))),
-            "cons" => Ok(Expr::Cons(Box::new(self.parse_cons(tail, pos)?))),
-            "car" => Ok(Expr::Car(Box::new(self.parse_car(tail, pos)?))),
-            "cdr" => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos)?))),
-            "cast" => Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos)?))),
+            "cons" => Ok(Expr::Cons(Box::new(self.parse_cons(tail, pos, &tail_pos)?))),
+            "car" => Ok(Expr::Car(Box::new(self.parse_car(tail, pos, &tail_pos)?))),
+            "cdr" => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos, &tail_pos)?))),
+            "cast" => Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos, &tail_pos)?))),
 
             // "Macros"
-            "cond" => self.parse_cond(tail, pos),
-            _ => Err(NotASpecForm(head.pos().clone(), form)),
+            "cond" => self.parse_cond(tail, pos, &tail_pos),
+            _ => Err(NotASpecForm(form.pos.clone(), form.s)),
         }
     }
 
