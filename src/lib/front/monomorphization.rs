@@ -1,5 +1,5 @@
 use itertools::zip;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path;
 use lib::collections::*;
 use lib::front::*;
@@ -19,10 +19,12 @@ fn monomorphize_def_of_inst<'src>(
         // be numeric. As such, default args of (application of poly function to poly args)
         // to Int64
         *ts = ts.iter()
-            .map(|t| if !t.is_monomorphic() {
-                Type::Const("Int64", None)
-            } else {
-                t.clone()
+            .map(|t| {
+                if !t.is_monomorphic() {
+                    Type::Const("Int64", None)
+                } else {
+                    t.clone()
+                }
             })
             .collect::<Vec<_>>();
         if let TypeFunc::Poly(ref p) = **f {
@@ -66,8 +68,9 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
                 // already has been done, but we still need `def_mono` to continue
                 // our recursive monomorphization
                 {
-                    let dummy_expr =
-                        Expr::Nil(Nil { pos: SrcPos::new_pos(path::Path::new(""), "", 0) });
+                    let dummy_expr = Expr::Nil(Nil {
+                        pos: SrcPos::new_pos(path::Path::new(""), "", 0),
+                    });
                     let b = env.get_mut(var.ident.s).unwrap();
                     b.mono_insts.insert(arg_ts.clone(), dummy_expr);
                 }
@@ -122,8 +125,8 @@ fn monomorphize_defs_of_insts_in_let<'src>(
     body: &mut Expr<'src>,
     env: &mut ScopeStack<&'src str, Binding<'src>>,
 ) {
-    let mut monos = HashMap::new();
-    let mut bindings_flat_map = HashMap::new();
+    let mut monos = BTreeMap::new();
+    let mut bindings_flat_map = BTreeMap::new();
     for b in bindings.bindings() {
         if b.typ.is_monomorphic() {
             monos.insert(b.ident.s, b.val.clone());
@@ -149,6 +152,8 @@ fn monomorphize_defs_of_insts_in_let<'src>(
 
 /// Monomorphize definitions for monomorphic instantiations of variables in `bindings`
 pub fn monomorphize_defs_of_insts<'src>(globals: &mut TopologicallyOrderedDependencyGroups<'src>) {
-    let mut dummy_body = Expr::Nil(Nil { pos: SrcPos::new_pos(path::Path::new(""), "", 0) });
+    let mut dummy_body = Expr::Nil(Nil {
+        pos: SrcPos::new_pos(path::Path::new(""), "", 0),
+    });
     monomorphize_defs_of_insts_in_let(globals, &mut dummy_body, &mut ScopeStack::new());
 }

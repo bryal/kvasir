@@ -18,7 +18,7 @@ use lib::front::*;
 use lib::front::ast::*;
 use lib::front::monomorphization::*;
 use lib::front::substitution::*;
-use std::collections::{HashMap, BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
 use std::iter::{once, FromIterator};
 use itertools::{zip, Itertools};
@@ -39,45 +39,34 @@ enum InferenceErr<'src> {
 impl<'src> Display for InferenceErr<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            TypeMis(ref expected, ref found) => {
-                write!(
-                    f,
-                    "Type mismatch. Expected `{}`, found `{}`",
-                    expected,
-                    found
-                )
-            }
+            TypeMis(ref expected, ref found) => write!(
+                f,
+                "Type mismatch. Expected `{}`, found `{}`",
+                expected, found
+            ),
             TypeMisSub {
                 ref expected,
                 ref found,
                 ref sub_expected,
                 ref sub_found,
-            } => {
-                write!(
-                    f,
-                    "Type mismatch: Expected `{}`, found `{}`\n\
-                        Cannot infer or coerce `{}` to `{}`",
-                    expected,
-                    found,
-                    sub_found,
-                    sub_expected
-                )
-            }
-            ArmsDiffer(ref c, ref a) => {
-                write!(
-                    f,
-                    "Consequent and alternative have different types. Expected `{}` from \
-                        alternative, found `{}`",
-                    c,
-                    a
-                )
-            }
+            } => write!(
+                f,
+                "Type mismatch: Expected `{}`, found `{}`\n\
+                 Cannot infer or coerce `{}` to `{}`",
+                expected, found, sub_found, sub_expected
+            ),
+            ArmsDiffer(ref c, ref a) => write!(
+                f,
+                "Consequent and alternative have different types. Expected `{}` from \
+                 alternative, found `{}`",
+                c, a
+            ),
         }
     }
 }
 
 fn type_mis<'src>(
-    type_var_map: &mut HashMap<u64, Type<'src>>,
+    type_var_map: &mut BTreeMap<u64, Type<'src>>,
     expected: &Type<'src>,
     found: &Type<'src>,
 ) -> InferenceErr<'src> {
@@ -85,7 +74,7 @@ fn type_mis<'src>(
 }
 
 fn type_mis_sub<'src>(
-    type_var_map: &mut HashMap<u64, Type<'src>>,
+    type_var_map: &mut BTreeMap<u64, Type<'src>>,
     expected: &Type<'src>,
     found: &Type<'src>,
     sub_expected: &Type<'src>,
@@ -99,11 +88,10 @@ fn type_mis_sub<'src>(
     }
 }
 
-
 /// Returns whether type variable `t` occurs in type `u` with substitutions `s`
 ///
 /// Useful to check for circular type variable mappings
-fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
+fn occurs_in(t: u64, u: &Type, s: &BTreeMap<u64, Type>) -> bool {
     match *u {
         Type::Var(ref tv) if t == tv.id => true,
         Type::Var(ref tv) => s.get(&tv.id).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
@@ -122,17 +110,15 @@ fn occurs_in(t: u64, u: &Type, s: &HashMap<u64, Type>) -> bool {
 
 fn wrap_vars_types_in_apps_<'src>(
     e: &mut Expr<'src>,
-    vars: &mut HashMap<&'src str, Poly<'src>>,
+    vars: &mut BTreeMap<&'src str, Poly<'src>>,
     app_args: &[Type<'src>],
 ) {
     let wrap = |p: &Poly<'src>| Type::App(Box::new(TypeFunc::Poly(p.clone())), app_args.to_vec());
     match *e {
-        Expr::Variable(ref mut var) => {
-            match vars.get(var.ident.s) {
-                Some(p) => var.typ = wrap(p),
-                None => (),
-            }
-        }
+        Expr::Variable(ref mut var) => match vars.get(var.ident.s) {
+            Some(p) => var.typ = wrap(p),
+            None => (),
+        },
         Expr::App(ref mut app) => {
             wrap_vars_types_in_apps_(&mut app.func, vars, app_args);
             wrap_vars_types_in_apps_(&mut app.arg, vars, app_args);
@@ -180,7 +166,7 @@ fn wrap_vars_types_in_apps_<'src>(
 /// variable in an application
 fn wrap_vars_types_in_apps<'src>(
     e: &mut Expr<'src>,
-    vars: &mut HashMap<&'src str, Poly<'src>>,
+    vars: &mut BTreeMap<&'src str, Poly<'src>>,
     app_args: &[TVar<'src>],
 ) {
     let app_args_t = app_args.iter().collect::<Vec<_>>();
@@ -205,17 +191,17 @@ enum TypeDef {
 
 struct Inferrer<'a, 'src: 'a> {
     /// The environment of variables from let-bindings and function-parameters
-    var_env: HashMap<&'src str, Vec<Type<'src>>>,
+    var_env: BTreeMap<&'src str, Vec<Type<'src>>>,
     /// Declarations of external variables
     externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
     /// A map of free type variables to their instantiations
-    type_var_map: HashMap<u64, Type<'src>>,
+    type_var_map: BTreeMap<u64, Type<'src>>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'a mut TypeVarGen,
     /// A map of core types and used defined types
     ///
-    /// Numeric types, cons, (TODO) type aliases, (TODO) data type definitions
-    type_defs: HashMap<&'src str, TypeDef>,
+    /// Numeric types, cons, (TODO) type aliases, data type definitions
+    type_defs: BTreeMap<&'src str, TypeDef<'src>>,
 }
 
 impl<'a, 'src: 'a> Inferrer<'a, 'src> {
@@ -262,7 +248,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     /// Returns an iterator of all free type variables that occur in `p`
-    fn free_type_vars_poly(&self, p: &Poly<'src>) -> HashSet<TVar<'src>> {
+    fn free_type_vars_poly(&self, p: &Poly<'src>) -> BTreeSet<TVar<'src>> {
         let mut set = self.free_type_vars(&p.body);
         for tv in &p.params {
             set.remove(&tv);
@@ -271,7 +257,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     /// Returns an iterator of all free type variables that occur in `t`
-    fn free_type_vars(&self, t: &Type<'src>) -> HashSet<TVar<'src>> {
+    fn free_type_vars(&self, t: &Type<'src>) -> BTreeSet<TVar<'src>> {
         match *t {
             Type::Var(ref tv) => {
                 self.type_var_map
@@ -284,27 +270,25 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                             self.free_type_vars(u)
                         }
                     })
-                    .unwrap_or(HashSet::from_iter(once(tv.clone())))
+                    .unwrap_or(BTreeSet::from_iter(once(tv.clone())))
             }
-            Type::App(_, ref ts) => {
-                ts.iter()
-                    .flat_map(move |t2| self.free_type_vars(t2))
-                    .collect()
-            }
+            Type::App(_, ref ts) => ts.iter()
+                .flat_map(move |t2| self.free_type_vars(t2))
+                .collect(),
             Type::Poly(ref p) => self.free_type_vars_poly(p),
-            _ => HashSet::new(),
+            _ => BTreeSet::new(),
         }
     }
 
     /// Quantifying monotype variables in `t` that are not bound in the context
     ///
     /// Used for generalization.
-    fn free_type_vars_in_context(&self, t: &Type<'src>) -> HashSet<TVar<'src>> {
+    fn free_type_vars_in_context(&self, t: &Type<'src>) -> BTreeSet<TVar<'src>> {
         let env_type_vars = self.var_env
             .iter()
             .flat_map(|(_, v)| v.iter())
             .flat_map(|v_t| self.free_type_vars(v_t))
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         let t_type_vars = self.free_type_vars(t);
         t_type_vars.difference(&env_type_vars).cloned().collect()
     }
@@ -384,8 +368,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
         use self::Type::*;
         match (a, b) {
-            (&Var(ref tv), x) |
-            (x, &Var(ref tv)) if self.type_var_map.contains_key(&tv.id) => {
+            (&Var(ref tv), x) | (x, &Var(ref tv)) if self.type_var_map.contains_key(&tv.id) => {
                 let t = self.type_var_map[&tv.id].clone();
                 self.unify(&t, x)
             }
@@ -399,14 +382,11 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 Ok(b.clone())
             }
             (_, &Var { .. }) => self.unify(b, a),
-            (&App(box TypeFunc::Poly(ref p), ref ts), x) |
-            (x, &App(box TypeFunc::Poly(ref p), ref ts)) => {
+            (&App(box TypeFunc::Poly(ref p), ref ts), x)
+            | (x, &App(box TypeFunc::Poly(ref p), ref ts)) => {
                 assert_eq!(p.params.len(), ts.len());
-                self.type_var_map.extend(
-                    zip(&p.params, ts).map(|(param, t)| {
-                        (param.id, t.clone())
-                    }),
-                );
+                self.type_var_map
+                    .extend(zip(&p.params, ts).map(|(param, t)| (param.id, t.clone())));
                 let t = subst(&p.body, &mut self.type_var_map);
                 for param in &p.params {
                     self.type_var_map.remove(&param.id);
@@ -414,7 +394,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 self.unify(&t, x)
             }
             (&App(box TypeFunc::Const(c1), ref ts1), &App(box TypeFunc::Const(c2), ref ts2))
-                if c1 == c2 && ts1.len() == ts2.len() => {
+                if c1 == c2 && ts1.len() == ts2.len() =>
+            {
                 zip(ts1, ts2)
                     .map(|(t1, t2)| self.unify(t1, t2))
                     .collect::<Result<_, _>>()
@@ -424,8 +405,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 println!("unifying polytype: `{}` U `{}`", a, b);
                 unimplemented!()
             }
-            (&Const(t, ref pos), _) |
-            (_, &Const(t, ref pos)) if !self.type_defs.contains_key(t) => {
+            (&Const(t, ref pos), _) | (_, &Const(t, ref pos))
+                if !self.type_defs.contains_key(t) =>
+            {
                 pos.as_ref()
                     .expect("ICE: undefined type has no position")
                     .error_exit(format!("Type `{}` not found in this scope", t))
@@ -437,29 +419,20 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     /// Check that the expected type of a nil expression is unifiable with the nil type
     fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        self.unify(expected_type, &TYPE_NIL).unwrap_or_else(
-            |(e, f)| {
-                nil.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
-            },
-        )
+        self.unify(expected_type, &TYPE_NIL)
+            .unwrap_or_else(|(e, f)| nil.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Check that the expected type of a string literal is unifiable with the string type
     fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        self.unify(expected_type, &TYPE_STRING).unwrap_or_else(
-            |(e, f)| {
-                lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
-            },
-        )
+        self.unify(expected_type, &TYPE_STRING)
+            .unwrap_or_else(|(e, f)| lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Check that the expected type of a boolean literal is unifiable with the boolean type
     fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
-        self.unify(expected_type, &TYPE_BOOL).unwrap_or_else(
-            |(e, f)| {
-                b.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
-            },
-        )
+        self.unify(expected_type, &TYPE_BOOL)
+            .unwrap_or_else(|(e, f)| b.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Infer the type of a numeric literal
@@ -508,15 +481,14 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             let unif = self.unify(expected_type, &var.typ).unwrap_or_else(|_| {
                 var.ident.pos.error_exit(format!(
                     "Variable of type `{}` cannot be instantiated to expected type `{}`",
-                    typ,
-                    expected_type
+                    typ, expected_type
                 ))
             });
             unif
         } else if let Some(ext) = self.externs.get(var.ident.s) {
             // An extern. Check that type of extern is unifiable with expected type
-            var.typ = self.unify(expected_type, &ext.typ).unwrap_or_else(
-                |(e, f)| {
+            var.typ = self.unify(expected_type, &ext.typ)
+                .unwrap_or_else(|(e, f)| {
                     var.ident.pos.error_exit(type_mis_sub(
                         &mut self.type_var_map,
                         expected_type,
@@ -524,14 +496,12 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                         &e,
                         &f,
                     ))
-                },
-            );
+                });
             var.typ.clone()
         } else {
-            var.ident.pos.error_exit(format!(
-                "`{}` not found in this scope",
-                var.ident.s
-            ))
+            var.ident
+                .pos
+                .error_exit(format!("`{}` not found in this scope", var.ident.s))
         }
     }
 
@@ -551,11 +521,11 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let func_type = self.infer_expr(&mut app.func, &expected_func_type);
         let expected_arg_type = self.type_var_gen.gen_tv();
         let arg_type = self.infer_expr(&mut app.arg, &expected_arg_type);
-        let (func_param_type, func_ret_type) = func_type.get_func().expect(
-            "ICE: func_type was not func type in infer_app",
-        );
-        self.unify(func_param_type, &arg_type).unwrap_or_else(
-            |(e, f)| {
+        let (func_param_type, func_ret_type) = func_type
+            .get_func()
+            .expect("ICE: func_type was not func type in infer_app");
+        self.unify(func_param_type, &arg_type)
+            .unwrap_or_else(|(e, f)| {
                 app.arg.pos().error_exit(type_mis_sub(
                     &mut self.type_var_map,
                     func_param_type,
@@ -563,10 +533,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     &e,
                     &f,
                 ))
-            },
-        );
-        let ret_unification = self.unify(expected_type, func_ret_type).unwrap_or_else(
-            |(e, f)| {
+            });
+        let ret_unification = self.unify(expected_type, func_ret_type)
+            .unwrap_or_else(|(e, f)| {
                 app.pos.error_exit(type_mis_sub(
                     &mut self.type_var_map,
                     expected_type,
@@ -574,8 +543,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     &e,
                     &f,
                 ))
-            },
-        );
+            });
         app.typ = ret_unification;
         &app.typ
     }
@@ -590,9 +558,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let alternative_type = self.infer_expr(&mut cond.alternative, expected_typ);
         cond.typ = self.unify(&consequent_type, &alternative_type)
             .unwrap_or_else(|_| {
-                cond.pos.error_exit(
-                    ArmsDiffer(consequent_type, alternative_type),
-                )
+                cond.pos
+                    .error_exit(ArmsDiffer(consequent_type, alternative_type))
             });
         &cond.typ
     }
@@ -611,11 +578,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let func_type = Type::new_func(param_type.clone(), body_type);
         let (expected_param_type, expected_body_type) = self.unify(expected_type, &func_type)
             .unwrap_or_else(|_| {
-                lam.pos.error_exit(type_mis(
-                    &mut self.type_var_map,
-                    expected_type,
-                    &func_type,
-                ))
+                lam.pos
+                    .error_exit(type_mis(&mut self.type_var_map, expected_type, &func_type))
             })
             .get_func()
             .map(|(p, b)| (p.clone(), b.clone()))
@@ -626,9 +590,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
         let body_type = self.infer_expr(&mut lam.body, &expected_body_type);
 
-        lam.param_type = self.pop_var(lam.param_ident.s).expect(
-            "ICE: param gone from env in infer_lambda",
-        );
+        lam.param_type = self.pop_var(lam.param_ident.s)
+            .expect("ICE: param gone from env in infer_lambda");
         lam.typ = Type::new_func(lam.param_type.clone(), body_type.clone());
         &lam.typ
     }
@@ -653,8 +616,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             };
             binding.pos.error_exit(format!(
                 "Non-function value `{}` defined in terms of {}",
-                id,
-                refs_s
+                id, refs_s
             ))
         }
     }
@@ -691,7 +653,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     .unique()
                     .collect::<Vec<_>>();
                 if !frees.is_empty() {
-                    let mut vars_polys = HashMap::new();
+                    let mut vars_polys = BTreeMap::new();
                     for (id, binding) in bindings.iter_mut() {
                         let p = Poly {
                             params: frees.clone(),
@@ -729,9 +691,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         self.infer_bindings(&mut let_.bindings);
         let_.typ = self.infer_expr(&mut let_.body, expected_type).clone();
         for name in let_.bindings.ids() {
-            self.pop_var(name).unwrap_or_else(|| {
-                panic!("ICE: binding gone from var_env in infer_let")
-            });
+            self.pop_var(name)
+                .unwrap_or_else(|| panic!("ICE: binding gone from var_env in infer_let"));
         }
         &let_.typ
     }
@@ -773,9 +734,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     &arbitrary_cons_type,
                 ))
             });
-        let (expected_car_type, expected_cdr_type) = expected_type2.get_cons().expect(
-            "ICE: expected type not cons in infer_cons ",
-        );
+        let (expected_car_type, expected_cdr_type) = expected_type2
+            .get_cons()
+            .expect("ICE: expected type not cons in infer_cons ");
         let car_type = self.infer_expr(&mut cons.car, expected_car_type);
         let cdr_type = self.infer_expr(&mut cons.cdr, expected_cdr_type);
         cons.typ = Type::new_cons(car_type, cdr_type);
@@ -820,11 +781,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         let expected_from = self.type_var_gen.gen_tv();
         self.infer_expr(&mut cast.expr, &expected_from);
         cast.typ = self.unify(expected_type, &cast.typ).unwrap_or_else(|_| {
-            cast.pos.error_exit(type_mis(
-                &mut self.type_var_map,
-                expected_type,
-                &cast.typ,
-            ))
+            cast.pos
+                .error_exit(type_mis(&mut self.type_var_map, expected_type, &cast.typ))
         });
         &cast.typ
     }
@@ -845,7 +803,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Cons(ref mut cons) => self.infer_cons(cons, expected_type).clone(),
             Expr::Car(ref mut c) => self.infer_car(c, expected_type).clone(),
             Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
-            Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),            
+            Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),
         }
     }
 }
@@ -853,9 +811,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 fn assert_externs_monomorphic(externs: &BTreeMap<&str, ExternDecl>) {
     for ext in externs.values() {
         if !ext.typ.is_monomorphic() {
-            ext.pos.error_exit(
-                "Type of external declaration must be monomorphic",
-            )
+            ext.pos
+                .error_exit("Type of external declaration must be monomorphic")
         }
     }
 }

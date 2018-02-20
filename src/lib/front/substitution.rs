@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use lib::front::ast::*;
 
-fn subst_poly<'src>(p: &Poly<'src>, s: &mut HashMap<u64, Type<'src>>) -> Poly<'src> {
+fn subst_poly<'src>(p: &Poly<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Poly<'src> {
     let shadowed_mappings = p.params
         .iter()
         .filter_map(|tv| s.remove(&tv.id).map(|t| (tv.id, t)))
@@ -14,7 +14,7 @@ fn subst_poly<'src>(p: &Poly<'src>, s: &mut HashMap<u64, Type<'src>>) -> Poly<'s
     }
 }
 
-fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -> TypeFunc<'src> {
+fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> TypeFunc<'src> {
     match *f {
         TypeFunc::Const(c) => TypeFunc::Const(c),
         TypeFunc::Poly(ref p) => TypeFunc::Poly(subst_poly(p, s)),
@@ -22,26 +22,23 @@ fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut HashMap<u64, Type<'src>>) -
 }
 
 /// Apply substitutions in `s` to free type variables in `t`
-pub fn subst<'src>(t: &Type<'src>, s: &mut HashMap<u64, Type<'src>>) -> Type<'src> {
+pub fn subst<'src>(t: &Type<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Type<'src> {
     match *t {
-        Type::Var(ref tv) => {
-            s.get(&tv.id).cloned().map(|t2| subst(&t2, s)).unwrap_or(
-                t.clone(),
-            )
-        }
-        Type::App(ref c, ref ts) => {
-            Type::App(
-                Box::new(subst_type_func(c, s)),
-                ts.iter().map(|t2| subst(t2, s)).collect(),
-            )
-        }
+        Type::Var(ref tv) => s.get(&tv.id)
+            .cloned()
+            .map(|t2| subst(&t2, s))
+            .unwrap_or(t.clone()),
+        Type::App(ref c, ref ts) => Type::App(
+            Box::new(subst_type_func(c, s)),
+            ts.iter().map(|t2| subst(t2, s)).collect(),
+        ),
         Type::Poly(ref p) => Type::Poly(Box::new(subst_poly(p, s))),
         _ => t.clone(),
     }
 }
 
 /// Apply substitutions in `s` to type variables in types in `e`
-pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut HashMap<u64, Type<'src>>) {
+pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
     match *e {
         Expr::NumLit(ref mut n) => n.typ = subst(&n.typ, s),
         Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
