@@ -37,6 +37,8 @@ enum PErr<'s> {
     InvalidAdtConstrIdent(SrcPos<'s>, &'s str),
     /// Invalid algebraic data type variant
     InvalidAdtVariant(SrcPos<'s>),
+    /// Not a special form
+    NotASpecForm(SrcPos<'s>, &'s str),
     /// Duplicate constraints definition for type variable
     TVarDuplDef {
         pos: SrcPos<'s>,
@@ -94,6 +96,7 @@ impl<'s> PErr<'s> {
                 ),
             ),
             InvalidAdtVariant(ref pos) => pos.write_error(w, "Invalid Algebraic Data Type variant"),
+            NotASpecForm(ref pos, s) => pos.write_error(w, format!("Not a special form: `{}`", s)),
             TVarDuplDef {
                 ref pos,
                 name,
@@ -793,37 +796,46 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
+    fn parse_special_form(
+        &mut self,
+        head: &CST<'s>,
+        tail: &[CST<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Expr<'s>> {
+        let form = ident_s(head)?;
+        match form {
+            "if" => Ok(Expr::If(Box::new(self.parse_if(tail, &pos)?))),
+            "lambda" => Ok(Expr::Lambda(Box::new(self.parse_lambda(tail, pos)?))),
+            "let" => Ok(Expr::Let(Box::new(self.parse_let(tail, pos)?))),
+            ":" => Ok(Expr::TypeAscript(Box::new(self.parse_type_ascript(
+                tail,
+                pos,
+            )?))),
+            "cons" => Ok(Expr::Cons(Box::new(self.parse_cons(tail, pos)?))),
+            "car" => Ok(Expr::Car(Box::new(self.parse_car(tail, pos)?))),
+            "cdr" => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos)?))),
+            "cast" => Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos)?))),
+
+            // "Macros"
+            "cond" => self.parse_cond(tail, pos),
+            _ => Err(NotASpecForm(head.pos().clone(), form)),
+        }
+    }
+
+    /// Parse a sexpr as an expr
+    fn parse_sexpr_expr(&mut self, cs: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
+        if let Some((head, tail)) = cs.split_first() {
+            self.parse_special_form(head, tail, pos)
+                .or_else(|_| self.parse_app(head, tail, pos).map(|a| Expr::App(box a)))
+        } else {
+            Ok(Expr::Nil(Nil { pos: pos.clone() }))
+        }
+    }
+
     /// Parse a `CST` as an `Expr`
     fn parse_expr(&mut self, cst: &CST<'s>) -> PRes<'s, Expr<'s>> {
         match *cst {
-            CST::SExpr(ref sexpr, ref pos) => {
-                if let Some((head, tail)) = sexpr.split_first() {
-                    match *head {
-                        CST::Ident("if", _) => Ok(Expr::If(Box::new(self.parse_if(tail, &pos)?))),
-                        CST::Ident("lambda", _) => {
-                            Ok(Expr::Lambda(Box::new(self.parse_lambda(tail, pos)?)))
-                        }
-                        CST::Ident("let", _) => Ok(Expr::Let(Box::new(self.parse_let(tail, pos)?))),
-                        CST::Ident(":", _) => Ok(Expr::TypeAscript(Box::new(
-                            self.parse_type_ascript(tail, pos)?,
-                        ))),
-                        CST::Ident("cons", _) => {
-                            Ok(Expr::Cons(Box::new(self.parse_cons(tail, pos)?)))
-                        }
-                        CST::Ident("car", _) => Ok(Expr::Car(Box::new(self.parse_car(tail, pos)?))),
-                        CST::Ident("cdr", _) => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos)?))),
-                        CST::Ident("cast", _) => {
-                            Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos)?)))
-                        }
-
-                        // "Macros"
-                        CST::Ident("cond", _) => self.parse_cond(tail, pos),
-                        _ => Ok(Expr::App(Box::new(self.parse_app(&sexpr[0], tail, pos)?))),
-                    }
-                } else {
-                    Ok(Expr::Nil(Nil { pos: pos.clone() }))
-                }
-            }
+            CST::SExpr(ref sexpr, ref pos) => self.parse_sexpr_expr(sexpr, pos),
             CST::Ident("nil", ref pos) => Ok(Expr::Nil(Nil { pos: pos.clone() })),
             CST::Ident("true", ref pos) => Ok(Expr::Bool(Bool {
                 val: true,
