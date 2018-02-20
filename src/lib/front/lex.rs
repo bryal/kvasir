@@ -237,8 +237,8 @@ impl<'s> Iterator for Tokens<'s> {
                     continue;
                 }
                 '\'' => (Token::Quote, 1),
-                '(' => (Token::LParen, 1),
-                ')' => (Token::RParen, 1),
+                '(' | '[' => (Token::LParen, 1),
+                ')' | ']' => (Token::RParen, 1),
                 '"' => tokenize_str_lit(self.filename, self.src, i),
                 'r' if self.src[i + 1..].starts_with(|c: char| c == '"' || c == '#') => {
                     tokenize_raw_str_lit(self.filename, self.src, i)
