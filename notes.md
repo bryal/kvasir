@@ -67,3 +67,68 @@ Not sure what to do with const defs and maps. Should ConstDef contain a TypedBin
     `(match x ('(a ,(@ b (+ 3 2)) ,PI) ...))` would correspond to `match x { [a, b, c] if b == 3 + 2 && c == PI => ..., }`
 * Store definitions in a stack of scopes. Pop scopes until the def is found, then send remaining stack along when infering
 * Streaming tokenizer & parser
+
+
+## Match
+
+(match foo
+  [(Foo bar) (+ bar 1)]
+  [Bar       10])
+
+Idé: Gör match binär. Antingen matchar den ett mönster, eller så kör den default.
+     Likt cond för if.
+     Då blir det färre fall att tänka på, men kanske sämre prestanda?
+
+För att typinferensa, se till att alla högerled är samma typ, likt en cond.
+
+Vid match:
+  Om identifierare:
+    Some(Bind identifierare)
+  Annars om variant är rätt / konstruktor är samma:
+    Matcha barn mot barn
+  Annars:
+    None
+
+TODO: if and let can be implemented in terms of match. Vice versa?
+
+## Algebraic data types
+
+Shouldn't have "multiple" members. For products, use tuples (maybe
+anonymous structs / tuples with names fields later?).
+
+May allow for simple implementation of `match`?
+Just generate functions for variant testing and unwrapping:
+  def:
+    (define-data (Foo a)
+      (Three (a, a, a))
+      (One   a))
+  generate:
+    of-variant-Three    :: Three a -> Bool
+    unsafe-unwrap-Three :: Three a -> (a, a, a)
+
+## Algebraic data types and pattern matching
+
+If we generate functions or add special forms for testing variants and
+unwrapping constructors, I think we could implement `match` in terms
+of `if` and `let`
+
+foo = (Foo x (Bar y))
+
+(match foo
+  [(Foo a (Bar b))   (+ a b)]
+  [(Foo a _)         (+ a 1)]
+  [Baz               0])
+
+<=>
+
+(cond [(and (of-variant-Foo foo) (of-variant-Bar (cdr (unwrap-Foo foo))))
+       (let [[_1    (unwrap-Foo foo)]
+             [a     (car _1)]
+             [b     (unwrap-Bar (cdr _1))]]
+         (+ a b))]
+      [(of-variant-Foo foo)
+       (let [[_1    (unwrap-Foo foo)]
+             [a     (car _1)]]
+         (+ a 1))]
+      [(of-variant-Baz foo)
+       0])
