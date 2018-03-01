@@ -9,7 +9,7 @@ The project may be difficult to build and buggy to use./
 
 *** Example
 
-#+BEGIN_SRC scheme
+#+BEGIN_SRC racket
 ;; Exercise 1.16 in SICP
 ;;
 ;; An logarithmic implementation of exponentiation.
