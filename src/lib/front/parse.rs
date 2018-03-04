@@ -246,6 +246,15 @@ fn constant<'s, T: Eq>(x: T, y: T, err: PErr<'s>) -> PRes<'s, ()> {
     }
 }
 
+fn is_special_operator(op: &CST) -> bool {
+    let special_operators = [
+        "if", "lambda", "let", ":", "cons", "car", "cdr", "cast", "cond"
+    ];
+    ident_s(op)
+        .map(|s| special_operators.contains(&s))
+        .unwrap_or(false)
+}
+
 struct Parser<'tvg, 's> {
     /// An additive-only map of module file paths to source code strings
     sources: &'s AddMap<CanonPathBuf, String>,
@@ -872,8 +881,11 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse a sexpr as an expr
     fn parse_sexpr_expr(&mut self, cs: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
         if let Some((head, tail)) = cs.split_first() {
-            self.parse_special_form(head, tail, pos)
-                .or_else(|_| self.parse_app(head, tail, pos).map(|a| Expr::App(box a)))
+            if is_special_operator(head) {
+                self.parse_special_form(head, tail, pos)
+            } else {
+                self.parse_app(head, tail, pos).map(|a| Expr::App(box a))
+            }
         } else {
             Ok(Expr::Nil(Nil { pos: pos.clone() }))
         }
