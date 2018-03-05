@@ -14,9 +14,9 @@ pub struct CanonPathBuf(PathBuf);
 
 impl CanonPathBuf {
     pub fn new(path: &str) -> io::Result<Self> {
-        PathBuf::from(path).canonicalize().map(
-            |pb| CanonPathBuf(pb),
-        )
+        PathBuf::from(path)
+            .canonicalize()
+            .map(|pb| CanonPathBuf(pb))
     }
 
     pub fn path(&self) -> &Path {
@@ -31,5 +31,25 @@ impl CanonPathBuf {
 impl AsRef<Path> for CanonPathBuf {
     fn as_ref(&self) -> &Path {
         self.path()
+    }
+}
+
+pub struct ErrCode {
+    pub module: &'static str,
+    pub number: usize,
+}
+
+impl ErrCode {
+    pub fn undefined() -> Self {
+        ErrCode {
+            module: "UNDEFINED",
+            number: 0,
+        }
+    }
+}
+
+impl fmt::Display for ErrCode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}", self.module, self.number)
     }
 }

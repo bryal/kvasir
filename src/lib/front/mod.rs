@@ -3,6 +3,7 @@
 //       and can be executed in a step right after parsing. The functions take the current
 //       compiler state as an argument, and can manipulate the AST as well as attributes and such
 
+use lib::ErrCode;
 use std::cmp::min;
 use std::fmt::{self, Debug, Display};
 use std::iter::{once, repeat};
@@ -124,15 +125,19 @@ impl<'src> SrcPos<'src> {
             "ICE: In `after`, child and parent SrcPos are in different files"
         );
         let p_start = self.start;
-        let p_end = self.end.expect("ICE: Parent srcpos in `after` is not an interval");
+        let p_end = self.end
+            .expect("ICE: Parent srcpos in `after` is not an interval");
         let c_start = child.start;
         let c_end = child.end.unwrap_or(c_start);
-        assert!(c_start >= p_start && c_end <= p_end, "ICE: Child srcpos in `after` is not an element/subset of parent");
+        assert!(
+            c_start >= p_start && c_end <= p_end,
+            "ICE: Child srcpos in `after` is not an element/subset of parent"
+        );
         SrcPos {
             filename: self.filename,
             src: self.src,
             start: c_end,
-            end: Some(p_end)
+            end: Some(p_end),
         }
     }
 
@@ -172,7 +177,13 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    fn write_message<E: Display, W: Write>(&self, w: &mut W, msg: E, kind: &str, color: color::Color) {
+    fn write_message<E: Display, W: Write>(
+        &self,
+        w: &mut W,
+        msg: E,
+        kind: &str,
+        color: color::Color,
+    ) {
         let (line, line_len, row, col) = self.line_len_row_col();
         let mut t =
             TerminfoTerminal::new(w).expect("Failed to create terminfo terminal of writer `w`");
@@ -221,17 +232,17 @@ impl<'src> SrcPos<'src> {
     /// 84: let "foo" = 3
     ///         ^~~~
     /// ```
-    pub fn write_error<E: Display, W: io::Write>(&self, w: &mut W, msg: E) {
-        self.write_message(w, msg, "Error", color::BRIGHT_RED);
+    pub fn write_error<E: Display, W: io::Write>(&self, w: &mut W, code: ErrCode, msg: E) {
+        self.write_message(w, msg, &format!("Error[{}]", code), color::BRIGHT_RED);
     }
 
-    pub fn print_error<E: Display>(&self, msg: E) {
-        self.write_error(&mut io::stdout(), msg)
+    pub fn print_error<E: Display>(&self, code: ErrCode, msg: E) {
+        self.write_error(&mut io::stdout(), code, msg)
     }
 
     /// Like `SrcPos::error`, but exits after message has been printed
     pub fn error_exit<E: Display>(&self, msg: E) -> ! {
-        self.print_error(msg);
+        self.print_error(ErrCode::undefined(), msg);
         exit()
     }
 

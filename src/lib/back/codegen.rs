@@ -482,8 +482,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             // TODO: External non-function variable declarations?
             if decl.typ.get_func().is_none() {
                 decl.pos
-                    .print_error("Non-function externs not yet implemented");
-                unimplemented!()
+                    .error_exit("Non-function externs not yet implemented!")
             }
             env.externs.insert(
                 id.to_string(),
@@ -1144,7 +1143,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
                 if main.typ.is_monomorphic() {
                     main.pos.error_exit(error_msg)
                 } else {
-                    main.pos.print_error(error_msg);
+                    main.pos.print_error(::lib::ErrCode::undefined(), error_msg);
                     main.pos.print_help(
                         "Try adding type annotations to enforce correct type \
                          during type-checking.\n\

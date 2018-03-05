@@ -62,41 +62,85 @@ enum PErr<'s> {
 }
 
 impl<'s> PErr<'s> {
+    fn code(&self) -> ErrCode {
+        fn e(n: usize) -> ErrCode {
+            ErrCode {
+                module: "parse",
+                number: n,
+            }
+        }
+        match *self {
+            ArityMis(..) => e(0),
+            ArityMisTooFew(..) => e(1),
+            Expected(..) => e(2),
+            ExtDuplDef(..) => e(3),
+            UndefConstr(..) => e(4),
+            InvalidConstr(..) => e(5),
+            InvalidTVar(..) => e(6),
+            InvalidType(..) => e(7),
+            InvalidPatt(..) => e(8),
+            InvalidTopLevelItem(..) => e(9),
+            InvalidAdtIdent(..) => e(10),
+            InvalidAdtConstrIdent(..) => e(11),
+            InvalidAdtVariant(..) => e(12),
+            NotASpecForm(..) => e(13),
+            TVarDuplDef { .. } => e(14),
+            DataTypeDuplDef { .. } => e(15),
+            UndefTypeCon(..) => e(16),
+            VarDuplDef { .. } => e(17),
+        }
+    }
+
     fn write<W: Write>(&self, w: &mut W) {
+        let code = self.code();
         match *self {
             ArityMis(ref pos, expected, found) => pos.write_error(
                 w,
+                code,
                 format!("Arity mismatch. Expected {}, found {}", expected, found),
             ),
-            ArityMisTooFew(ref pos, found) => {
-                pos.write_error(w, format!("Arity mismatch. Expected more than {}", found))
-            }
-            Expected(ref pos, e) => pos.write_error(w, format!("Expected {}", e)),
+            ArityMisTooFew(ref pos, found) => pos.write_error(
+                w,
+                code,
+                format!("Arity mismatch. Expected more than {}", found),
+            ),
+            Expected(ref pos, e) => pos.write_error(w, code, format!("Expected {}", e)),
             ExtDuplDef(ref pos, e) => pos.write_error(
                 w,
+                code,
                 format!("Duplicate declaration of external variable `{}`", e),
             ),
-            UndefConstr(ref pos, s) => pos.write_error(w, format!("Undefined constraint {}", s)),
-            InvalidConstr(ref pos) => pos.write_error(w, "Invalid constraint"),
+            UndefConstr(ref pos, s) => {
+                pos.write_error(w, code, format!("Undefined constraint {}", s))
+            }
+            InvalidConstr(ref pos) => pos.write_error(w, code, "Invalid constraint"),
             InvalidTVar(ref pos) => pos.write_error(
                 w,
+                code,
                 "Invalid type variable. Type variable must begin with a lower case letter",
             ),
-            InvalidType(ref pos) => pos.write_error(w, "Invalid type"),
-            InvalidPatt(ref pos) => pos.write_error(w, "Invalid pattern"),
-            InvalidTopLevelItem(ref pos) => pos.write_error(w, "Invalid top level item"),
-            InvalidAdtIdent(ref pos, name) => {
-                pos.write_error(w, format!("Invalid Algebraic Data Type name `{}`", name))
-            }
+            InvalidType(ref pos) => pos.write_error(w, code, "Invalid type"),
+            InvalidPatt(ref pos) => pos.write_error(w, code, "Invalid pattern"),
+            InvalidTopLevelItem(ref pos) => pos.write_error(w, code, "Invalid top level item"),
+            InvalidAdtIdent(ref pos, name) => pos.write_error(
+                w,
+                code,
+                format!("Invalid Algebraic Data Type name `{}`", name),
+            ),
             InvalidAdtConstrIdent(ref pos, name) => pos.write_error(
                 w,
+                code,
                 format!(
                     "Invalid Algebraic Data Type variant constructor name `{}`",
                     name
                 ),
             ),
-            InvalidAdtVariant(ref pos) => pos.write_error(w, "Invalid Algebraic Data Type variant"),
-            NotASpecForm(ref pos, s) => pos.write_error(w, format!("Not a special form: `{}`", s)),
+            InvalidAdtVariant(ref pos) => {
+                pos.write_error(w, code, "Invalid Algebraic Data Type variant")
+            }
+            NotASpecForm(ref pos, s) => {
+                pos.write_error(w, code, format!("Not a special form: `{}`", s))
+            }
             TVarDuplDef {
                 ref pos,
                 name,
@@ -104,6 +148,7 @@ impl<'s> PErr<'s> {
             } => {
                 pos.write_error(
                     w,
+                    code,
                     format!(
                         "Type variable `{}` has already been defined in this scope",
                         name
@@ -124,6 +169,7 @@ impl<'s> PErr<'s> {
             } => {
                 pos.write_error(
                     w,
+                    code,
                     format!(
                         "Data type `{}` has already been defined in this scope",
                         name
@@ -132,7 +178,7 @@ impl<'s> PErr<'s> {
                 prev_pos.write_note(w, "The first definition of the data type is here:")
             }
             UndefTypeCon(ref pos, c) => {
-                pos.write_error(w, format!("Undefined type constructor `{}`", c))
+                pos.write_error(w, code, format!("Undefined type constructor `{}`", c))
             }
             VarDuplDef {
                 ref pos,
@@ -140,6 +186,7 @@ impl<'s> PErr<'s> {
                 ref prev_pos,
             } => pos.write_error(
                 w,
+                code,
                 format!(
                     "Conflicting definition of variable `{}`\n\
                      Previous definition here `{:?}`",
