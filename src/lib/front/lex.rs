@@ -5,10 +5,10 @@
 //       such as file name.
 
 use self::LexErr::*;
+use super::cst::Cst;
 use super::SrcPos;
 use lib::CanonPathBuf;
 use lib::collections::AddMap;
-use itertools::Itertools;
 use std::borrow::Cow;
 use std::path::Path;
 use std::fmt;
@@ -28,6 +28,7 @@ enum LexErr {
     UndelimItem,
     Unexpected(&'static str),
 }
+
 impl fmt::Display for LexErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -61,6 +62,24 @@ fn unescape_char(c: char) -> Option<char> {
     }
 }
 
+/// Whether `c` is a general delimiter, i.e. it delimits identifiers and numeric literals and such
+fn is_delim_char(c: char) -> bool {
+    match c {
+        '(' | ')' | '[' | ']' | '{' | '}' | ';' => true,
+        _ if c.is_whitespace() => true,
+        _ => false,
+    }
+}
+
+/// Returns whether `c` is a valid character of an ident
+fn is_ident_char(c: char) -> bool {
+    match c {
+        '"' => false,
+        _ if is_delim_char(c) => false,
+        _ => true,
+    }
+}
+
 /// *"A token is a structure representing a lexeme that explicitly indicates its categorization
 ///   for the purpose of parsing."*
 /// -- [Wikipedia](https://en.wikipedia.org/wiki/Lexical_analysis#Token)
@@ -85,9 +104,7 @@ enum Token<'src> {
 /// including delimiting characters, in the source.
 fn tokenize_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let mut s = String::new();
-
     let mut chars = src[start + 1..].char_indices();
-
     while let Some((i, c)) = chars.next() {
         match c {
             '\n' | '\t' => continue,
@@ -114,7 +131,6 @@ fn tokenize_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Toke
 fn tokenize_raw_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Token<'s>, usize) {
     let str_src = &src[start + 1..];
     let n_delim_octos = str_src.chars().take_while(|&c| c == '#').count();
-
     if let Some(first_after_octos) = str_src[n_delim_octos..].chars().next() {
         if first_after_octos != '"' {
             SrcPos::new_pos(filename, src, start + 1 + n_delim_octos)
@@ -124,11 +140,8 @@ fn tokenize_raw_str_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (
         SrcPos::new_interval(filename, src, start, start + 1 + n_delim_octos)
             .error_exit(UntermRawStr)
     }
-
     let delim_octos = &str_src[..n_delim_octos];
-
     let str_body_src = &str_src[n_delim_octos + 1..];
-
     for (i, c) in str_body_src.char_indices() {
         if c == '"' && str_body_src[i + 1..].starts_with(delim_octos) {
             // octos before and after + 'r' + open and end quotes + str len
@@ -147,7 +160,6 @@ fn tokenize_num_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Toke
     let mut has_e = false;
     let mut has_x = false;
     let mut prev_was_e = false;
-
     for (i, c) in src_num.char_indices() {
         match c {
             '_' => (),
@@ -167,24 +179,6 @@ fn tokenize_num_lit<'s>(filename: &'s Path, src: &'s str, start: usize) -> (Toke
         }
     }
     SrcPos::new_pos(filename, src, start).error_exit(InvalidNum)
-}
-
-/// Whether `c` is a general delimiter, i.e. it delimits identifiers and numeric literals and such
-fn is_delim_char(c: char) -> bool {
-    match c {
-        '(' | ')' | '[' | ']' | '{' | '}' | ';' => true,
-        _ if c.is_whitespace() => true,
-        _ => false,
-    }
-}
-
-/// Returns whether `c` is a valid character of an ident
-fn is_ident_char(c: char) -> bool {
-    match c {
-        '"' => false,
-        _ if is_delim_char(c) => false,
-        _ => true,
-    }
 }
 
 /// Tokenize the numeric literal in `src` at `start`.
@@ -208,16 +202,7 @@ struct Tokens<'s> {
     src: &'s str,
     pos: usize,
 }
-impl<'s> Tokens<'s> {
-    /// Construct a new iterator over the `Token`s of `src`
-    fn new(filename: &'s Path, src: &'s str) -> Self {
-        Tokens {
-            filename: filename,
-            src: src,
-            pos: 0,
-        }
-    }
-}
+
 impl<'s> Iterator for Tokens<'s> {
     type Item = (Token<'s>, SrcPos<'s>);
 
@@ -260,69 +245,30 @@ impl<'s> Iterator for Tokens<'s> {
     }
 }
 
-/// A tree of syntax items (Concrete Syntax Tree),
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CST<'s> {
-    /// An S-Expression.
-    SExpr(Vec<CST<'s>>, SrcPos<'s>),
-    /// An identifier.
-    Ident(&'s str, SrcPos<'s>),
-    /// A numeric literal.
-    Num(&'s str, SrcPos<'s>),
-    /// A string literal.
-    Str(Cow<'s, str>, SrcPos<'s>),
-}
-impl<'s> CST<'s> {
-    pub fn pos(&self) -> &SrcPos<'s> {
-        match *self {
-            CST::SExpr(_, ref p)
-            | CST::Ident(_, ref p)
-            | CST::Num(_, ref p)
-            | CST::Str(_, ref p) => p,
+/// Construct a new syntax tree from a token with a position, and the tokens following
+fn token_to_tree<'s>((token, mut pos): (Token<'s>, SrcPos<'s>), nexts: &mut Tokens<'s>) -> Cst<'s> {
+    match token {
+        Token::LParen => {
+            let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
+            pos.end = end;
+            Cst::Sexpr(list, pos)
         }
-    }
-
-    /// Construct a new syntax tree from a token with a position, and the tokens following
-    fn from_token((token, mut pos): (Token<'s>, SrcPos<'s>), nexts: &mut Tokens<'s>) -> Self {
-        match token {
-            Token::LParen => {
-                let (list, end) = tokens_to_trees_until(nexts, Some((pos.clone(), &Token::RParen)));
-                pos.end = end;
-                CST::SExpr(list, pos)
-            }
-            Token::Ident(ident) => CST::Ident(ident, pos),
-            Token::Num(num) => CST::Num(num, pos),
-            Token::Str(s) => CST::Str(s, pos),
-            Token::Quote => CST::SExpr(
-                vec![
-                    CST::Ident("quote", pos.clone()),
-                    CST::from_token(
-                        nexts
-                            .next()
-                            .unwrap_or_else(|| pos.error_exit(Unexpected("quote"))),
-                        nexts,
-                    ),
-                ],
-                pos,
-            ),
-            _ => pos.error_exit(Unexpected("token")),
-        }
-    }
-}
-impl<'s> fmt::Display for CST<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            CST::Ident(s, _) | CST::Num(s, _) => write!(f, "{}", s),
-            CST::Str(ref s, _) => write!(f, "{}", s),
-            CST::SExpr(ref v, _) => write!(
-                f,
-                "({})",
-                v.iter()
-                    .map(|e| e.to_string())
-                    .intersperse(" ".into())
-                    .collect::<String>()
-            ),
-        }
+        Token::Ident(ident) => Cst::Ident(ident, pos),
+        Token::Num(num) => Cst::Num(num, pos),
+        Token::Str(s) => Cst::Str(s, pos),
+        Token::Quote => Cst::Sexpr(
+            vec![
+                Cst::Ident("quote", pos.clone()),
+                token_to_tree(
+                    nexts
+                        .next()
+                        .unwrap_or_else(|| pos.error_exit(Unexpected("quote"))),
+                    nexts,
+                ),
+            ],
+            pos,
+        ),
+        _ => pos.error_exit(Unexpected("token")),
     }
 }
 
@@ -332,7 +278,7 @@ impl<'s> fmt::Display for CST<'s> {
 fn tokens_to_trees_until<'s>(
     tokens: &mut Tokens<'s>,
     start_and_delim: Option<(SrcPos, &Token)>,
-) -> (Vec<CST<'s>>, Option<usize>) {
+) -> (Vec<Cst<'s>>, Option<usize>) {
     let (start, delim) = start_and_delim
         .map(|(s, t)| (Some(s), Some(t)))
         .unwrap_or((None, None));
@@ -343,7 +289,7 @@ fn tokens_to_trees_until<'s>(
         if Some(&token) == delim {
             return (trees, token_pos.end);
         } else {
-            trees.push(CST::from_token((token, token_pos), tokens))
+            trees.push(token_to_tree((token, token_pos), tokens))
         }
     }
     match start {
@@ -353,15 +299,22 @@ fn tokens_to_trees_until<'s>(
 }
 
 /// Lex the source code as a Concrete Syntax Tree
-fn lex_src<'s>(filename: &'s Path, src: &'s str) -> Vec<CST<'s>> {
-    tokens_to_trees_until(&mut Tokens::new(filename, src), None).0
+fn lex_src<'s>(filename: &'s Path, src: &'s str) -> Vec<Cst<'s>> {
+    tokens_to_trees_until(
+        &mut Tokens {
+            filename,
+            src,
+            pos: 0,
+        },
+        None,
+    ).0
 }
 
 /// Lex the source code of the file `filename`
 pub fn lex_file<'s>(
     filename: CanonPathBuf,
     sources: &'s AddMap<CanonPathBuf, String>,
-) -> Vec<CST<'s>> {
+) -> Vec<Cst<'s>> {
     let mut src_code = String::new();
     File::open(filename.path())
         .expect(&format!(

@@ -1,7 +1,7 @@
 use self::PErr::*;
 use super::*;
 use super::ast::*;
-use super::lex::CST;
+use super::cst::Cst;
 use super::dependency_graph::*;
 use lib::CanonPathBuf;
 use lib::collections::AddMap;
@@ -168,7 +168,7 @@ enum Pattern<'s> {
 
 // Parser combinators
 
-fn n<'s, 'c>(n_: usize, cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c [CST<'s>]> {
+fn n<'s, 'c>(n_: usize, cs: &'c [Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c [Cst<'s>]> {
     if cs.len() == n_ {
         Ok(cs)
     } else {
@@ -176,28 +176,28 @@ fn n<'s, 'c>(n_: usize, cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c [CS
     }
 }
 
-fn one<'s, 'c>(cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c CST<'s>> {
+fn one<'s, 'c>(cs: &'c [Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c Cst<'s>> {
     n(1, cs, pos).map(|cs| &cs[0])
 }
 
-fn two<'s, 'c>(cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, (&'c CST<'s>, &'c CST<'s>)> {
+fn two<'s, 'c>(cs: &'c [Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, (&'c Cst<'s>, &'c Cst<'s>)> {
     n(2, cs, pos).map(|cs| (&cs[0], &cs[1]))
 }
 
 fn three<'s, 'c>(
-    cs: &'c [CST<'s>],
+    cs: &'c [Cst<'s>],
     pos: &SrcPos<'s>,
-) -> PRes<'s, (&'c CST<'s>, &'c CST<'s>, &'c CST<'s>)> {
+) -> PRes<'s, (&'c Cst<'s>, &'c Cst<'s>, &'c Cst<'s>)> {
     n(3, cs, pos).map(|cs| (&cs[0], &cs[1], &cs[2]))
 }
 
-fn pair<'s, 'c>(c: &'c CST<'s>) -> PRes<'s, (&'c CST<'s>, &'c CST<'s>)> {
+fn pair<'s, 'c>(c: &'c Cst<'s>) -> PRes<'s, (&'c Cst<'s>, &'c Cst<'s>)> {
     two(sexpr(c)?, c.pos())
 }
 
-fn ident<'s>(c: &CST<'s>) -> PRes<'s, Ident<'s>> {
+fn ident<'s>(c: &Cst<'s>) -> PRes<'s, Ident<'s>> {
     match *c {
-        CST::Ident(s, ref pos) => Ok(Ident {
+        Cst::Ident(s, ref pos) => Ok(Ident {
             s,
             pos: pos.clone(),
         }),
@@ -205,36 +205,36 @@ fn ident<'s>(c: &CST<'s>) -> PRes<'s, Ident<'s>> {
     }
 }
 
-fn ident_s<'s, 'c>(c: &'c CST<'s>) -> PRes<'s, &'s str> {
+fn ident_s<'s, 'c>(c: &'c Cst<'s>) -> PRes<'s, &'s str> {
     ident(c).map(|id| id.s)
 }
 
-fn sexpr<'s, 'c>(c: &'c CST<'s>) -> PRes<'s, &'c [CST<'s>]> {
+fn sexpr<'s, 'c>(c: &'c Cst<'s>) -> PRes<'s, &'c [Cst<'s>]> {
     match *c {
-        CST::SExpr(ref xs, _) => Ok(xs),
+        Cst::Sexpr(ref xs, _) => Ok(xs),
         _ => Err(Expected(c.pos().clone(), "sexpr")),
     }
 }
 
 fn split_first<'s, 'c>(
-    cs: &'c [CST<'s>],
+    cs: &'c [Cst<'s>],
     pos: &SrcPos<'s>,
-) -> PRes<'s, (&'c CST<'s>, &'c [CST<'s>])> {
+) -> PRes<'s, (&'c Cst<'s>, &'c [Cst<'s>])> {
     cs.split_first().ok_or(ArityMisTooFew(pos.clone(), 0))
 }
 
 fn split_last<'s, 'c>(
-    cs: &'c [CST<'s>],
+    cs: &'c [Cst<'s>],
     pos: &SrcPos<'s>,
-) -> PRes<'s, (&'c CST<'s>, &'c [CST<'s>])> {
+) -> PRes<'s, (&'c Cst<'s>, &'c [Cst<'s>])> {
     cs.split_last().ok_or(ArityMisTooFew(pos.clone(), 0))
 }
 
-fn first<'s, 'c>(cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c CST<'s>> {
+fn first<'s, 'c>(cs: &'c [Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c Cst<'s>> {
     split_first(cs, pos).map(|(f, _)| f)
 }
 
-fn last<'s, 'c>(cs: &'c [CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c CST<'s>> {
+fn last<'s, 'c>(cs: &'c [Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'c Cst<'s>> {
     split_last(cs, pos).map(|(l, _)| l)
 }
 
@@ -246,7 +246,7 @@ fn constant<'s, T: Eq>(x: T, y: T, err: PErr<'s>) -> PRes<'s, ()> {
     }
 }
 
-fn is_special_operator(op: &CST) -> bool {
+fn is_special_operator(op: &Cst) -> bool {
     let special_operators = [
         "if", "lambda", "let", ":", "cons", "car", "cdr", "cast", "cond"
     ];
@@ -282,10 +282,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Type::Var(self.gen_tvar())
     }
 
-    /// Parse a list of `CST`s as a module import
+    /// Parse a list of `Cst`s as a module import
     fn parse_import(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, (&'s str, SrcPos<'s>)> {
         let Ident { s, pos } = ident(one(csts, pos)?)?;
@@ -298,7 +298,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// (position of import statement, position of module name)
     fn parse_imports(
         &mut self,
-        imports_csts: &[(Vec<CST<'s>>, &SrcPos<'s>)],
+        imports_csts: &[(Vec<Cst<'s>>, &SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, (SrcPos<'s>, SrcPos<'s>)>> {
         let mut imports = BTreeMap::new();
         for &(ref import_csts, pos) in imports_csts {
@@ -311,8 +311,8 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(imports)
     }
 
-    /// Parse a list of `CST`s as an external variable declaration
-    fn parse_extern(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, ExternDecl<'s>> {
+    /// Parse a list of `Cst`s as an external variable declaration
+    fn parse_extern(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, ExternDecl<'s>> {
         let (a, b) = two(csts, pos)?;
         Ok(ExternDecl {
             ident: ident(a)?,
@@ -323,7 +323,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_externs(
         &mut self,
-        decls_csts: &[(Vec<CST<'s>>, SrcPos<'s>)],
+        decls_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, ExternDecl<'s>>> {
         let mut externs = BTreeMap::new();
         for &(ref decl_csts, ref pos) in decls_csts {
@@ -335,10 +335,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(externs)
     }
 
-    fn parse_constraint(&mut self, cst: &CST<'s>) -> PRes<'s, &'s str> {
+    fn parse_constraint(&mut self, cst: &Cst<'s>) -> PRes<'s, &'s str> {
         match *cst {
-            CST::Ident("Num", _) => Ok("Num"),
-            CST::Ident(s, ref pos) => Err(UndefConstr(pos.clone(), s)),
+            Cst::Ident("Num", _) => Ok("Num"),
+            Cst::Ident(s, ref pos) => Err(UndefConstr(pos.clone(), s)),
             _ => Err(InvalidConstr(cst.pos().clone())),
         }
     }
@@ -347,7 +347,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_constraints_def(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
         let (first, rest) = split_first(csts, pos)?;
@@ -380,7 +380,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_func_type(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
         let (ret, init) = split_last(csts, pos)?;
@@ -398,7 +398,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_cons_type(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
         let (a, b) = two(csts, pos)?;
@@ -410,7 +410,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_ptr_type(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
         self.parse_type_with_tvars(tvars, one(csts, pos)?)
@@ -420,7 +420,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_type_sexpr(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        app: &[CST<'s>],
+        app: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
         let (first, rest) = split_first(app, pos)?;
@@ -463,22 +463,22 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_type_with_tvars(
         &mut self,
         tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        tree: &CST<'s>,
+        tree: &Cst<'s>,
     ) -> PRes<'s, Type<'s>> {
         match *tree {
-            CST::SExpr(ref sexp, ref pos) => self.parse_type_sexpr(tvars, sexp, pos),
-            CST::Ident(s, ref pos) => self.parse_type_ident(tvars, s, &pos),
+            Cst::Sexpr(ref sexp, ref pos) => self.parse_type_sexpr(tvars, sexp, pos),
+            Cst::Ident(s, ref pos) => self.parse_type_ident(tvars, s, &pos),
             _ => Err(InvalidType(tree.pos().clone())),
         }
     }
 
     /// Parse a syntax tree as a `Type`
-    fn parse_type(&mut self, tree: &CST<'s>) -> PRes<'s, Type<'s>> {
+    fn parse_type(&mut self, tree: &Cst<'s>) -> PRes<'s, Type<'s>> {
         self.parse_type_with_tvars(&mut BTreeMap::new(), tree)
             .map(|t| t.canonicalize())
     }
 
-    fn parse_app_pattern(&mut self, app: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Pattern<'s>> {
+    fn parse_app_pattern(&mut self, app: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Pattern<'s>> {
         let (fst, rest) = split_first(app, pos)?;
         let f_id = ident(fst)?;
         let first_param = first(rest, pos)?;
@@ -489,13 +489,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a syntax tree as a Pattern
-    fn parse_pattern(&mut self, cst: &CST<'s>) -> PRes<'s, Pattern<'s>> {
+    fn parse_pattern(&mut self, cst: &Cst<'s>) -> PRes<'s, Pattern<'s>> {
         match *cst {
-            CST::Ident(s, ref pos) => Ok(Pattern::Var(Ident {
+            Cst::Ident(s, ref pos) => Ok(Pattern::Var(Ident {
                 s,
                 pos: pos.clone(),
             })),
-            CST::SExpr(ref app, ref pos) => self.parse_app_pattern(app, pos),
+            Cst::Sexpr(ref app, ref pos) => self.parse_app_pattern(app, pos),
             _ => Err(InvalidPatt(cst.pos().clone())),
         }
     }
@@ -523,12 +523,12 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    /// Parse a first `CST` and some following `CST`s as a procedure and some arguments,
+    /// Parse a first `Cst` and some following `Cst`s as a procedure and some arguments,
     /// i.e. a function application
     fn parse_app(
         &mut self,
-        func_cst: &CST<'s>,
-        args_csts: &[CST<'s>],
+        func_cst: &Cst<'s>,
+        args_csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, App<'s>> {
         let func = self.parse_expr(func_cst)?;
@@ -539,10 +539,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         self.new_multary_app(func, &args, &pos)
     }
 
-    /// Parse a list of `CST`s as parts of an `If` conditional
+    /// Parse a list of `Cst`s as parts of an `If` conditional
     fn parse_if(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, If<'s>> {
@@ -557,14 +557,14 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse the `else` clause of a `cond`
-    fn parse_else_clause(&mut self, cst: &CST<'s>) -> PRes<'s, Expr<'s>> {
+    fn parse_else_clause(&mut self, cst: &Cst<'s>) -> PRes<'s, Expr<'s>> {
         let (pred, conseq) = pair(cst)?;
         constant(ident_s(pred)?, "else", Expected(pred.pos().clone(), "else"))
             .and_then(|_| self.parse_expr(conseq))
     }
 
     /// Parse a clause of a `cond`
-    fn parse_cond_clause(&mut self, cst: &CST<'s>) -> PRes<'s, (Expr<'s>, Expr<'s>)> {
+    fn parse_cond_clause(&mut self, cst: &Cst<'s>) -> PRes<'s, (Expr<'s>, Expr<'s>)> {
         let (p, c) = pair(cst)?;
         Ok((self.parse_expr(p)?, self.parse_expr(c)?))
     }
@@ -574,7 +574,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Translate to nested `If`s
     fn parse_cond(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Expr<'s>> {
@@ -621,10 +621,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             }))
     }
 
-    /// Parse a list of `CST`s as the parts of a `Lambda`
+    /// Parse a list of `Cst`s as the parts of a `Lambda`
     fn parse_lambda(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Lambda<'s>> {
@@ -641,9 +641,9 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_binding(
         &mut self,
-        patt: &CST<'s>,
-        maybe_typ: Option<&CST<'s>>,
-        val: &CST<'s>,
+        patt: &Cst<'s>,
+        maybe_typ: Option<&Cst<'s>>,
+        val: &Cst<'s>,
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Binding<'s>> {
         let typ = maybe_typ
@@ -698,21 +698,21 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// ```
     fn parse_untyped_binding(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Binding<'s>> {
         let (patt, val) = two(csts, pos)?;
         self.parse_binding(patt, None, val, pos)
     }
 
-    fn parse_typed_binding(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Binding<'s>> {
+    fn parse_typed_binding(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Binding<'s>> {
         let (patt, typ, val) = three(csts, pos)?;
         self.parse_binding(patt, Some(typ), val, pos)
     }
 
     fn parse_bindings_to_flat_map(
         &mut self,
-        defs: &[(bool, &[CST<'s>], SrcPos<'s>)],
+        defs: &[(bool, &[Cst<'s>], SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, Binding<'s>>> {
         let mut bindings = BTreeMap::new();
         for &(is_typed, ref def_csts, ref pos) in defs {
@@ -735,7 +735,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_bindings(
         &mut self,
-        defs: &[(bool, &[CST<'s>], SrcPos<'s>)],
+        defs: &[(bool, &[Cst<'s>], SrcPos<'s>)],
     ) -> PRes<'s, TopologicallyOrderedDependencyGroups<'s>> {
         self.parse_bindings_to_flat_map(defs)
             .map(flat_bindings_to_topologically_ordered)
@@ -743,7 +743,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_let_bindings(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
     ) -> PRes<'s, TopologicallyOrderedDependencyGroups<'s>> {
         let mut bindings_csts = Vec::new();
         for cst in csts {
@@ -756,7 +756,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse a `let` special form and return as an invocation of a lambda
     fn parse_let(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Let<'s>> {
@@ -770,10 +770,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    /// Parse a list of `CST`s as a `TypeAscript`
+    /// Parse a list of `Cst`s as a `TypeAscript`
     fn parse_type_ascript(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, TypeAscript<'s>> {
@@ -785,10 +785,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    /// Parse a list of `CST`s as a `Cons` pair
+    /// Parse a list of `Cst`s as a `Cons` pair
     fn parse_cons(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Cons<'s>> {
@@ -801,10 +801,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    /// Parse a list of `CST`s as a `car` operation
+    /// Parse a list of `Cst`s as a `car` operation
     fn parse_car(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Car<'s>> {
@@ -815,10 +815,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    /// Parse a list of `CST`s as a `cdr` operation
+    /// Parse a list of `Cst`s as a `cdr` operation
     fn parse_cdr(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Cdr<'s>> {
@@ -834,7 +834,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// `(cast VAL TYPE)`, e.g. `(cast (: 1 Int32) Int64)`
     fn parse_cast(
         &mut self,
-        csts: &[CST<'s>],
+        csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, Cast<'s>> {
@@ -848,8 +848,8 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_special_form(
         &mut self,
-        head: &CST<'s>,
-        tail: &[CST<'s>],
+        head: &Cst<'s>,
+        tail: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Expr<'s>> {
         let form = ident(head)?;
@@ -879,7 +879,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a sexpr as an expr
-    fn parse_sexpr_expr(&mut self, cs: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
+    fn parse_sexpr_expr(&mut self, cs: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
         if let Some((head, tail)) = cs.split_first() {
             if is_special_operator(head) {
                 self.parse_special_form(head, tail, pos)
@@ -891,29 +891,29 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
-    /// Parse a `CST` as an `Expr`
-    fn parse_expr(&mut self, cst: &CST<'s>) -> PRes<'s, Expr<'s>> {
+    /// Parse a `Cst` as an `Expr`
+    fn parse_expr(&mut self, cst: &Cst<'s>) -> PRes<'s, Expr<'s>> {
         match *cst {
-            CST::SExpr(ref sexpr, ref pos) => self.parse_sexpr_expr(sexpr, pos),
-            CST::Ident("nil", ref pos) => Ok(Expr::Nil(Nil { pos: pos.clone() })),
-            CST::Ident("true", ref pos) => Ok(Expr::Bool(Bool {
+            Cst::Sexpr(ref sexpr, ref pos) => self.parse_sexpr_expr(sexpr, pos),
+            Cst::Ident("nil", ref pos) => Ok(Expr::Nil(Nil { pos: pos.clone() })),
+            Cst::Ident("true", ref pos) => Ok(Expr::Bool(Bool {
                 val: true,
                 pos: pos.clone(),
             })),
-            CST::Ident("false", ref pos) => Ok(Expr::Bool(Bool {
+            Cst::Ident("false", ref pos) => Ok(Expr::Bool(Bool {
                 val: false,
                 pos: pos.clone(),
             })),
-            CST::Ident(ident, ref pos) => Ok(Expr::Variable(Variable {
+            Cst::Ident(ident, ref pos) => Ok(Expr::Variable(Variable {
                 ident: Ident::new(ident, pos.clone()),
                 typ: self.gen_type_var(),
             })),
-            CST::Num(num, ref pos) => Ok(Expr::NumLit(NumLit {
+            Cst::Num(num, ref pos) => Ok(Expr::NumLit(NumLit {
                 lit: num,
                 typ: self.gen_type_var(),
                 pos: pos.clone(),
             })),
-            CST::Str(ref s, ref pos) => Ok(Expr::StrLit(StrLit {
+            Cst::Str(ref s, ref pos) => Ok(Expr::StrLit(StrLit {
                 lit: s.clone(),
                 typ: self.gen_type_var(),
                 pos: pos.clone(),
@@ -924,7 +924,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse the members of an algebraic data type variant
     fn parse_data_type_variant_members(
         &mut self,
-        cs: &[CST<'s>],
+        cs: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Vec<Type<'s>>> {
         first(cs, pos)?;
@@ -932,9 +932,9 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a variant of a data type definition
-    fn parse_data_type_variant(&mut self, c: &CST<'s>) -> PRes<'s, AdtVariant<'s>> {
+    fn parse_data_type_variant(&mut self, c: &Cst<'s>) -> PRes<'s, AdtVariant<'s>> {
         match *c {
-            CST::Ident(s, ref p) => Ok(AdtVariant {
+            Cst::Ident(s, ref p) => Ok(AdtVariant {
                 name: Ident {
                     s: s,
                     pos: p.clone(),
@@ -942,7 +942,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 members: vec![],
                 pos: p.clone(),
             }),
-            CST::SExpr(ref cs, ref p) => {
+            Cst::Sexpr(ref cs, ref p) => {
                 let (name_c, members_cs) = split_first(cs, p)?;
                 let name = ident(name_c)?;
                 if !name.s.starts_with(char::is_uppercase) {
@@ -960,12 +960,12 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of variants of a data type definition
-    fn parse_data_type_variants(&mut self, cs: &[CST<'s>]) -> PRes<'s, Vec<AdtVariant<'s>>> {
+    fn parse_data_type_variants(&mut self, cs: &[Cst<'s>]) -> PRes<'s, Vec<AdtVariant<'s>>> {
         cs.iter().map(|c| self.parse_data_type_variant(c)).collect()
     }
 
     /// Parse a data type definition
-    fn parse_data_type_def(&mut self, csts: &[CST<'s>], pos: &SrcPos<'s>) -> PRes<'s, AdtDef<'s>> {
+    fn parse_data_type_def(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, AdtDef<'s>> {
         let (name_c, variants_c) = split_first(csts, pos)?;
         let name = ident(name_c)?;
         if !name.s.starts_with(char::is_uppercase) {
@@ -980,7 +980,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_data_type_defs(
         &mut self,
-        defs_csts: &[(Vec<CST<'s>>, SrcPos<'s>)],
+        defs_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)],
     ) -> PRes<'s, BTreeMap<&'s str, AdtDef<'s>>> {
         let mut adts = BTreeMap::new();
         for &(ref def_csts, ref pos) in defs_csts {
@@ -999,10 +999,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn _get_top_level_csts<'c>(
         &mut self,
-        csts: &'c [CST<'s>],
-        externs: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-        globals: &mut Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
-        adts: &mut Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+        csts: &'c [Cst<'s>],
+        externs: &mut Vec<(Vec<Cst<'s>>, SrcPos<'s>)>,
+        globals: &mut Vec<(bool, Vec<Cst<'s>>, SrcPos<'s>)>,
+        adts: &mut Vec<(Vec<Cst<'s>>, SrcPos<'s>)>,
     ) -> PRes<'s, ()> {
         let mut imports_csts = Vec::new();
         for cst in csts {
@@ -1036,13 +1036,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Recursively follow imports and get top level csts from there as well
     fn get_top_level_csts<'c>(
         &mut self,
-        csts: &'c [CST<'s>],
+        csts: &'c [Cst<'s>],
     ) -> PRes<
         's,
         (
-            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
-            Vec<(bool, Vec<CST<'s>>, SrcPos<'s>)>,
-            Vec<(Vec<CST<'s>>, SrcPos<'s>)>,
+            Vec<(Vec<Cst<'s>>, SrcPos<'s>)>,
+            Vec<(bool, Vec<Cst<'s>>, SrcPos<'s>)>,
+            Vec<(Vec<Cst<'s>>, SrcPos<'s>)>,
         ),
     > {
         let (mut externs, mut globals, mut adts) = (Vec::new(), Vec::new(), Vec::new());
@@ -1050,7 +1050,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok((externs, globals, adts))
     }
 
-    fn parse_ast(&mut self, csts: &[CST<'s>]) -> PRes<'s, Ast<'s>> {
+    fn parse_ast(&mut self, csts: &[Cst<'s>]) -> PRes<'s, Ast<'s>> {
         let (externs_csts, globals_csts, adts_csts) = self.get_top_level_csts(csts)?;
         let globals_csts_slc = globals_csts
             .iter()
@@ -1093,13 +1093,13 @@ pub fn parse_program<'s>(
 #[cfg(test)]
 mod test {
     use lib::collections::AddMap;
-    use lib::front::lex::CST;
+    use lib::front::lex::Cst;
     use lib::front::*;
     use lib::front::ast::*;
     use super::Parser;
 
-    fn dummy_cident(s: &str) -> CST {
-        CST::Ident(s, SrcPos::new_dummy())
+    fn dummy_cident(s: &str) -> Cst {
+        Cst::Ident(s, SrcPos::new_dummy())
     }
 
     fn dummy_ident(s: &str) -> Ident {

@@ -13,8 +13,9 @@ use std::io::{self, Write};
 use term::{self, color, Terminal, TerminfoTerminal};
 use itertools::Itertools;
 
-pub mod dependency_graph;
+pub mod cst;
 pub mod lex;
+pub mod dependency_graph;
 pub mod ast;
 pub mod parse;
 pub mod inference;

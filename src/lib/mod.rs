@@ -1,6 +1,7 @@
 pub use self::collections::ScopeStack;
+use std::fmt;
 use std::io;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 
 #[macro_use]
 pub mod front;
