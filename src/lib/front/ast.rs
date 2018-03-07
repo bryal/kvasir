@@ -712,14 +712,15 @@ pub struct Cast<'src> {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct OfVariant<'src> {
     pub expr: Expr<'src>,
-    pub variant: &'src str,
+    pub variant: Ident<'src>,
     pub pos: SrcPos<'src>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct AsVariant<'src> {
     pub expr: Expr<'src>,
-    pub variant: &'src str,
+    pub variant: Ident<'src>,
+    pub typ: Type<'src>,
     pub pos: SrcPos<'src>,
 }
 
@@ -760,6 +761,8 @@ impl<'src> Expr<'src> {
             Expr::Car(ref c) => &c.pos,
             Expr::Cdr(ref c) => &c.pos,
             Expr::Cast(ref c) => &c.pos,
+            Expr::OfVariant(ref x) => &x.pos,
+            Expr::AsVariant(ref x) => &x.pos,
         }
     }
 
@@ -786,6 +789,8 @@ impl<'src> Expr<'src> {
             Expr::Car(ref c) => &c.typ,
             Expr::Cdr(ref c) => &c.typ,
             Expr::Cast(ref c) => &c.typ,
+            Expr::OfVariant(ref x) => &TYPE_BOOL,
+            Expr::AsVariant(ref x) => &x.typ,
         }
     }
 
@@ -835,6 +840,30 @@ pub struct AdtDef<'src> {
     pub pos: SrcPos<'src>,
 }
 
+/// Algebraic data type definitions
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Adts<'src> {
+    pub defs: BTreeMap<&'src str, AdtDef<'src>>,
+    /// Auxiliary map for quicker access to variants parent
+    pub variants: BTreeMap<&'src str, &'src str>,
+}
+
+impl<'src> Adts<'src> {
+    pub fn parent_adt_of_variant<'s>(&'s self, v: &str) -> &'s AdtDef<'src> {
+        self.variants
+            .get(v)
+            .and_then(|t| self.defs.get(t))
+            .expect("ICE: Tried to get parent adt of variant, but none existed")
+    }
+
+    pub fn parent_type_of_variant<'s>(&'s self, v: &str) -> Type<'src> {
+        self.variants
+            .get(v)
+            .map(|t| Type::Const(t, None))
+            .expect("ICE: Tried to get parent type of variant, but none existed")
+    }
+}
+
 /// A module of definitions and declarations of functions and variables
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Ast<'src> {
@@ -849,5 +878,5 @@ pub struct Ast<'src> {
     /// the groups are ordered topologically by inter-group dependency.
     pub globals: TopologicallyOrderedDependencyGroups<'src>,
     /// Algebraic Data Type definitions
-    pub adts: BTreeMap<&'src str, AdtDef<'src>>,
+    pub adts: Adts<'src>,
 }

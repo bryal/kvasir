@@ -96,6 +96,8 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Car(box ref c) => free_vars_in_expr(&c.expr),
         Cdr(box ref c) => free_vars_in_expr(&c.expr),
         Cast(ref c) => free_vars_in_expr(&c.expr),
+        OfVariant(ref x) => free_vars_in_expr(&x.expr),
+        AsVariant(ref x) => free_vars_in_expr(&x.expr),
     }
 }
 

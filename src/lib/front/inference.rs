@@ -158,6 +158,8 @@ fn wrap_vars_types_in_apps_<'src>(
         Expr::Cast(ref mut c) => {
             wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
         }
+        Expr::OfVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
+        Expr::AsVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
         Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
@@ -181,12 +183,12 @@ fn wrap_vars_types_in_apps<'src>(
 }
 
 /// The definition of a type name
-enum TypeDef<'src> {
+enum TypeDef {
     /// It's a core type that can be handled by the code generation backend. E.g. the numeric
     /// types `Int32`, `Float64`, etc.
     Core,
     /// An algebraic data type with variants and members
-    Adt(AdtDef<'src>),
+    Adt,
     // TODO: Type alias
 }
 
@@ -199,16 +201,18 @@ struct Inferrer<'a, 'src: 'a> {
     type_var_map: BTreeMap<u64, Type<'src>>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'a mut TypeVarGen,
+    /// Defined algebraic data types
+    adts: &'a Adts<'src>,
     /// A map of core types and used defined types
     ///
     /// Numeric types, cons, (TODO) type aliases, data type definitions
-    type_defs: BTreeMap<&'src str, TypeDef<'src>>,
+    type_defs: BTreeMap<&'src str, TypeDef>,
 }
 
 impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn new(
         externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
-        data_type_defs: &BTreeMap<&'src str, AdtDef<'src>>,
+        adts: &'a Adts<'src>,
         type_var_gen: &'a mut TypeVarGen,
     ) -> Self {
         use self::TypeDef::*;
@@ -229,16 +233,13 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 "Nil" => Core,
                 "RealWorld" => Core,
         };
-        type_defs.extend(
-            data_type_defs
-                .iter()
-                .map(|(&k, v)| (k, TypeDef::Adt(v.clone()))),
-        );
+        type_defs.extend(adts.defs.iter().map(|(&k, _)| (k, TypeDef::Adt)));
         Inferrer {
             var_env: BTreeMap::new(),
             externs,
             type_var_map: BTreeMap::new(),
             type_var_gen,
+            adts,
             type_defs,
         }
     }
@@ -795,6 +796,30 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &cast.typ
     }
 
+    fn infer_of_variant<'x>(
+        &mut self,
+        x: &'x mut OfVariant<'src>,
+        expected_type: &Type<'src>,
+    ) -> Type<'src> {
+        self.unify(expected_type, &TYPE_BOOL)
+            .unwrap_or_else(|(e, f)| x.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
+    }
+
+    fn infer_as_variant<'x>(
+        &mut self,
+        x: &'x mut AsVariant<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'x Type<'src> {
+        let expected_from = self.type_var_gen.gen_tv();
+        self.infer_expr(&mut x.expr, &expected_from);
+        x.typ = self.adts.parent_type_of_variant(x.variant.s);
+        x.typ = self.unify(expected_type, &x.typ).unwrap_or_else(|_| {
+            x.pos
+                .error_exit(type_mis(&mut self.type_var_map, expected_type, &x.typ))
+        });
+        &x.typ
+    }
+
     // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
         match *expr {
@@ -812,6 +837,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Car(ref mut c) => self.infer_car(c, expected_type).clone(),
             Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
             Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),
+            Expr::OfVariant(ref mut x) => self.infer_of_variant(x, expected_type).clone(),
+            Expr::AsVariant(ref mut x) => self.infer_as_variant(x, expected_type).clone(),
         }
     }
 }

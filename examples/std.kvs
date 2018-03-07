@@ -8,11 +8,12 @@
   (Cons UInt8 String))
 
 (define (concat s1 s2)
-  (cond [(of-variant-Empty s1) s2]
-        [else (let [[x     (unwrap-Cons s1)]
-                    [first (car x)]
-                    [rest  (cdr x)]]
-                (Cons first (concat rest s2)))]))
+  (if (of-variant? s1 Empty)
+      s2
+    (let [[x     (as-variant s1 Cons)]
+          [first (car x)]
+          [rest  (cdr x)]]
+      (Cons first (concat rest s2)))))
 
 ;;; Section Input/output
 

@@ -295,7 +295,17 @@ fn constant<'s, T: Eq>(x: T, y: T, err: PErr<'s>) -> PRes<'s, ()> {
 
 fn is_special_operator(op: &Cst) -> bool {
     let special_operators = [
-        "if", "lambda", "let", ":", "cons", "car", "cdr", "cast", "cond"
+        "if",
+        "lambda",
+        "let",
+        ":",
+        "cons",
+        "car",
+        "cdr",
+        "cast",
+        "cond",
+        "of-variant?",
+        "as-variant",
     ];
     ident_s(op)
         .map(|s| special_operators.contains(&s))
@@ -893,6 +903,41 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
+    /// Parse a variant test
+    ///
+    /// `(of-variant? VAL TYPE)`, e.g. `(of-variant? x Cons)`
+    fn parse_of_variant(
+        &mut self,
+        csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, OfVariant<'s>> {
+        let (a, b) = two(csts, args_pos)?;
+        Ok(OfVariant {
+            expr: self.parse_expr(a)?,
+            variant: ident(b)?,
+            pos: pos.clone(),
+        })
+    }
+
+    /// Parse a variant cast
+    ///
+    /// `(as-variant VAL TYPE)`, e.g. `(as-variant x Cons)`
+    fn parse_as_variant(
+        &mut self,
+        csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, AsVariant<'s>> {
+        let (a, b) = two(csts, args_pos)?;
+        Ok(AsVariant {
+            expr: self.parse_expr(a)?,
+            variant: ident(b)?,
+            typ: self.gen_type_var(),
+            pos: pos.clone(),
+        })
+    }
+
     fn parse_special_form(
         &mut self,
         head: &Cst<'s>,
@@ -918,6 +963,16 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             "car" => Ok(Expr::Car(Box::new(self.parse_car(tail, pos, &tail_pos)?))),
             "cdr" => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos, &tail_pos)?))),
             "cast" => Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos, &tail_pos)?))),
+            "of-variant?" => Ok(Expr::OfVariant(Box::new(self.parse_of_variant(
+                tail,
+                pos,
+                &tail_pos,
+            )?))),
+            "as-variant" => Ok(Expr::AsVariant(Box::new(self.parse_as_variant(
+                tail,
+                pos,
+                &tail_pos,
+            )?))),
 
             // "Macros"
             "cond" => self.parse_cond(tail, pos, &tail_pos),
@@ -1028,12 +1083,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_data_type_defs(
         &mut self,
         defs_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)],
-    ) -> PRes<'s, BTreeMap<&'s str, AdtDef<'s>>> {
-        let mut adts = BTreeMap::new();
+    ) -> PRes<'s, Adts<'s>> {
+        let mut defs = BTreeMap::new();
+        let mut variants = BTreeMap::new();
         for &(ref def_csts, ref pos) in defs_csts {
             let def = self.parse_data_type_def(def_csts, pos)?;
             let def_pos = def.pos.clone();
-            if let Some(prev_def) = adts.insert(def.name.s, def) {
+            if let Some(prev_def) = defs.insert(def.name.s, def) {
                 return Err(DataTypeDuplDef {
                     pos: def_pos,
                     name: prev_def.name.s,
@@ -1041,7 +1097,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 });
             }
         }
-        Ok(adts)
+        Ok(Adts { defs, variants })
     }
 
     fn _get_top_level_csts<'c>(
