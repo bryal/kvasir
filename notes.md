@@ -121,14 +121,16 @@ foo = (Foo x (Bar y))
 
 <=>
 
-(cond [(and (of-variant-Foo foo) (of-variant-Bar (cdr (unwrap-Foo foo))))
-       (let [[_1    (unwrap-Foo foo)]
+(cond [(and (of-variant? foo Foo) (of-variant? Bar (cdr (as-variant foo Foo))))
+       (let [[_1    (as-variant foo Foo)]
              [a     (car _1)]
-             [b     (unwrap-Bar (cdr _1))]]
+             [b     (as-variant (cdr _1) Bar)]]
          (+ a b))]
-      [(of-variant-Foo foo)
-       (let [[_1    (unwrap-Foo foo)]
+      [(of-variant? foo Foo)
+       (let [[_1    (as-variant foo Foo)]
              [a     (car _1)]]
          (+ a 1))]
-      [(of-variant-Baz foo)
+      [(of-variant? foo Baz)
        0])
+
+If `data` tag is always of size 16bit, easy way to cast is

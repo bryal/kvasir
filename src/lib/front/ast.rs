@@ -710,6 +710,20 @@ pub struct Cast<'src> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
+pub struct OfVariant<'src> {
+    pub expr: Expr<'src>,
+    pub variant: &'src str,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct AsVariant<'src> {
+    pub expr: Expr<'src>,
+    pub variant: &'src str,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -725,6 +739,8 @@ pub enum Expr<'src> {
     Car(Box<Car<'src>>),
     Cdr(Box<Cdr<'src>>),
     Cast(Box<Cast<'src>>),
+    OfVariant(Box<OfVariant<'src>>),
+    AsVariant(Box<AsVariant<'src>>),
 }
 
 impl<'src> Expr<'src> {

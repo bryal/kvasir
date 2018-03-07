@@ -79,20 +79,19 @@
 //       This would require some kind of interpretation in order to execute code at compile time
 
 #![feature(non_ascii_idents, box_syntax, box_patterns, conservative_impl_trait)]
-
 #![deny(missing_docs)]
 
+extern crate bitflags;
+extern crate cbox;
+extern crate getopts;
+extern crate itertools;
 #[macro_use]
 extern crate lazy_static;
-extern crate getopts;
-extern crate bitflags;
-extern crate term;
-extern crate llvm_sys;
-extern crate itertools;
 extern crate libc;
-extern crate cbox;
+extern crate llvm_sys;
 #[macro_use]
 extern crate maplit;
+extern crate term;
 
 use getopts::Options;
 use lib::CanonPathBuf;
@@ -168,21 +167,21 @@ fn main() {
     };
     let out_filename = matches
         .opt_str("o")
-        .map(|p| {
-            CanonPathBuf::new(&p).expect("Failed to canonicalize output filename")
-        })
+        .map(|p| CanonPathBuf::new(&p).expect("Failed to canonicalize output filename"))
         .unwrap_or(inp_filename.with_extension(BIN_EXT));
     {
-        let inp_file_dir = inp_filename.path().parent().expect(
-            "Failed to get parent dir of input file",
-        );
+        let inp_file_dir = inp_filename
+            .path()
+            .parent()
+            .expect("Failed to get parent dir of input file");
         env::set_current_dir(inp_file_dir).expect("Failed to change dir to dir of input file")
     }
 
     let explicit_out_filename = matches.opt_str("o").is_some();
-    let emission = matches.opt_str("emit").map(|s| s.into()).unwrap_or(
-        Emission::Exe,
-    );
+    let emission = matches
+        .opt_str("emit")
+        .map(|s| s.into())
+        .unwrap_or(Emission::Exe);
     let link_libs = matches.opt_strs("l");
     let lib_paths = matches.opt_strs("L");
 
@@ -191,6 +190,7 @@ fn main() {
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
     let sources = AddMap::new();
     let mut ast = parse_program(inp_filename, &sources, &mut type_var_generator);
+
     infer_types(&mut ast, &mut type_var_generator);
     //println!("inferred: {:#?}", ast);
     compile(
