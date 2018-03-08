@@ -12,7 +12,7 @@ The project may be difficult to build and buggy to use./
 #+BEGIN_SRC racket
 ;; Exercise 1.16 in SICP
 ;;
-;; An logarithmic implementation of exponentiation.
+;; A logarithmic implementation of exponentiation.
 ;; Uses iterative recursion to accumulate the answer.
 (define (expt b n)
   (let [[(iter acc b i)
