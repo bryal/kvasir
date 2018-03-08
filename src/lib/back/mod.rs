@@ -22,7 +22,7 @@ pub fn compile(
     let context = Context::new();
     let builder = Builder::new(&context);
     let module = Module::new("main", &context);
-    let mut codegenerator = CodeGenerator::new(&context, &builder, &module);
+    let mut codegenerator = CodeGenerator::new(&context, &builder, &module, ast.adts.clone());
 
     codegenerator.gen_executable(&ast);
 

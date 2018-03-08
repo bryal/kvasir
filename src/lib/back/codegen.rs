@@ -213,7 +213,7 @@ struct NamedTypes<'ctx> {
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
-pub struct CodeGenerator<'ctx> {
+pub struct CodeGenerator<'ctx, 'src> {
     ctx: &'ctx Context,
     pub module: &'ctx Module,
     builder: &'ctx Builder,
@@ -221,20 +221,27 @@ pub struct CodeGenerator<'ctx> {
     current_func: RefCell<Option<&'ctx Function>>,
     current_block: RefCell<Option<&'ctx BasicBlock>>,
     named_types: NamedTypes<'ctx>,
+    adts: ast::Adts<'src>,
 }
-impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
-    pub fn new(ctx: &'ctx Context, builder: &'ctx Builder, module: &'ctx Module) -> Self {
+impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
+    pub fn new(
+        ctx: &'ctx Context,
+        builder: &'ctx Builder,
+        module: &'ctx Module,
+        adts: ast::Adts<'src>,
+    ) -> Self {
         let named_types = NamedTypes {
             real_world: StructType::new_named(ctx, "RealWorld", &[], false),
             nil: StructType::new_named(ctx, "Nil", &[], false),
         };
         CodeGenerator {
-            ctx: ctx,
-            module: module,
-            builder: builder,
+            ctx,
+            module,
+            builder,
             current_func: RefCell::new(None),
             current_block: RefCell::new(None),
-            named_types: named_types,
+            named_types,
+            adts,
         }
     }
 
@@ -1078,6 +1085,43 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
         })
     }
 
+    /// Generate LLVM IR for the test of whether an algebraic data
+    /// type value is of a specific variant
+    fn gen_of_variant(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        test: &'ast ast::OfVariant<'src>,
+    ) -> &'ctx Value {
+        let expected_i = (self.adts.variant_index(test.variant.s) as u16).compile(self.ctx);
+        let val = self.gen_expr(env, &test.expr, Some("val"));
+        let found_i = self.builder.build_extract_value(val, 0);
+        self.builder.build_eq(expected_i, found_i)
+    }
+
+    fn gen_as_variant(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        as_v: &'ast ast::AsVariant<'src>,
+    ) -> &'ctx Value {
+        // TODO: I don't really like this implementation.
+        //         Store -> GEP -> load,
+        //       seems like an awfully wasteful procedure.
+        //       Could it be done like:
+        //         Cast to correct type with padding (to keep same size) -> extractvalue
+        //       or somesuch, instead?
+        let wrapped = self.gen_expr(env, &as_v.expr, Some("val-wrapped"));
+        let wrapped_stack = self.builder.build_alloca(wrapped.get_type());
+        self.builder.build_store(wrapped, wrapped_stack);
+        let unwrapped_stack_generic = self.builder.build_gep(
+            wrapped_stack,
+            &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
+        );
+        let unwrapped_type = self.gen_type(&self.adts.type_of_variant(as_v.variant.s));
+        let unwrapped_stack = self.builder
+            .build_bit_cast(unwrapped_stack_generic, PointerType::new(unwrapped_type));
+        self.builder.build_load(unwrapped_stack)
+    }
+
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(
         &self,
@@ -1102,6 +1146,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx> {
             Expr::Car(ref c) => self.gen_car(env, c),
             Expr::Cdr(ref c) => self.gen_cdr(env, c),
             Expr::Cast(ref c) => self.gen_cast(env, c),
+            Expr::OfVariant(ref x) => self.gen_of_variant(env, x),
+            Expr::AsVariant(ref x) => self.gen_as_variant(env, x),
         }
     }
 

@@ -132,6 +132,17 @@ impl<'src> Type<'src> {
         Type::App(Box::new(TypeFunc::Const("Cons")), vec![car_typ, cdr_typ])
     }
 
+    pub fn new_tuple(types: &[Type<'src>]) -> Self {
+        if let Some((last, init)) = types.split_last() {
+            init.iter()
+                .rev()
+                .cloned()
+                .fold(last.clone(), |acc, t| Type::new_cons(t, acc))
+        } else {
+            TYPE_NIL.clone()
+        }
+    }
+
     pub fn new_ptr(typ: Type<'src>) -> Self {
         Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
     }
@@ -789,7 +800,7 @@ impl<'src> Expr<'src> {
             Expr::Car(ref c) => &c.typ,
             Expr::Cdr(ref c) => &c.typ,
             Expr::Cast(ref c) => &c.typ,
-            Expr::OfVariant(ref x) => &TYPE_BOOL,
+            Expr::OfVariant(_) => &TYPE_BOOL,
             Expr::AsVariant(ref x) => &x.typ,
         }
     }
@@ -861,6 +872,26 @@ impl<'src> Adts<'src> {
             .get(v)
             .map(|t| Type::Const(t, None))
             .expect("ICE: Tried to get parent type of variant, but none existed")
+    }
+
+    pub fn adt_variant_of_name<'s>(&'s self, v: &str) -> &'s AdtVariant<'src> {
+        self.parent_adt_of_variant(v)
+            .variants
+            .iter()
+            .find(|av| av.name.s == v)
+            .expect("ICE: No AdtVariant with same name as variant string")
+    }
+
+    pub fn type_of_variant(&self, v: &str) -> Type<'src> {
+        Type::new_tuple(&self.adt_variant_of_name(v).members)
+    }
+
+    pub fn variant_index(&self, v: &str) -> usize {
+        let adt = self.parent_adt_of_variant(v);
+        adt.variants
+            .iter()
+            .position(|av| av.name.s == v)
+            .expect("ICE: No AdtVariant with same name as variant string in variant_index")
     }
 }
 

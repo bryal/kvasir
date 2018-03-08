@@ -59,6 +59,12 @@ enum PErr<'s> {
         name: &'s str,
         prev_pos: SrcPos<'s>,
     },
+    /// Duplicate definition of data type constructor
+    DataConstrDuplDef {
+        pos: SrcPos<'s>,
+        name: &'s str,
+        prev_pos: SrcPos<'s>,
+    },
 }
 
 impl<'s> PErr<'s> {
@@ -88,6 +94,7 @@ impl<'s> PErr<'s> {
             DataTypeDuplDef { .. } => e(15),
             UndefTypeCon(..) => e(16),
             VarDuplDef { .. } => e(17),
+            DataConstrDuplDef { .. } => e(18),
         }
     }
 
@@ -193,6 +200,21 @@ impl<'s> PErr<'s> {
                     name, prev_pos,
                 ),
             ),
+            DataConstrDuplDef {
+                ref pos,
+                name,
+                ref prev_pos,
+            } => {
+                pos.write_error(
+                    w,
+                    code,
+                    format!(
+                        "Data type constructor `{}` has already been defined in this scope",
+                        name
+                    ),
+                );
+                prev_pos.write_note(w, "The previous definition of the constructor is here:")
+            }
         }
     }
 
@@ -1084,20 +1106,32 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         &mut self,
         defs_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)],
     ) -> PRes<'s, Adts<'s>> {
-        let mut defs = BTreeMap::new();
-        let mut variants = BTreeMap::new();
+        let mut adts = Adts {
+            defs: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        };
         for &(ref def_csts, ref pos) in defs_csts {
             let def = self.parse_data_type_def(def_csts, pos)?;
-            let def_pos = def.pos.clone();
-            if let Some(prev_def) = defs.insert(def.name.s, def) {
+            if let Some(prev_def) = adts.defs.insert(def.name.s, def.clone()) {
                 return Err(DataTypeDuplDef {
-                    pos: def_pos,
+                    pos: def.pos,
                     name: prev_def.name.s,
                     prev_pos: prev_def.pos.clone(),
                 });
             }
+            for variant in &def.variants {
+                if !adts.variants.contains_key(variant.name.s) {
+                    adts.variants.insert(variant.name.s, def.name.s);
+                } else {
+                    return Err(DataConstrDuplDef {
+                        pos: variant.pos.clone(),
+                        name: variant.name.s,
+                        prev_pos: adts.adt_variant_of_name(variant.name.s).pos.clone(),
+                    });
+                }
+            }
         }
-        Ok(Adts { defs, variants })
+        Ok(adts)
     }
 
     fn _get_top_level_csts<'c>(
