@@ -1126,7 +1126,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                     return Err(DataConstrDuplDef {
                         pos: variant.pos.clone(),
                         name: variant.name.s,
-                        prev_pos: adts.adt_variant_of_name(variant.name.s).pos.clone(),
+                        prev_pos: adts.adt_variant_of_name(variant.name.s)
+                            .expect("ICE: No adt_variant_of_name")
+                            .pos
+                            .clone(),
                     });
                 }
             }

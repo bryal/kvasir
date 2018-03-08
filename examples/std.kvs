@@ -5,15 +5,15 @@
 
 (data String
   Empty
-  (Cons UInt8 String))
+  (StrCons UInt8 String))
 
 (define (concat s1 s2)
   (if (of-variant? s1 Empty)
       s2
-    (let [[x     (as-variant s1 Cons)]
+    (let [[x     (as-variant s1 StrCons)]
           [first (car x)]
           [rest  (cdr x)]]
-      (Cons first (concat rest s2)))))
+      (StrCons first (concat rest s2)))))
 
 ;;; Section Input/output
 

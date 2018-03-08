@@ -1092,7 +1092,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         env: &mut Env<'src, 'ctx>,
         test: &'ast ast::OfVariant<'src>,
     ) -> &'ctx Value {
-        let expected_i = (self.adts.variant_index(test.variant.s) as u16).compile(self.ctx);
+        let e_i = self.adts
+            .variant_index(test.variant.s)
+            .expect("ICE: No variant_index in gen_of_variant");
+        let expected_i = (e_i as u16).compile(self.ctx);
         let val = self.gen_expr(env, &test.expr, Some("val"));
         let found_i = self.builder.build_extract_value(val, 0);
         self.builder.build_eq(expected_i, found_i)
@@ -1116,7 +1119,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             wrapped_stack,
             &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
         );
-        let unwrapped_type = self.gen_type(&self.adts.type_of_variant(as_v.variant.s));
+        let unwrapped_type = self.gen_type(&self.adts
+            .type_of_variant(as_v.variant.s)
+            .expect("ICE: No type_of_variant in gen_as_variant"));
         let unwrapped_stack = self.builder
             .build_bit_cast(unwrapped_stack_generic, PointerType::new(unwrapped_type));
         self.builder.build_load(unwrapped_stack)

@@ -121,6 +121,13 @@ impl<'src> Type<'src> {
         Type::App(Box::new(TypeFunc::Const("->")), vec![arg, ret])
     }
 
+    pub fn new_currying_func(args: &[Type<'src>], ret: Type<'src>) -> Self {
+        args.iter()
+            .rev()
+            .cloned()
+            .fold(ret, |acc, t| Type::new_func(t, acc))
+    }
+
     pub fn new_io(ret: Type<'src>) -> Self {
         Type::new_func(
             TYPE_REALWORLD.clone(),
@@ -860,38 +867,33 @@ pub struct Adts<'src> {
 }
 
 impl<'src> Adts<'src> {
-    pub fn parent_adt_of_variant<'s>(&'s self, v: &str) -> &'s AdtDef<'src> {
-        self.variants
-            .get(v)
-            .and_then(|t| self.defs.get(t))
-            .expect("ICE: Tried to get parent adt of variant, but none existed")
+    pub fn parent_adt_of_variant<'s>(&'s self, v: &str) -> Option<&'s AdtDef<'src>> {
+        self.variants.get(v).and_then(|t| self.defs.get(t))
     }
 
-    pub fn parent_type_of_variant<'s>(&'s self, v: &str) -> Type<'src> {
-        self.variants
-            .get(v)
-            .map(|t| Type::Const(t, None))
-            .expect("ICE: Tried to get parent type of variant, but none existed")
+    pub fn parent_type_of_variant<'s>(&'s self, v: &str) -> Option<Type<'src>> {
+        self.variants.get(v).map(|t| Type::Const(t, None))
     }
 
-    pub fn adt_variant_of_name<'s>(&'s self, v: &str) -> &'s AdtVariant<'src> {
+    pub fn adt_variant_of_name<'s>(&'s self, v: &str) -> Option<&'s AdtVariant<'src>> {
         self.parent_adt_of_variant(v)
-            .variants
-            .iter()
-            .find(|av| av.name.s == v)
-            .expect("ICE: No AdtVariant with same name as variant string")
+            .and_then(|parent_adt| parent_adt.variants.iter().find(|av| av.name.s == v))
     }
 
-    pub fn type_of_variant(&self, v: &str) -> Type<'src> {
-        Type::new_tuple(&self.adt_variant_of_name(v).members)
+    pub fn type_of_variant(&self, v: &str) -> Option<Type<'src>> {
+        self.adt_variant_of_name(v)
+            .map(|adt_variant| Type::new_tuple(&adt_variant.members))
     }
 
-    pub fn variant_index(&self, v: &str) -> usize {
-        let adt = self.parent_adt_of_variant(v);
-        adt.variants
-            .iter()
-            .position(|av| av.name.s == v)
-            .expect("ICE: No AdtVariant with same name as variant string in variant_index")
+    pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'src>> {
+        let adt_variant = self.adt_variant_of_name(v)?;
+        let parent_type = self.parent_type_of_variant(v)?;
+        Some(Type::new_currying_func(&adt_variant.members, parent_type))
+    }
+
+    pub fn variant_index(&self, v: &str) -> Option<usize> {
+        let adt = self.parent_adt_of_variant(v)?;
+        adt.variants.iter().position(|av| av.name.s == v)
     }
 }
 

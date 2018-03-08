@@ -507,6 +507,17 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     ))
                 });
             var.typ.clone()
+        } else if let Some(t) = self.adts.constructor_type_of_variant(var.ident.s) {
+            var.typ = self.unify(expected_type, &t).unwrap_or_else(|(e, f)| {
+                var.ident.pos.error_exit(type_mis_sub(
+                    &mut self.type_var_map,
+                    expected_type,
+                    &t,
+                    &e,
+                    &f,
+                ))
+            });
+            var.typ.clone()
         } else {
             var.ident
                 .pos
@@ -812,7 +823,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     ) -> &'x Type<'src> {
         let expected_from = self.type_var_gen.gen_tv();
         self.infer_expr(&mut x.expr, &expected_from);
-        x.typ = self.adts.parent_type_of_variant(x.variant.s);
+        x.typ = self.adts
+            .type_of_variant(x.variant.s)
+            .expect("ICE: No type_of_variant in infer_as_variant");
         x.typ = self.unify(expected_type, &x.typ).unwrap_or_else(|_| {
             x.pos
                 .error_exit(type_mis(&mut self.type_var_map, expected_type, &x.typ))
