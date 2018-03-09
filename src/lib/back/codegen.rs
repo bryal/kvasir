@@ -631,14 +631,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_str(&self, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
-        let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
-        let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
-        str_const.set_constant(true);
-        let str_ptr = self.builder.build_gep(
-            str_const,
-            &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
-        );
-        self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr])
+        panic!("ICE: Strings don't work atm, due to conversion to use ADTs")
+        // let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
+        // let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
+        // str_const.set_constant(true);
+        // let str_ptr = self.builder.build_gep(
+        //     str_const,
+        //     &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
+        // );
+        // self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr])
     }
 
     /// Generate IR for a variable used as an r-value
