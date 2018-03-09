@@ -29,16 +29,6 @@ fn type_rc<'ctx>(ctx: &'ctx Context, contents: &'ctx Type) -> &'ctx Type {
     ))
 }
 
-/// A generic reference counted pointer.
-///
-/// A pointer to the 64-bit reference count integer, and an `i8` to represent the
-/// following, variable sized contents
-///
-/// `{i64, i8}*`
-fn type_rc_generic<'ctx>(ctx: &'ctx Context) -> &'ctx Type {
-    type_rc(ctx, Type::get::<u8>(ctx))
-}
-
 /// Returns the unit set of the single element `x`
 fn set_of<T: cmp::Ord>(x: T) -> BTreeSet<T> {
     once(x).collect()
@@ -218,6 +208,8 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
 struct NamedTypes<'ctx, 'src> {
     nil: &'ctx Type,
     real_world: &'ctx Type,
+    rc_generic_inner: &'ctx Type,
+    rc_generic: &'ctx Type,
     adts: BTreeMap<&'src str, &'ctx Type>,
 }
 
@@ -240,9 +232,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         module: &'ctx Module,
         adts: ast::Adts<'src>,
     ) -> Self {
+        let rc_generic_inner = StructType::new_named(
+            ctx,
+            "rc_gen_in",
+            &[Type::get::<u64>(ctx), Type::get::<u8>(ctx)],
+            false,
+        );
         let named_types = NamedTypes {
             real_world: StructType::new_named(ctx, "RealWorld", &[], false),
             nil: StructType::new_named(ctx, "Nil", &[], false),
+            rc_generic_inner,
+            rc_generic: PointerType::new(rc_generic_inner),
             adts: BTreeMap::new(),
         };
         let mut codegen = CodeGenerator {
@@ -331,7 +331,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
                 "->" => {
                     let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
-                    let captures = type_rc_generic(self.ctx);
+                    let captures = self.named_types.rc_generic;
                     StructType::new(self.ctx, &[fp, captures], false)
                 }
                 "Cons" => StructType::new(
@@ -701,7 +701,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             }
             Some(Var::Extern(e)) => Value::new_struct(
                 self.ctx,
-                &[e.closure, Value::new_undef(type_rc_generic(self.ctx))],
+                &[e.closure, Value::new_undef(self.named_types.rc_generic)],
                 false,
             ),
             Some(Var::Val(v)) => v,
@@ -947,7 +947,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Build instructions to cast a pointer value to a generic
     /// reference counted pointer `{i64, i8}*`
     pub fn build_as_generic_rc(&self, val: &Value) -> &'ctx Value {
-        self.builder.build_bit_cast(val, type_rc_generic(self.ctx))
+        self.builder
+            .build_bit_cast(val, self.named_types.rc_generic)
     }
 
     /// Given a pointer to a pair, load the first value of the pair
@@ -1068,7 +1069,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let captures = self.gen_lambda_env_capture(env, &free_vars);
         let captures_rc = self.build_rc(env, captures);
         let captures_rc_generic = self.builder
-            .build_bit_cast(captures_rc, type_rc_generic(self.ctx));
+            .build_bit_cast(captures_rc, self.named_types.rc_generic);
         self.build_struct(&[func_ptr, captures_rc_generic])
     }
 
