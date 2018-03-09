@@ -798,12 +798,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
         lam: &'ast ast::Lambda<'src>,
-        name: Option<&str>,
+        name: &str,
     ) -> &'ctx Function {
-        let lambda_name = match name {
-            Some(name) => format!("__lambda_{}", name),
-            None => format!("lambda"),
-        };
+        let lambda_name = format!("_lambda_{}", name);
         let func = self.gen_func_decl(lambda_name, &lam.typ);
         let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
         let entry = func.append("entry");
@@ -994,6 +991,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         &self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
+        name: &str,
     ) -> &'ctx Value {
         let mut captures_vals = Vec::new();
         for (&fv, insts) in free_vars {
@@ -1006,7 +1004,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 )))
             }
         }
-        self.build_struct(&captures_vals)
+        let r = self.build_struct(&captures_vals);
+        r.set_name(&format!("{}-capts", name));
+        r
     }
 
     /// Generate the LLVM representation of a lambda expression, but with the contents
@@ -1017,11 +1017,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         &self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
-        maybe_name: Option<&str>,
+        name: &str,
     ) -> (&'ctx Value, FreeVarInsts<'src>) {
-        let name = maybe_name.unwrap_or("lam");
         let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
-        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, maybe_name);
+        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
         let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type));
         let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
@@ -1042,18 +1041,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         closure: &Value,
         lam: &'ast ast::Lambda<'src>,
         free_vars: Option<FreeVarInsts<'src>>,
+        name: &str,
     ) {
         let free_vars = free_vars.unwrap_or_else(|| free_vars_in_lambda_filter_externs(&env, &lam));
-        let captures = self.gen_lambda_env_capture(env, &free_vars);
+        let captures = self.gen_lambda_env_capture(env, &free_vars, name);
         let closure_captures_rc_generic = self.builder.build_extract_value(closure, 1);
+        closure_captures_rc_generic.set_name(&format!("{}-clos-capts-rc-gen", name));
         let closure_captures_rc = self.builder.build_bit_cast(
             closure_captures_rc_generic,
             type_rc(self.ctx, captures.get_type()),
         );
+        closure_captures_rc.set_name(&format!("{}-clos-capts-rc", name));
         let closure_captures_ptr = self.builder.build_gep(
             closure_captures_rc,
             &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
         );
+        closure_captures_ptr.set_name(&format!("{}-clos-capts-ptr", name));
         self.builder.build_store(captures, closure_captures_ptr);
     }
 
@@ -1062,15 +1065,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         &self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
-        name: Option<&str>,
+        name: &str,
     ) -> &'ctx Value {
         let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
-        let captures = self.gen_lambda_env_capture(env, &free_vars);
+        let captures = self.gen_lambda_env_capture(env, &free_vars, name);
         let captures_rc = self.build_rc(env, captures);
+        captures_rc.set_name(&format!("{}-capts-rc", name));
         let captures_rc_generic = self.builder
             .build_bit_cast(captures_rc, self.named_types.rc_generic);
-        self.build_struct(&[func_ptr, captures_rc_generic])
+        captures_rc_generic.set_name(&format!("{}-capts-rc-gen", name));
+        let r = self.build_struct(&[func_ptr, captures_rc_generic]);
+        r.set_name(&format!("{}-clos", name));
+        r
     }
 
     /// Generate LLVM definitions for the variable/function bindings `bs`
@@ -1101,7 +1108,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         for &(name, inst, val) in &bindings_insts {
             match *val {
                 ast::Expr::Lambda(ref lam) => {
-                    let (closure, free_vars) = self.gen_lambda_no_capture(env, lam, Some(name));
+                    let (closure, free_vars) = self.gen_lambda_no_capture(env, lam, name);
                     env.add_inst(name, inst.clone(), closure);
                     lambdas_free_vars.push_back(free_vars);
                 }
@@ -1114,7 +1121,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 &ast::Expr::Lambda(ref lam) => {
                     let closure = env.get_var(name, &inst).expect("ICE: variable dissapeared");
                     let free_vars = lambdas_free_vars.pop_front();
-                    self.closure_capture_env(env, closure, lam, free_vars);
+                    self.closure_capture_env(env, closure, lam, free_vars, name);
                 }
                 expr => {
                     let var = self.gen_expr(env, expr, Some(name));
@@ -1343,7 +1350,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::Variable(ref var) => self.gen_variable(env, var),
             Expr::App(ref app) => opt_set_name(self.gen_app(env, app), name),
             Expr::If(ref cond) => opt_set_name(self.gen_if(env, cond), name),
-            Expr::Lambda(ref lam) => self.gen_lambda(env, lam, name),
+            Expr::Lambda(ref lam) => self.gen_lambda(env, lam, name.unwrap_or("lam")),
             Expr::Let(ref l) => opt_set_name(self.gen_let(env, l), name),
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
