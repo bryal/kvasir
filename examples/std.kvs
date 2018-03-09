@@ -7,13 +7,18 @@
   Empty
   (StrCons UInt8 String))
 
-(define (concat s1 s2)
-  (if (of-variant? s1 Empty)
-      s2
-    (let [[x     (as-variant s1 StrCons)]
-          [first (car x)]
-          [rest  (cdr x)]]
-      (StrCons first (concat rest s2)))))
+;; (define (concat s1 s2)
+;;   (if (of-variant? s1 Empty)
+;;       s2
+;;     (let [[x     (as-variant s1 StrCons)]
+;;           [first (car x)]
+;;           [rest  (cdr x)]]
+;;       (StrCons first (concat rest s2)))))
+
+(define (first-char s)
+  (if (of-variant? s StrCons)
+      (car (as-variant s StrCons))
+    (undef nil)))
 
 ;;; Section Input/output
 

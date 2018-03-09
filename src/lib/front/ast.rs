@@ -850,6 +850,12 @@ pub struct AdtVariant<'src> {
     pub pos: SrcPos<'src>,
 }
 
+impl<'src> AdtVariant<'src> {
+    pub fn get_type(&self) -> Type<'src> {
+        Type::new_tuple(&self.members)
+    }
+}
+
 /// Algebraic Data Type definition
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct AdtDef<'src> {
@@ -867,6 +873,51 @@ pub struct Adts<'src> {
 }
 
 impl<'src> Adts<'src> {
+    fn is_rec_const(&self, name: &str, origin: &str) -> bool {
+        if name == origin {
+            true
+        } else if let Some(def) = self.defs.get(name) {
+            self.is_rec_adt(def, origin)
+        } else {
+            false
+        }
+    }
+
+    fn is_rec_typefunc(&self, tf: &TypeFunc, origin: &str) -> bool {
+        match *tf {
+            TypeFunc::Const(s) => self.is_rec_const(s, origin),
+            TypeFunc::Poly(ref p) => self.is_rec_type(&p.body, origin),
+        }
+    }
+
+    fn is_rec_type(&self, t: &Type, origin: &str) -> bool {
+        match *t {
+            Type::Const(s, _) => self.is_rec_const(s, origin),
+            Type::App(ref tf, ref targs) => {
+                self.is_rec_typefunc(tf, origin)
+                    || targs.iter().any(|t| self.is_rec_type(t, origin))
+            }
+            Type::Poly(ref p) => self.is_rec_type(&p.body, origin),
+            _ => false,
+        }
+    }
+
+    fn is_rec_adt(&self, adt: &AdtDef, origin: &str) -> bool {
+        adt.variants
+            .iter()
+            .any(|v| v.members.iter().any(|t| self.is_rec_type(t, origin)))
+    }
+
+    pub fn adt_is_recursive(&self, adt: &AdtDef) -> bool {
+        self.is_rec_adt(adt, adt.name.s)
+    }
+
+    pub fn adt_of_variant_is_recursive(&self, v: &str) -> bool {
+        let adt = self.parent_adt_of_variant(v)
+            .expect("ICE: No parent adt of variant in adt_of_variant_is_recursive");
+        self.adt_is_recursive(adt)
+    }
+
     pub fn parent_adt_of_variant<'s>(&'s self, v: &str) -> Option<&'s AdtDef<'src>> {
         self.variants.get(v).and_then(|t| self.defs.get(t))
     }
@@ -881,8 +932,7 @@ impl<'src> Adts<'src> {
     }
 
     pub fn type_of_variant(&self, v: &str) -> Option<Type<'src>> {
-        self.adt_variant_of_name(v)
-            .map(|adt_variant| Type::new_tuple(&adt_variant.members))
+        self.adt_variant_of_name(v).map(AdtVariant::get_type)
     }
 
     pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'src>> {

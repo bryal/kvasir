@@ -812,6 +812,10 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         x: &'x mut OfVariant<'src>,
         expected_type: &Type<'src>,
     ) -> Type<'src> {
+        let expected_expr_type = self.adts
+            .parent_type_of_variant(x.variant.s)
+            .expect("ICE: No parent type of variant in infer_of_variant");
+        self.infer_expr(&mut x.expr, &expected_expr_type);
         self.unify(expected_type, &TYPE_BOOL)
             .unwrap_or_else(|(e, f)| x.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
@@ -821,7 +825,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         x: &'x mut AsVariant<'src>,
         expected_type: &Type<'src>,
     ) -> &'x Type<'src> {
-        let expected_from = self.type_var_gen.gen_tv();
+        let expected_from = self.adts
+            .parent_type_of_variant(x.variant.s)
+            .expect("ICE: No parent type of variant in infer_as_variant");
         self.infer_expr(&mut x.expr, &expected_from);
         x.typ = self.adts
             .type_of_variant(x.variant.s)

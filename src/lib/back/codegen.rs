@@ -207,9 +207,10 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
     }
 }
 
-struct NamedTypes<'ctx> {
+struct NamedTypes<'ctx, 'src> {
     nil: &'ctx Type,
     real_world: &'ctx Type,
+    adts: BTreeMap<&'src str, &'ctx Type>,
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
@@ -220,9 +221,10 @@ pub struct CodeGenerator<'ctx, 'src> {
     /// The function currently being built
     current_func: RefCell<Option<&'ctx Function>>,
     current_block: RefCell<Option<&'ctx BasicBlock>>,
-    named_types: NamedTypes<'ctx>,
+    named_types: NamedTypes<'ctx, 'src>,
     adts: ast::Adts<'src>,
 }
+
 impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     pub fn new(
         ctx: &'ctx Context,
@@ -233,8 +235,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let named_types = NamedTypes {
             real_world: StructType::new_named(ctx, "RealWorld", &[], false),
             nil: StructType::new_named(ctx, "Nil", &[], false),
+            adts: BTreeMap::new(),
         };
-        CodeGenerator {
+        let mut codegen = CodeGenerator {
             ctx,
             module,
             builder,
@@ -242,7 +245,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             current_block: RefCell::new(None),
             named_types,
             adts,
-        }
+        };
+        codegen.gen_adts();
+        codegen
     }
 
     fn new_nil_val(&self) -> &'ctx Value {
@@ -306,6 +311,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::Const("Float64", _) => Type::get::<f64>(self.ctx),
             ast::Type::Const("Nil", _) => self.named_types.nil,
             ast::Type::Const("RealWorld", _) => self.named_types.real_world,
+            // It's not a builtin type, which means it has to be a user-defined
+            // algebraic data type, unless bug in typechecker.
+            ast::Type::Const(name, _) if self.named_types.adts.contains_key(name) => {
+                self.named_types.adts[name]
+            }
             ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
                 "->" => {
                     let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
@@ -318,9 +328,71 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                     false,
                 ),
                 "Ptr" => PointerType::new(self.gen_type(&ts[0])),
-                _ => panic!("ICE: Type function `{}` not implemented", s),
+                _ => panic!(
+                    "ICE: Type function `{}` is not implemented for codegen in gen_type",
+                    s
+                ),
             },
-            _ => panic!("ICE: Type `{}` is not yet implemented", typ),
+            _ => {
+                println!("named_types.adts: {:?}", self.named_types.adts.keys());
+                panic!(
+                    "ICE: Type `{}` is not implemented for codegen in gen_type",
+                    typ
+                )
+            }
+        }
+    }
+
+    /// Generate the LLVM Type of an algebraic data type
+    ///
+    /// ADTs are equivalent to tagged unions, and are represented as a pair of a 16 bit tag,
+    /// and the type of the largest variant.
+    fn gen_adt(&self, adt: &ast::AdtDef) -> &'ctx Type {
+        let tag_type = Type::get::<i16>(self.ctx);
+        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+        let largest_type = variant_types
+            .max_by_key(|t| self.size_of(t))
+            .unwrap_or(self.named_types.nil);
+        StructType::new_named(self.ctx, adt.name.s, &[tag_type, largest_type], false)
+    }
+
+    /// When ADT is recursive, it needs to be kept behind pointer
+    /// as to not become infinitely large
+    fn gen_recursive_adt(
+        &self,
+        adt: &ast::AdtDef,
+        inner_struct_type: &'ctx StructType,
+    ) -> &'ctx Type {
+        let tag_type = Type::get::<i16>(self.ctx);
+        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+        let largest_type = variant_types
+            .max_by_key(|t| self.size_of(t))
+            .unwrap_or(self.named_types.nil);
+        inner_struct_type
+            .set_elements(&[tag_type, largest_type], false)
+            .expect("ICE: non-opaque struct in gen_recursive_adt");
+        type_rc(self.ctx, inner_struct_type)
+    }
+
+    fn gen_adts(&mut self) {
+        let mut inners = Vec::new();
+        for (name, adt) in &self.adts.defs {
+            if self.adts.adt_is_recursive(adt) {
+                let inner = StructType::new_opaque(self.ctx, &format!("{}_inner", adt.name.s));
+                let rc = type_rc(self.ctx, inner);
+                self.named_types.adts.insert(name, rc);
+                inners.push((adt, Some(inner)))
+            } else {
+                inners.push((adt, None))
+            }
+        }
+        for (adt, maybe_inner) in inners {
+            let t = if let Some(inner) = maybe_inner {
+                self.gen_recursive_adt(adt, inner)
+            } else {
+                self.gen_adt(adt)
+            };
+            self.named_types.adts.insert(adt.name.s, t);
         }
     }
 
@@ -669,7 +741,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ) -> &'ctx Value {
         let func_ptr = self.builder.build_extract_value(closure, 0);
         let captures_rc = self.builder.build_extract_value(closure, 1);
-        let captures_ptr = self.build_get_rc_contents_generic_ptr(captures_rc);
+        let captures_ptr = self.build_gep_rc_contents_generic(captures_rc);
         let func = self.builder.build_bit_cast(
             func_ptr,
             PointerType::new(FunctionType::new(
@@ -761,7 +833,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
         let old_vars = mem::replace(&mut env.vars, local_env);
 
-        let e = self.gen_expr(env, &lam.body, None);
+        let e = self.gen_expr(env, &lam.body, Some("return-val"));
         self.builder.build_ret(e);
 
         // Restore state of code generator
@@ -834,15 +906,20 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Get a generic pointer to the contents of a rc pointer
-    fn build_get_rc_contents_generic_ptr(&self, rc_generic: &Value) -> &'ctx Value {
-        let rc = self.builder.build_bit_cast(
-            rc_generic,
+    fn build_gep_rc_contents_generic(&self, rc: &Value) -> &'ctx Value {
+        let rc_generic = self.builder.build_bit_cast(
+            rc,
             PointerType::new(StructType::new(
                 self.ctx,
                 &[Type::get::<u64>(self.ctx), Type::get::<u8>(self.ctx)],
                 false,
             )),
         );
+        self.build_gep_rc_contents(rc_generic)
+    }
+
+    /// Get a pointer to the contents of a rc pointer
+    fn build_gep_rc_contents(&self, rc: &Value) -> &'ctx Value {
         self.builder
             .build_gep(rc, &[0usize.compile(self.ctx), 1u32.compile(self.ctx)])
     }
@@ -851,6 +928,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// reference counted pointer `{i64, i8}*`
     pub fn build_as_generic_rc(&self, val: &Value) -> &'ctx Value {
         self.builder.build_bit_cast(val, type_rc_generic(self.ctx))
+    }
+
+    /// Given a pointer to a pair, load the first value of the pair
+    pub fn build_load_car(&self, consptr: &Value) -> &'ctx Value {
+        let carptr = self.builder
+            .build_gep(consptr, &[0usize.compile(self.ctx), 0u32.compile(self.ctx)]);
+        self.builder.build_load(carptr)
+    }
+
+    /// Given a pointer to a pair, load the second value of the pair
+    pub fn build_load_cdr(&self, consptr: &Value) -> &'ctx Value {
+        let cdrptr = self.builder
+            .build_gep(consptr, &[0usize.compile(self.ctx), 1u32.compile(self.ctx)]);
+        self.builder.build_load(cdrptr)
+    }
+
+    pub fn build_extract_car(&self, cons: &Value) -> &'ctx Value {
+        self.builder.build_extract_value(cons, 0)
     }
 
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
@@ -1009,14 +1104,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate LLVM IR for the extraction of the first element of a `cons` pair
     fn gen_car(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Car<'src>) -> &'ctx Value {
-        let cons = self.gen_expr(env, &c.expr, Some("cons"));
-        self.builder.build_extract_value(cons, 0)
+        let cons = self.gen_expr(env, &c.expr, None);
+        let r = self.builder.build_extract_value(cons, 0);
+        r.set_name("car");
+        r
     }
 
     /// Generate LLVM IR for the extraction of the second element of a `cons` pair
     fn gen_cdr(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cdr<'src>) -> &'ctx Value {
-        let cons = self.gen_expr(env, &c.expr, Some("cons"));
-        self.builder.build_extract_value(cons, 1)
+        let cons = self.gen_expr(env, &c.expr, None);
+        let r = self.builder.build_extract_value(cons, 1);
+        r.set_name("cdr");
+        r
     }
 
     /// Generate LLVM IR for the cast of an expression to a type
@@ -1096,9 +1195,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .variant_index(test.variant.s)
             .expect("ICE: No variant_index in gen_of_variant");
         let expected_i = (e_i as u16).compile(self.ctx);
-        let val = self.gen_expr(env, &test.expr, Some("val"));
-        let found_i = self.builder.build_extract_value(val, 0);
-        self.builder.build_eq(expected_i, found_i)
+        let val = self.gen_expr(env, &test.expr, Some("of-variant_test-expr"));
+        let found_i = if self.adts.adt_of_variant_is_recursive(test.variant.s) {
+            // If ADT is recursive, it's also behind a refcount pointer
+            let val_ = self.build_gep_rc_contents(val);
+            val_.set_name("of-variant_inner-ptr");
+            self.build_load_car(val_)
+        } else {
+            self.build_extract_car(val)
+        };
+        found_i.set_name("of-variant_found-variant-i");
+        let r = self.builder.build_eq(expected_i, found_i);
+        r.set_name("of-variant_is-of-expected-variant");
+        r
     }
 
     fn gen_as_variant(
@@ -1106,25 +1215,32 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         env: &mut Env<'src, 'ctx>,
         as_v: &'ast ast::AsVariant<'src>,
     ) -> &'ctx Value {
-        // TODO: I don't really like this implementation.
-        //         Store -> GEP -> load,
-        //       seems like an awfully wasteful procedure.
-        //       Could it be done like:
-        //         Cast to correct type with padding (to keep same size) -> extractvalue
-        //       or somesuch, instead?
-        let wrapped = self.gen_expr(env, &as_v.expr, Some("val-wrapped"));
-        let wrapped_stack = self.builder.build_alloca(wrapped.get_type());
-        self.builder.build_store(wrapped, wrapped_stack);
-        let unwrapped_stack_generic = self.builder.build_gep(
-            wrapped_stack,
+        let wrapped = self.gen_expr(env, &as_v.expr, Some("as-variant_wrapped"));
+        let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(as_v.variant.s) {
+            // If ADT is recursive, it's also behind a refcount pointer
+            self.build_gep_rc_contents(wrapped)
+        } else {
+            let wrapped_stack = self.builder.build_alloca(wrapped.get_type());
+            self.builder.build_store(wrapped, wrapped_stack);
+            wrapped_stack
+        };
+        wrapped_ptr.set_name("as-variant_wrapped-ptr");
+        let unwrapped_ptr_of_largest_member_type = self.builder.build_gep(
+            wrapped_ptr,
             &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
         );
+        unwrapped_ptr_of_largest_member_type.set_name("as-variant_unwrapped-largest");
         let unwrapped_type = self.gen_type(&self.adts
             .type_of_variant(as_v.variant.s)
             .expect("ICE: No type_of_variant in gen_as_variant"));
-        let unwrapped_stack = self.builder
-            .build_bit_cast(unwrapped_stack_generic, PointerType::new(unwrapped_type));
-        self.builder.build_load(unwrapped_stack)
+        let unwrapped_ptr = self.builder.build_bit_cast(
+            unwrapped_ptr_of_largest_member_type,
+            PointerType::new(unwrapped_type),
+        );
+        unwrapped_ptr.set_name("as-variant_unwrapped-ptr");
+        let r = self.builder.build_load(unwrapped_ptr);
+        r.set_name("as-variant_unwrapped");
+        r
     }
 
     /// Generate llvm code for an expression and return its llvm Value.
@@ -1134,6 +1250,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         expr: &'ast Expr<'src>,
         name: Option<&str>,
     ) -> &'ctx Value {
+        fn opt_set_name<'ctx>(v: &'ctx Value, name: Option<&str>) -> &'ctx Value {
+            if let Some(name_) = name {
+                v.set_name(name_);
+            }
+            v
+        }
         match *expr {
             // Represent Nil as the empty struct, unit
             Expr::Nil(_) => self.new_nil_val(),
@@ -1141,18 +1263,18 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::StrLit(ref s) => self.gen_str(s),
             Expr::Bool(ref b) => b.val.compile(self.ctx),
             Expr::Variable(ref var) => self.gen_variable(env, var),
-            Expr::App(ref app) => self.gen_app(env, app),
-            Expr::If(ref cond) => self.gen_if(env, cond),
+            Expr::App(ref app) => opt_set_name(self.gen_app(env, app), name),
+            Expr::If(ref cond) => opt_set_name(self.gen_if(env, cond), name),
             Expr::Lambda(ref lam) => self.gen_lambda(env, lam, name),
-            Expr::Let(ref l) => self.gen_let(env, l),
+            Expr::Let(ref l) => opt_set_name(self.gen_let(env, l), name),
             // All type ascriptions should be replaced at this stage
             Expr::TypeAscript(_) => unreachable!(),
-            Expr::Cons(ref c) => self.gen_cons(env, c),
-            Expr::Car(ref c) => self.gen_car(env, c),
-            Expr::Cdr(ref c) => self.gen_cdr(env, c),
-            Expr::Cast(ref c) => self.gen_cast(env, c),
-            Expr::OfVariant(ref x) => self.gen_of_variant(env, x),
-            Expr::AsVariant(ref x) => self.gen_as_variant(env, x),
+            Expr::Cons(ref c) => opt_set_name(self.gen_cons(env, c), name),
+            Expr::Car(ref c) => opt_set_name(self.gen_car(env, c), name),
+            Expr::Cdr(ref c) => opt_set_name(self.gen_cdr(env, c), name),
+            Expr::Cast(ref c) => opt_set_name(self.gen_cast(env, c), name),
+            Expr::OfVariant(ref x) => opt_set_name(self.gen_of_variant(env, x), name),
+            Expr::AsVariant(ref x) => opt_set_name(self.gen_as_variant(env, x), name),
         }
     }
 
