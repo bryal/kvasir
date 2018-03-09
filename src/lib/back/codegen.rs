@@ -753,8 +753,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         ret_type: &'ctx Type,
     ) -> &'ctx Value {
         let func_ptr = self.builder.build_extract_value(closure, 0);
+        func_ptr.set_name("func-ptr");
         let captures_rc = self.builder.build_extract_value(closure, 1);
+        captures_rc.set_name("capts-rc");
         let captures_ptr = self.build_gep_rc_contents_generic(captures_rc);
+        captures_ptr.set_name("capts-ptr");
         let func = self.builder.build_bit_cast(
             func_ptr,
             PointerType::new(FunctionType::new(
@@ -762,6 +765,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 &[type_generic_ptr(self.ctx), arg_type],
             )),
         );
+        func.set_name("func");
         let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
         self.builder.build_call(func, &[captures_ptr, arg])
     }
@@ -777,14 +781,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             app.func.get_type(),
         ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
-        let arg = self.gen_expr(env, &app.arg, None);
+        let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
 
         // If it's a direct application of an extern, call it as a function,
         // otherwise call it as a closure
         if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, inst)) {
             self.builder.build_call(ext.func, &[arg])
         } else {
-            let func = self.gen_expr(env, &app.func, None);
+            let func = self.gen_expr(env, &app.func, Some("app-func"));
             self.build_app(func, (arg, arg_type), ret_type)
         }
     }
@@ -933,6 +937,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 false,
             )),
         );
+        let name = rc.get_name().unwrap_or("rc");
+        rc_generic.set_name(&format!("{}-gen", name));
         self.build_gep_rc_contents(rc_generic)
     }
 
@@ -972,7 +978,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let val_type = val.get_type();
         assert!(
             self.size_of(val_type) <= self.size_of(typ),
-            "ICE: Tried to `build_cast` to smaller target type"
+            "ICE: Tried to `build_cast` to smaller target type. from sizeof({:?})={} to sizeof({:?})={}",
+            val_type, self.size_of(val_type),
+            typ, self.size_of(typ)
         );
         let target_stack = self.builder.build_alloca(typ);
         target_stack.set_name("build-cast_target-stack");
@@ -1323,10 +1331,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let unwrapped = self.gen_tuple(env, &n.members);
         unwrapped.set_name("gen-new_unwrapped");
         let unwrapped_largest = self.build_cast(unwrapped, largest_type);
-        unwrapped_largest.set_name("gen-new_unwrapped-largest");
-        let r = self.build_struct(&[tag, unwrapped_largest]);
-        r.set_name("gen-new_wrapped");
-        r
+        unwrapped_largest.set_name("gen-new_unwrapped-larg");
+        let wrapped_largest = self.build_struct(&[tag, unwrapped_largest]);
+        wrapped_largest.set_name("gen-new_wrapped-larg");
+        if self.adts.adt_is_recursive(adt) {
+            let wrapped_largest_rc = self.build_rc(env, wrapped_largest);
+            wrapped_largest_rc.set_name("gen-new_wrapped-larg-rc");
+            wrapped_largest_rc
+        } else {
+            wrapped_largest
+        }
     }
 
     /// Generate llvm code for an expression and return its llvm Value.

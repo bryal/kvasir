@@ -15,9 +15,18 @@ impl<K: Ord + Eq, V> ScopeStack<K, V> {
         ScopeStack(Vec::new())
     }
 
-    pub fn push(&mut self, scope: BTreeMap<K, V>) {
-        if scope.keys().any(|key| self.contains_key(key)) {
-            panic!("ScopeStack::push: Key already exists");
+    pub fn push(&mut self, scope: BTreeMap<K, V>)
+    where
+        K: Debug,
+        V: Debug,
+    {
+        for key in scope.keys() {
+            assert!(
+                !self.contains_key(key),
+                "ICE: ScopeStack::push: Key `{:?}` already exists\n  : {:?}",
+                key,
+                self
+            );
         }
         self.0.push(scope);
     }
