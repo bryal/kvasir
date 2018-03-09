@@ -328,6 +328,7 @@ fn is_special_operator(op: &Cst) -> bool {
         "cond",
         "of-variant?",
         "as-variant",
+        "new",
     ];
     ident_s(op)
         .map(|s| special_operators.contains(&s))
@@ -960,6 +961,25 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
+    fn parse_new(
+        &mut self,
+        csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, New<'s>> {
+        let (first, rest) = split_first(csts, args_pos)?;
+        let constr = ident(first)?;
+        let members = rest.iter()
+            .map(|c| self.parse_expr(c))
+            .collect::<PRes<_>>()?;
+        Ok(New {
+            constr,
+            members,
+            typ: self.gen_type_var(),
+            pos: pos.clone(),
+        })
+    }
+
     fn parse_special_form(
         &mut self,
         head: &Cst<'s>,
@@ -995,6 +1015,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 pos,
                 &tail_pos,
             )?))),
+            "new" => Ok(Expr::New(Box::new(self.parse_new(tail, pos, &tail_pos)?))),
 
             // "Macros"
             "cond" => self.parse_cond(tail, pos, &tail_pos),

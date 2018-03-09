@@ -117,6 +117,9 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
         }
         Expr::OfVariant(ref mut x) => monomorphize_defs_of_insts_in_expr(&mut x.expr, env),
         Expr::AsVariant(ref mut x) => monomorphize_defs_of_insts_in_expr(&mut x.expr, env),
+        Expr::New(ref mut n) => for member in &mut n.members {
+            monomorphize_defs_of_insts_in_expr(member, env)
+        },
         Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }

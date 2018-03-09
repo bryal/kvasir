@@ -63,6 +63,10 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut BTreeSet<&'src str>) -> BTr
         Cast(ref c) => sibling_refs(&c.expr, siblings),
         OfVariant(ref x) => sibling_refs(&x.expr, siblings),
         AsVariant(ref x) => sibling_refs(&x.expr, siblings),
+        New(ref n) => n.members
+            .iter()
+            .flat_map(|e2| sibling_refs(e2, siblings))
+            .collect(),
         Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => BTreeSet::new(),
     }
 }

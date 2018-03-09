@@ -160,6 +160,9 @@ fn wrap_vars_types_in_apps_<'src>(
         }
         Expr::OfVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
         Expr::AsVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
+        Expr::New(ref mut n) => for member in &mut n.members {
+            wrap_vars_types_in_apps_(member, vars, app_args)
+        },
         Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
@@ -839,6 +842,28 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &x.typ
     }
 
+    fn infer_new<'n>(
+        &mut self,
+        n: &'n mut New<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'n Type<'src> {
+        let expected_member_types = &self.adts
+            .adt_variant_of_name(n.constr.s)
+            .expect("ICE: No adt_variant_of_name in infer_new")
+            .members;
+        for (member, expected_member_type) in n.members.iter_mut().zip(expected_member_types) {
+            self.infer_expr(member, expected_member_type);
+        }
+        n.typ = self.adts
+            .parent_type_of_variant(n.constr.s)
+            .expect("ICE: No type_of_variant in infer_new");
+        n.typ = self.unify(expected_type, &n.typ).unwrap_or_else(|_| {
+            n.pos
+                .error_exit(type_mis(&mut self.type_var_map, expected_type, &n.typ))
+        });
+        &n.typ
+    }
+
     // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
         match *expr {
@@ -858,6 +883,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),
             Expr::OfVariant(ref mut x) => self.infer_of_variant(x, expected_type).clone(),
             Expr::AsVariant(ref mut x) => self.infer_as_variant(x, expected_type).clone(),
+            Expr::New(ref mut n) => self.infer_new(n, expected_type).clone(),
         }
     }
 }

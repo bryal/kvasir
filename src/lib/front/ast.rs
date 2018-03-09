@@ -743,6 +743,14 @@ pub struct AsVariant<'src> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
+pub struct New<'src> {
+    pub constr: Ident<'src>,
+    pub members: Vec<Expr<'src>>,
+    pub typ: Type<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -760,6 +768,7 @@ pub enum Expr<'src> {
     Cast(Box<Cast<'src>>),
     OfVariant(Box<OfVariant<'src>>),
     AsVariant(Box<AsVariant<'src>>),
+    New(Box<New<'src>>),
 }
 
 impl<'src> Expr<'src> {
@@ -781,6 +790,7 @@ impl<'src> Expr<'src> {
             Expr::Cast(ref c) => &c.pos,
             Expr::OfVariant(ref x) => &x.pos,
             Expr::AsVariant(ref x) => &x.pos,
+            Expr::New(ref n) => &n.pos,
         }
     }
 
@@ -809,6 +819,7 @@ impl<'src> Expr<'src> {
             Expr::Cast(ref c) => &c.typ,
             Expr::OfVariant(_) => &TYPE_BOOL,
             Expr::AsVariant(ref x) => &x.typ,
+            Expr::New(ref n) => &n.typ,
         }
     }
 
@@ -862,6 +873,16 @@ pub struct AdtDef<'src> {
     pub name: Ident<'src>,
     pub variants: Vec<AdtVariant<'src>>,
     pub pos: SrcPos<'src>,
+}
+
+impl<'src> AdtDef<'src> {
+    pub fn get_type(&self) -> Type<'src> {
+        Type::Const(self.name.s, None)
+    }
+
+    pub fn variant_index(&self, v: &str) -> Option<usize> {
+        self.variants.iter().position(|av| av.name.s == v)
+    }
 }
 
 /// Algebraic data type definitions
@@ -942,8 +963,7 @@ impl<'src> Adts<'src> {
     }
 
     pub fn variant_index(&self, v: &str) -> Option<usize> {
-        let adt = self.parent_adt_of_variant(v)?;
-        adt.variants.iter().position(|av| av.name.s == v)
+        self.parent_adt_of_variant(v)?.variant_index(v)
     }
 }
 

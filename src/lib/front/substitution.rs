@@ -89,6 +89,9 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
         }
         Expr::OfVariant(ref mut x) => subst_expr(&mut x.expr, s),
         Expr::AsVariant(ref mut x) => subst_expr(&mut x.expr, s),
+        Expr::New(ref mut n) => for member in &mut n.members {
+            subst_expr(member, s);
+        },
         Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }

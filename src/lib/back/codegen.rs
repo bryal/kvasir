@@ -49,9 +49,12 @@ fn map_of<K: cmp::Ord, V>(k: K, v: V) -> BTreeMap<K, V> {
     once((k, v)).collect()
 }
 
-fn free_vars_in_exprs<'src>(es: &[&ast::Expr<'src>]) -> FreeVarInsts<'src> {
+fn free_vars_in_exprs<'a, 'src: 'a, T>(es: T) -> FreeVarInsts<'src>
+where
+    T: IntoIterator<Item = &'a ast::Expr<'src>>,
+{
     let mut fvs = BTreeMap::new();
-    for (k, v) in es.iter().flat_map(|e2| free_vars_in_expr(e2)) {
+    for (k, v) in es.into_iter().flat_map(|e2| free_vars_in_expr(e2)) {
         fvs.entry(k).or_insert(BTreeSet::new()).extend(v)
     }
     fvs
@@ -73,8 +76,12 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
                 )),
             )
         }
-        App(box ref a) => free_vars_in_exprs(&[&a.func, &a.arg]),
-        If(ref i) => free_vars_in_exprs(&[&i.predicate, &i.consequent, &i.alternative]),
+        App(box ref a) => free_vars_in_exprs([&a.func, &a.arg].iter().cloned()),
+        If(ref i) => free_vars_in_exprs(
+            [&i.predicate, &i.consequent, &i.alternative]
+                .iter()
+                .cloned(),
+        ),
         Lambda(box ref l) => free_vars_in_lambda(l),
         Let(box ref l) => {
             let mut es = vec![&l.body];
@@ -85,19 +92,20 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
                     es.extend(binding.mono_insts.values())
                 }
             }
-            let mut fvs = free_vars_in_exprs(&es);
+            let mut fvs = free_vars_in_exprs(es.iter().cloned());
             for b in l.bindings.bindings() {
                 fvs.remove(b.ident.s);
             }
             fvs
         }
         TypeAscript(_) => panic!("free_vars_in_expr encountered TypeAscript"),
-        Cons(box ref c) => free_vars_in_exprs(&[&c.car, &c.cdr]),
+        Cons(box ref c) => free_vars_in_exprs([&c.car, &c.cdr].iter().cloned()),
         Car(box ref c) => free_vars_in_expr(&c.expr),
         Cdr(box ref c) => free_vars_in_expr(&c.expr),
         Cast(ref c) => free_vars_in_expr(&c.expr),
         OfVariant(ref x) => free_vars_in_expr(&x.expr),
         AsVariant(ref x) => free_vars_in_expr(&x.expr),
+        New(ref n) => free_vars_in_exprs(&n.members),
     }
 }
 
@@ -268,12 +276,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.target_data().size_of(t)
     }
 
-    fn ptr_size_bits(&self) -> usize {
+    fn ptr_size_bytes(&self) -> usize {
         self.target_data().get_pointer_size()
     }
 
+    fn ptr_size_bits(&self) -> usize {
+        self.ptr_size_bytes() * 8
+    }
+
     fn gen_int_ptr_type(&self) -> &'ctx Type {
-        match self.ptr_size_bits() * 8 {
+        match self.ptr_size_bits() {
             8 => Type::get::<i8>(self.ctx),
             16 => Type::get::<i16>(self.ctx),
             32 => Type::get::<i32>(self.ctx),
@@ -378,7 +390,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let mut inners = Vec::new();
         for (name, adt) in &self.adts.defs {
             if self.adts.adt_is_recursive(adt) {
-                let inner = StructType::new_opaque(self.ctx, &format!("{}_inner", adt.name.s));
+                let inner = StructType::new_opaque(self.ctx, &format!("{}_in", adt.name.s));
                 let rc = type_rc(self.ctx, inner);
                 self.named_types.adts.insert(name, rc);
                 inners.push((adt, Some(inner)))
@@ -443,7 +455,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .add_function(&format!("{}_closure", id), &clos_typ);
         let entry = closure.append("entry");
         self.builder.position_at_end(entry);
-        closure[0].set_name("_NO_CAPTURES");
+        closure[0].set_name("DUMMY-CAPTURES");
         let param = &*closure[1];
         let r = self.builder.build_call(func, &[param]);
         self.builder.build_ret(r);
@@ -833,7 +845,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
         let old_vars = mem::replace(&mut env.vars, local_env);
 
-        let e = self.gen_expr(env, &lam.body, Some("return-val"));
+        let e = self.gen_expr(env, &lam.body, None);
+        if e.get_name().is_none() {
+            e.set_name("return-val")
+        }
         self.builder.build_ret(e);
 
         // Restore state of code generator
@@ -853,7 +868,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// Will call whatever function is bound to `malloc`.
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
-        match env.get("malloc", &[]) {
+        let r = match env.get("malloc", &[]) {
             Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => self.build_app(
                 v,
@@ -861,7 +876,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 PointerType::new(Type::get::<u8>(self.ctx)),
             ),
             None => panic!("ICE: No allocator defined or declared"),
-        }
+        };
+        r.set_name("malloc-ptr");
+        r
     }
 
     /// Generate a call to the heap allocator to allocate heap space for a value of type `typ`
@@ -878,6 +895,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Returns a pointer pointing to `val` on the heap
     fn build_val_on_heap(&self, env: &mut Env<'src, 'ctx>, val: &Value) -> &'ctx Value {
         let p = self.build_malloc_of_type(env, val.get_type());
+        if let Some(name) = val.get_name() {
+            p.set_name(&format!("{}-heap", name));
+        }
         self.builder.build_store(val, p);
         p
     }
@@ -948,6 +968,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_extract_value(cons, 0)
     }
 
+    /// Bitcast arbitrary (i.e. potentially aggregate) value in register to other type
+    pub fn build_cast(&self, val: &'ctx Value, typ: &'ctx Type) -> &'ctx Value {
+        let val_type = val.get_type();
+        assert!(
+            self.size_of(val_type) <= self.size_of(typ),
+            "ICE: Tried to `build_cast` to smaller target type"
+        );
+        let target_stack = self.builder.build_alloca(typ);
+        target_stack.set_name("build-cast_target-stack");
+        let val_ptr_type = PointerType::new(val_type);
+        let val_stack = self.builder.build_bit_cast(target_stack, val_ptr_type);
+        val_stack.set_name("build-cast_val-stack");
+        self.builder.build_store(val, val_stack);
+        let r = self.builder.build_load(target_stack);
+        r.set_name("build-cast_target");
+        r
+    }
+
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
     ///
     /// Returns a LLVM structure of each captured variable
@@ -978,14 +1016,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         &self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
-        name: Option<&str>,
+        maybe_name: Option<&str>,
     ) -> (&'ctx Value, FreeVarInsts<'src>) {
+        let name = maybe_name.unwrap_or("lam");
         let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
-        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
+        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, maybe_name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
         let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type));
         let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
+        undef_heap_captures_generic_rc.set_name(&format!("{}-undef-capts-gen", name));
         let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
+        closure.set_name(&format!("{}-clos", name));
         (closure, free_vars)
     }
 
@@ -1243,6 +1284,42 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
+    fn gen_tuple(&self, env: &mut Env<'src, 'ctx>, es: &[Expr<'src>]) -> &'ctx Value {
+        if let Some((last, init)) = es.split_last() {
+            let last_val = self.gen_expr(env, last, None);
+            last_val.set_name("gen-tuple_last");
+            init.iter().rev().fold(last_val, |acc, e| {
+                let r = self.build_struct(&[self.gen_expr(env, e, Some("gen-tuple_car")), acc]);
+                r.set_name("gen-tuple_cons");
+                r
+            })
+        } else {
+            self.new_nil_val()
+        }
+    }
+
+    fn gen_new(&self, env: &mut Env<'src, 'ctx>, n: &'ast ast::New<'src>) -> &'ctx Value {
+        // { tag: i16, data: LARGEST-TYPE }
+        let variant = n.constr.s;
+        let adt = self.adts
+            .parent_adt_of_variant(variant)
+            .expect("ICE: No parent_adt_of_variant in gen_new");
+        let i = adt.variant_index(variant)
+            .expect("ICE: No variant_index in gen_new");
+        let tag = (i as u16).compile(self.ctx);
+        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+        let largest_type = variant_types
+            .max_by_key(|t| self.size_of(t))
+            .unwrap_or(self.named_types.nil);
+        let unwrapped = self.gen_tuple(env, &n.members);
+        unwrapped.set_name("gen-new_unwrapped");
+        let unwrapped_largest = self.build_cast(unwrapped, largest_type);
+        unwrapped_largest.set_name("gen-new_unwrapped-largest");
+        let r = self.build_struct(&[tag, unwrapped_largest]);
+        r.set_name("gen-new_wrapped");
+        r
+    }
+
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(
         &self,
@@ -1275,6 +1352,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::Cast(ref c) => opt_set_name(self.gen_cast(env, c), name),
             Expr::OfVariant(ref x) => opt_set_name(self.gen_of_variant(env, x), name),
             Expr::AsVariant(ref x) => opt_set_name(self.gen_as_variant(env, x), name),
+            Expr::New(ref n) => opt_set_name(self.gen_new(env, n), name),
         }
     }
 
