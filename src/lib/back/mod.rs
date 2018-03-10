@@ -1,4 +1,4 @@
-use self::llvm::{Context, Builder, Module};
+use self::llvm::{Builder, Context, Module};
 use self::codegen::*;
 use Emission;
 use lib::CanonPathBuf;
@@ -16,7 +16,7 @@ pub fn compile(
     out_filename: CanonPathBuf,
     explicit_filename: bool,
     emission: Emission,
-    link_libs: &[String],
+    user_link_libs: &[String],
     lib_paths: &[String],
 ) {
     let context = Context::new();
@@ -29,15 +29,16 @@ pub fn compile(
     codegenerator.module.verify().unwrap_or_else(|e| {
         panic!(
             "Verifying module failed\nmodule: {:?}\nerror: {}",
-            codegenerator.module,
-            e
+            codegenerator.module, e
         )
     });
 
-    let with_ext_unless_explicit = |ext| if explicit_filename {
-        out_filename.clone()
-    } else {
-        out_filename.with_extension(ext)
+    let with_ext_unless_explicit = |ext| {
+        if explicit_filename {
+            out_filename.clone()
+        } else {
+            out_filename.with_extension(ext)
+        }
     };
 
     match emission {
@@ -92,26 +93,29 @@ pub fn compile(
                 .expect("Failed to wait on compilation child");
 
             let mut clang = Command::new("clang");
-            clang.arg(&obj_path).args(
-                &[
-                    "-o",
-                    &out_filename.path().to_string_lossy(),
-                ],
-            );
+            clang
+                .arg(&obj_path)
+                .args(&["-o", &out_filename.path().to_string_lossy()]);
             // Add current dir to link dir paths by default
-            clang.args(
-                &[
-                    "-L",
-                    current_dir()
-                        .expect("Invalid current working directory")
-                        .to_str()
-                        .expect("Path to current dir is not valid unicode"),
-                ],
-            );
+            clang.args(&[
+                "-L",
+                current_dir()
+                    .expect("Invalid current working directory")
+                    .to_str()
+                    .expect("Path to current dir is not valid unicode"),
+            ]);
             for path in lib_paths {
                 clang.args(&["-L", path]);
             }
-            for lib in link_libs {
+
+            let mut link_libs = user_link_libs.to_vec();
+            let link_default_libs = true;
+            if link_default_libs {
+                // Default libraries to link
+                link_libs.extend(["core", "pthread", "dl"].iter().map(|&s| s.to_string()))
+            }
+
+            for lib in &link_libs {
                 clang.args(&["-l", lib]);
             }
 

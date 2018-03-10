@@ -1,0 +1,10 @@
+[package]
+name = "kvasir_core"
+version = "0.1.0"
+authors = ["Johan Johansson <96.bryal@gmail.com>"]
+
+[dependencies]
+rand = "0.4"
+
+[lib]
+crate-type = ["staticlib"]

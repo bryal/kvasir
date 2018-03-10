@@ -4,21 +4,16 @@
 ;;; I.e. (Cons UIntPtr (Ptr UInt8))
 
 (data String
-  Empty
-  (StrCons UInt8 String))
+  StrEmpty
+  (StrCons UInt32 String))
 
-;; (define (concat s1 s2)
-;;   (if (of-variant? s1 Empty)
-;;       s2
-;;     (let [[x     (as-variant s1 StrCons)]
-;;           [first (car x)]
-;;           [rest  (cdr x)]]
-;;       (StrCons first (concat rest s2)))))
-
-(define (first-char s)
-  (if (of-variant? s StrCons)
-      (car (as-variant s StrCons))
-    (undef nil)))
+(define (concat s1 s2)
+  (if (of-variant? s1 StrEmpty)
+      s2
+    (let [[x   (as-variant s1 StrCons)]
+          [c   (car x)]
+          [s1' (cdr x)]]
+      (new StrCons c (concat s1' s2)))))
 
 ;;; Section Input/output
 
@@ -70,22 +65,22 @@
           [real-world2 (cdr r)]]
       (cons (f v) real-world2))))
 
-;;; Section Random number generation
-;;;
-;;; Uses a global rng
+;; ;;; Section Random number generation
+;; ;;;
+;; ;;; Uses a global rng
 
-(extern pcg32_srandom (-> (Cons (Cons UInt64 UInt64) RealWorld) (Cons Nil RealWorld))) ;
-(extern pcg32_random (-> RealWorld (Cons UInt32 RealWorld)))
+;; (extern pcg32_srandom (-> (Cons (Cons UInt64 UInt64) RealWorld) (Cons Nil RealWorld))) ;
+;; (extern pcg32_random (-> RealWorld (Cons UInt32 RealWorld)))
 
-;;? Seed the global rng
-(define: (seed-rng initstate real-world)
-    (-> UInt64 RealWorld (Cons Nil RealWorld))
-  (pcg32_srandom (cons (cons initstate 42) real-world)))
+;; ;;? Seed the global rng
+;; (define: (seed-rng initstate real-world)
+;;     (-> UInt64 RealWorld (Cons Nil RealWorld))
+;;   (pcg32_srandom (cons (cons initstate 42) real-world)))
 
-;;? Generate a random number in [0, n) using the global rng
-(define (random n)
-  (iomap (lambda (r) (remainder (cast r _) n))
-         pcg32_random))
+;; ;;? Generate a random number in [0, n) using the global rng
+;; (define (random n)
+;;   (iomap (lambda (r) (remainder (cast r _) n))
+;;          pcg32_random))
 
 ;;; Section Function compositioning
 
@@ -204,7 +199,3 @@
 
 (define (remainder n d)
   (- n (* (/ n d) d)))
-
-;; CPU clock ticks
-(extern _clock (-> RealWorld (Cons UInt64 RealWorld)))
-(define clock _clock)
