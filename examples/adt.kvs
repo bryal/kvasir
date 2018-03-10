@@ -1,0 +1,30 @@
+(extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
+
+(define (print-int64 x)
+  (lambda (real-world)
+    (print_int64 (cons x real-world))))
+
+(define: (undef _)
+    (-> Nil t)
+  (undef nil))
+
+(define: (add _)
+    (-> (Cons (: t Num) t) t)
+  (undef nil))
+
+(define (+ x y) (add (cons x y)))
+
+(data Sum
+  (Term Int64)
+  (Add Int64 Sum))
+
+(define (eval sum)
+  (if (of-variant? sum Term)
+      (as-variant sum Term)
+    (let [[add' (as-variant sum Add)]
+          [x    (car add')]
+          [sum' (cdr add')]]
+      (+ x (eval sum')))))
+
+(define main
+  (print-int64 (eval (new Add 1300 (new Term 37)))))

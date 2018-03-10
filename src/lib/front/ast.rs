@@ -929,6 +929,16 @@ impl<'src> Adts<'src> {
             .any(|v| v.members.iter().any(|t| self.is_rec_type(t, origin)))
     }
 
+    pub fn variant_is_recursive(&self, v: &str) -> bool {
+        let adt_name = self.parent_adt_of_variant(v)
+            .expect("ICE: No parent_adt_of_variant in adt_variant_is_recursive")
+            .name
+            .s;
+        let typ = self.parent_type_of_variant(v)
+            .expect("ICE: No parent_type_of_variant in adt_variant_is_recursive");
+        self.is_rec_type(&typ, adt_name)
+    }
+
     pub fn adt_is_recursive(&self, adt: &AdtDef) -> bool {
         self.is_rec_adt(adt, adt.name.s)
     }

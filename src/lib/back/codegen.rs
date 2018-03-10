@@ -138,6 +138,13 @@ impl fmt::Display for CodegenErr {
     }
 }
 
+fn opt_set_name<'ctx>(v: &'ctx Value, name: Option<&str>) -> &'ctx Value {
+    if let Some(name_) = name {
+        v.set_name(name_);
+    }
+    v
+}
+
 /// Naked function version of extern is used for external linkage and to call if direct call
 /// to extern. If function is used as a value, e.g. put in a list together with arbitrary
 /// functions, we have to wrap it in a closure so that it can be called in the same way as
@@ -210,7 +217,10 @@ struct NamedTypes<'ctx, 'src> {
     real_world: &'ctx Type,
     rc_generic_inner: &'ctx Type,
     rc_generic: &'ctx Type,
+    /// E.g. For String == Rc of String_inner: `{ i64, %String_in }*`
     adts: BTreeMap<&'src str, &'ctx Type>,
+    /// E.g. For String == Rc of String_inner: `%String_in`
+    adts_inner: BTreeMap<&'src str, &'ctx Type>,
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
@@ -244,6 +254,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             rc_generic_inner,
             rc_generic: PointerType::new(rc_generic_inner),
             adts: BTreeMap::new(),
+            adts_inner: BTreeMap::new(),
         };
         let mut codegen = CodeGenerator {
             ctx,
@@ -361,10 +372,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// and the type of the largest variant.
     fn gen_adt(&self, adt: &ast::AdtDef) -> &'ctx Type {
         let tag_type = Type::get::<i16>(self.ctx);
-        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
-        let largest_type = variant_types
-            .max_by_key(|t| self.size_of(t))
-            .unwrap_or(self.named_types.nil);
+        let largest_type = self.gen_largest_adt_variant_type(adt);
         StructType::new_named(self.ctx, adt.name.s, &[tag_type, largest_type], false)
     }
 
@@ -391,6 +399,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         for (name, adt) in &self.adts.defs {
             if self.adts.adt_is_recursive(adt) {
                 let inner = StructType::new_opaque(self.ctx, &format!("{}_in", adt.name.s));
+                self.named_types.adts_inner.insert(name, inner);
                 let rc = type_rc(self.ctx, inner);
                 self.named_types.adts.insert(name, rc);
                 inners.push((adt, Some(inner)))
@@ -765,7 +774,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 &[type_generic_ptr(self.ctx), arg_type],
             )),
         );
-        func.set_name("func");
+        if func.get_name().is_none() {
+            func.set_name("func")
+        }
         let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
         self.builder.build_call(func, &[captures_ptr, arg])
     }
@@ -904,19 +915,25 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         p
     }
 
-    /// Build a sequence of instructions that create a struct in register
-    /// and stores values in it
+    /// Build a sequence of instructions that create a struct of type
+    /// `typ` in register and stores values in it
+    fn build_struct_of_type(&self, vals: &[&'ctx Value], typ: &'ctx Type) -> &'ctx Value {
+        let mut out_struct = Value::new_undef(typ);
+        for (i, val) in vals.iter().enumerate() {
+            out_struct = self.builder.build_insert_value(out_struct, val, i);
+        }
+        out_struct
+    }
+
+    /// Build a sequence of instructions that create a struct in
+    /// register and stores values in it
     pub fn build_struct(&self, vals: &[&'ctx Value]) -> &'ctx Value {
         let typ = StructType::new(
             self.ctx,
             &vals.iter().map(|v| v.get_type()).collect::<Vec<_>>(),
             false,
         );
-        let mut out_struct = Value::new_undef(typ);
-        for (i, val) in vals.iter().enumerate() {
-            out_struct = self.builder.build_insert_value(out_struct, val, i);
-        }
-        out_struct
+        self.build_struct_of_type(vals, typ)
     }
 
     /// Build a reference counting pointer with contents `val`
@@ -1315,6 +1332,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
+    fn gen_largest_adt_variant_type(&self, adt: &ast::AdtDef) -> &'ctx Type {
+        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+        variant_types
+            .max_by_key(|t| self.size_of(t))
+            .unwrap_or(self.named_types.nil)
+    }
+
     fn gen_new(&self, env: &mut Env<'src, 'ctx>, n: &'ast ast::New<'src>) -> &'ctx Value {
         // { tag: i16, data: LARGEST-TYPE }
         let variant = n.constr.s;
@@ -1324,15 +1348,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let i = adt.variant_index(variant)
             .expect("ICE: No variant_index in gen_new");
         let tag = (i as u16).compile(self.ctx);
-        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
-        let largest_type = variant_types
-            .max_by_key(|t| self.size_of(t))
-            .unwrap_or(self.named_types.nil);
+        let largest_type = self.gen_largest_adt_variant_type(adt);
         let unwrapped = self.gen_tuple(env, &n.members);
         unwrapped.set_name("gen-new_unwrapped");
         let unwrapped_largest = self.build_cast(unwrapped, largest_type);
         unwrapped_largest.set_name("gen-new_unwrapped-larg");
-        let wrapped_largest = self.build_struct(&[tag, unwrapped_largest]);
+        let adt_inner_type = self.named_types
+            .adts_inner
+            .get(adt.name.s)
+            .expect("ICE: No adts_inner type in gen_new");
+        let wrapped_largest = self.build_struct_of_type(&[tag, unwrapped_largest], adt_inner_type);
         wrapped_largest.set_name("gen-new_wrapped-larg");
         if self.adts.adt_is_recursive(adt) {
             let wrapped_largest_rc = self.build_rc(env, wrapped_largest);
@@ -1350,12 +1375,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         expr: &'ast Expr<'src>,
         name: Option<&str>,
     ) -> &'ctx Value {
-        fn opt_set_name<'ctx>(v: &'ctx Value, name: Option<&str>) -> &'ctx Value {
-            if let Some(name_) = name {
-                v.set_name(name_);
-            }
-            v
-        }
         match *expr {
             // Represent Nil as the empty struct, unit
             Expr::Nil(_) => self.new_nil_val(),
