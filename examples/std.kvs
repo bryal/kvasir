@@ -3,6 +3,8 @@
 ;;; Represent strings as a pair of (pointer to string data) and length
 ;;; I.e. (Cons UIntPtr (Ptr UInt8))
 
+(extern str_lit_to_string (-> (Cons UIntPtr (Ptr UInt8)) String))
+
 (data String
   StrEmpty
   (StrCons UInt32 String))

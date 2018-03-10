@@ -639,16 +639,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         parser(self, &num.lit, &num.typ, &num.pos)
     }
 
-    fn gen_str(&self, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
-        panic!("ICE: Strings don't work atm, due to conversion to use ADTs")
-        // let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
-        // let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
-        // str_const.set_constant(true);
-        // let str_ptr = self.builder.build_gep(
-        //     str_const,
-        //     &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
-        // );
-        // self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr])
+    fn gen_str(&self, env: &mut Env<'src, 'ctx>, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
+        let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
+        let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
+        str_const.set_constant(true);
+        let str_ptr = self.builder.build_gep(
+            str_const,
+            &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
+        );
+        let s = self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr]);
+        s.set_name("str-lit");
+        let r = match env.get("str_lit_to_string", &[]) {
+            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[s]),
+            _ => panic!("ICE: No extern str_lit_to_string declared"),
+        };
+        r.set_name("str");
+        r
     }
 
     /// Generate IR for a variable used as an r-value
@@ -1379,7 +1385,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             // Represent Nil as the empty struct, unit
             Expr::Nil(_) => self.new_nil_val(),
             Expr::NumLit(ref n) => self.gen_num(n),
-            Expr::StrLit(ref s) => self.gen_str(s),
+            Expr::StrLit(ref s) => self.gen_str(env, s),
             Expr::Bool(ref b) => b.val.compile(self.ctx),
             Expr::Variable(ref var) => self.gen_variable(env, var),
             Expr::App(ref app) => opt_set_name(self.gen_app(env, app), name),

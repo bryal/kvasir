@@ -86,13 +86,4 @@
   (= (remainder b a) 0))
 
 (define main
-  (print-int64 1337)
-  ;; (>>= (random 10)
-  ;;      (lambda (target)
-  ;;        (>> (display (concat "Hello!" " guess random number!"))
-  ;;            (>>= read-int64
-  ;;                 (lambda (x)
-  ;;                   (if (= x target)
-  ;;                       (display "yes")
-  ;;                     (display "fool")))))))
-  )
+  (display "Hello, World!"))

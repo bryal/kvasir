@@ -1,8 +1,19 @@
+extern crate libc;
 extern crate rand;
 
 use std::io::{self, BufRead};
+use std::mem::size_of;
+use libc::malloc;
 
 pub mod string;
+
+type Rc<T> = *mut (u64, T);
+
+unsafe fn new_rc<T>(data: T) -> Rc<T> {
+    let rc = malloc(size_of::<(u64, T)>()) as *mut (u64, T);
+    *rc = (1, data);
+    rc
+}
 
 #[no_mangle]
 pub extern "C" fn read_line() -> String {

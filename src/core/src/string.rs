@@ -1,4 +1,5 @@
-use std::char;
+use std::{char, slice, str};
+use new_rc;
 
 // Representation of a kvasir `String`
 //
@@ -46,6 +47,24 @@ pub type String_ = *mut (u64, String_in);
 pub struct KvsString(String_);
 
 impl KvsString {
+    unsafe fn empty() -> KvsString {
+        let empty_in = String_in {
+            tag: Tag::Empty,
+            data: Variant { empty: () },
+        };
+        KvsString(new_rc(empty_in))
+    }
+
+    unsafe fn cons<T: Into<u32>>(c: T, rest: KvsString) -> KvsString {
+        let cons_in = String_in {
+            tag: Tag::Cons,
+            data: Variant {
+                cons: (c.into(), rest.0),
+            },
+        };
+        KvsString(new_rc(cons_in))
+    }
+
     unsafe fn refcount(&self) -> u64 {
         (*self.0).0
     }
@@ -81,6 +100,15 @@ unsafe fn kvs_string_to_string(mut s: KvsString) -> String {
 }
 
 #[no_mangle]
-pub extern "C" fn c_display(s: KvsString) {
-    unsafe { println!("{}", kvs_string_to_string(s)) }
+pub unsafe extern "C" fn str_lit_to_string((len, ptr): (usize, *const u8)) -> KvsString {
+    let slice = slice::from_raw_parts(ptr, len);
+    let s = str::from_utf8(slice).unwrap();
+    s.chars()
+        .rev()
+        .fold(KvsString::empty(), |acc, c| KvsString::cons(c, acc))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn c_display(s: KvsString) {
+    println!("{}", kvs_string_to_string(s))
 }
