@@ -1041,14 +1041,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         match *cst {
             Cst::Sexpr(ref sexpr, ref pos) => self.parse_sexpr_expr(sexpr, pos),
             Cst::Ident("nil", ref pos) => Ok(Expr::Nil(Nil { pos: pos.clone() })),
-            Cst::Ident("true", ref pos) => Ok(Expr::Bool(Bool {
-                val: true,
-                pos: pos.clone(),
-            })),
-            Cst::Ident("false", ref pos) => Ok(Expr::Bool(Bool {
-                val: false,
-                pos: pos.clone(),
-            })),
             Cst::Ident(ident, ref pos) => Ok(Expr::Variable(Variable {
                 ident: Ident::new(ident, pos.clone()),
                 typ: self.gen_type_var(),

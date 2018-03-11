@@ -67,7 +67,7 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut BTreeSet<&'src str>) -> BTr
             .iter()
             .flat_map(|e2| sibling_refs(e2, siblings))
             .collect(),
-        Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => BTreeSet::new(),
+        Nil(_) | NumLit(_) | StrLit(_) => BTreeSet::new(),
     }
 }
 

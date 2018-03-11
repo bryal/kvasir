@@ -500,12 +500,6 @@ pub struct Variable<'src> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Bool<'src> {
-    pub val: bool,
-    pub pos: SrcPos<'src>,
-}
-
-#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct App<'src> {
     pub func: Expr<'src>,
     pub arg: Expr<'src>,
@@ -755,7 +749,6 @@ pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
     StrLit(StrLit<'src>),
-    Bool(Bool<'src>),
     Variable(Variable<'src>),
     App(Box<App<'src>>),
     If(Box<If<'src>>),
@@ -777,7 +770,6 @@ impl<'src> Expr<'src> {
             Expr::Nil(ref n) => &n.pos,
             Expr::NumLit(ref l) => &l.pos,
             Expr::StrLit(ref l) => &l.pos,
-            Expr::Bool(ref b) => &b.pos,
             Expr::Variable(ref bnd) => &bnd.ident.pos,
             Expr::App(ref app) => &app.pos,
             Expr::If(ref cond) => &cond.pos,
@@ -806,7 +798,6 @@ impl<'src> Expr<'src> {
             Expr::Nil(_) => &TYPE_NIL,
             Expr::NumLit(ref l) => &l.typ,
             Expr::StrLit(_) => &TYPE_STRING,
-            Expr::Bool(_) => &TYPE_BOOL,
             Expr::Variable(ref bnd) => &bnd.typ,
             Expr::App(ref app) => &app.typ,
             Expr::If(ref cond) => &cond.typ,

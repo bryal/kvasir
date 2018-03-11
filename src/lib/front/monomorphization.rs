@@ -120,7 +120,7 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
         Expr::New(ref mut n) => for member in &mut n.members {
             monomorphize_defs_of_insts_in_expr(member, env)
         },
-        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
+        Expr::Nil(_) | Expr::StrLit(_) => (),
     }
 }
 
