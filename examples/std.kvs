@@ -14,6 +14,18 @@
     [StrEmpty        s2]
     [(StrCons c s1') (new StrCons c (concat s1' s2))]))
 
+(define (i-to-s' s n)
+  (let ([n' (/ n 10)]
+        [r  (remainder n 10)]
+        [c  (+ 48 r)]
+        [s' (new StrCons c s)])
+    (if (= n' 0)
+        s'
+      (i-to-s' s' n'))))
+
+(define i-to-s
+  (i-to-s' ""))
+
 ;;; Section Input/output
 
 (extern read_int64 (-> RealWorld (Cons Int64 RealWorld)))
@@ -206,3 +218,6 @@
 
 (define (remainder n d)
   (- n (* (/ n d) d)))
+
+(define (divisible-by n d)
+  (= (remainder n d) 0))

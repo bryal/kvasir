@@ -1,0 +1,18 @@
+(import std)
+
+(define (fb n)
+  (cond [(divisible-by n 15) "FizzBuzz"]
+        [(divisible-by n 5)  "Buzz"]
+        [(divisible-by n 3)  "Fizz"]
+        [else                (i-to-s n)]))
+
+(define (fb-s s n)
+  (if (= n 101)
+      s
+    (fb-s (concat (concat s "\n") (fb n)) (+ n 1))))
+
+(define fizzbuzz
+  (fb-s "" 1))
+
+(define main
+  (display fizzbuzz))
