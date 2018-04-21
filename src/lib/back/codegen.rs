@@ -1478,7 +1478,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ) {
         match *patt {
             Pattern::Nil(_) => (),
-            Pattern::NumLit(_) => unimplemented!(),
+            Pattern::NumLit(ref lit) => {
+                let n = self.gen_num(lit);
+                let eq = self.builder.build_eq(matchee, n);
+                let parent_func = self.current_func.borrow().unwrap();
+                let then_br = parent_func.append("cond_then");
+                self.builder.build_cond_br(eq, then_br, next_branch);
+                self.builder.position_at_end(then_br);
+                *self.current_block.borrow_mut() = Some(then_br);
+            }
             Pattern::StrLit(_) => unimplemented!(),
             Pattern::Variable(ref var) => if let Some((prev_pos, _)) =
                 bindings.insert(var.ident.s, (&var.ident.pos, matchee))
@@ -1489,13 +1497,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 let of_variant = self.build_of_variant(matchee, deconst.constr.s);
                 let parent_func = self.current_func.borrow().unwrap();
                 let then_br = parent_func.append("cond_then");
-                let else_br = parent_func.append("cond_else");
-                self.builder.build_cond_br(of_variant, then_br, else_br);
-
-                self.builder.position_at_end(else_br);
-                *self.current_block.borrow_mut() = Some(else_br);
-                self.builder.build_br(next_branch);
-
+                self.builder.build_cond_br(of_variant, then_br, next_branch);
                 self.builder.position_at_end(then_br);
                 *self.current_block.borrow_mut() = Some(then_br);
                 if let Some((last_sub, subs)) = deconst.subpatts.split_last() {
