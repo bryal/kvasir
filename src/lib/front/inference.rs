@@ -108,6 +108,22 @@ fn occurs_in(t: u64, u: &Type, s: &BTreeMap<u64, Type>) -> bool {
 //       If a LOCKED type variable needs to be specialized during inference,
 //       raise an error instead of adding substitution/constraint/redefinition.
 
+fn wrap_vars_types_in_apps_match<'src>(
+    m: &mut Match<'src>,
+    vars: &mut BTreeMap<&'src str, Poly<'src>>,
+    app_args: &[Type<'src>],
+) {
+    for case in &mut m.cases {
+        let shadoweds = case.patt
+            .variable_names()
+            .into_iter()
+            .filter_map(|id| vars.remove(id).map(|p| (id, p)))
+            .collect::<Vec<_>>();
+        wrap_vars_types_in_apps_(&mut case.body, vars, app_args);
+        vars.extend(shadoweds)
+    }
+}
+
 fn wrap_vars_types_in_apps_<'src>(
     e: &mut Expr<'src>,
     vars: &mut BTreeMap<&'src str, Poly<'src>>,
@@ -163,6 +179,7 @@ fn wrap_vars_types_in_apps_<'src>(
         Expr::New(ref mut n) => for member in &mut n.members {
             wrap_vars_types_in_apps_(member, vars, app_args)
         },
+        Expr::Match(ref mut m) => wrap_vars_types_in_apps_match(m, vars, app_args),
         Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) => (),
     }
 }
@@ -857,6 +874,61 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &n.typ
     }
 
+    fn infer_pattern(
+        &mut self,
+        patt: &mut Pattern<'src>,
+        expected_type: &Type<'src>,
+    ) -> Type<'src> {
+        match *patt {
+            Pattern::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
+            Pattern::NumLit(ref mut num) => self.infer_num_lit(num, expected_type).clone(),
+            Pattern::StrLit(ref mut lit) => self.infer_str_lit(lit, expected_type),
+            Pattern::Variable(ref mut var) => self.infer_variable(var, expected_type).clone(),
+            Pattern::Deconstr(ref mut dec) => {
+                let adt_type = self.adts
+                    .parent_type_of_variant(dec.constr.s)
+                    .expect("ICE: No parent type of variant in infer_pattern");
+                let typ = self.unify(expected_type, &adt_type).unwrap_or_else(|_| {
+                    dec.pos
+                        .error_exit(type_mis(&mut self.type_var_map, expected_type, &adt_type))
+                });
+                typ
+            }
+        }
+    }
+
+    fn infer_case<'c>(
+        &mut self,
+        case: &'c mut Case<'src>,
+        expected_patt_type: &Type<'src>,
+        expected_body_type: &Type<'src>,
+    ) -> (&'c Type<'src>, &'c Type<'src>) {
+        case.patt_typ = self.infer_pattern(&mut case.patt, &expected_patt_type);
+        for var in case.patt.variables() {
+            self.push_var(var.ident.s, var.typ.clone())
+        }
+        self.infer_expr(&mut case.body, expected_body_type);
+        for var in case.patt.variables() {
+            self.pop_var(var.ident.s)
+                .unwrap_or_else(|| panic!("ICE: binding gone from var_env in infer_match"));
+        }
+        (&case.patt_typ, case.body.get_type())
+    }
+
+    fn infer_match<'m>(
+        &mut self,
+        m: &'m mut Match<'src>,
+        expected_type: &Type<'src>,
+    ) -> &'m Type<'src> {
+        let expected_expr_type = self.type_var_gen.gen_tv();
+        let expr_typ = self.infer_expr(&mut m.expr, &expected_expr_type);
+        for case in &mut m.cases {
+            self.infer_case(case, &expr_typ, expected_type);
+        }
+        m.typ = expected_type.clone();
+        &m.typ
+    }
+
     // The type of an expression will only be inferred once
     fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
         match *expr {
@@ -876,6 +948,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Expr::OfVariant(ref mut x) => self.infer_of_variant(x, expected_type).clone(),
             Expr::AsVariant(ref mut x) => self.infer_as_variant(x, expected_type).clone(),
             Expr::New(ref mut n) => self.infer_new(n, expected_type).clone(),
+            Expr::Match(ref mut m) => self.infer_match(m, expected_type).clone(),
         }
     }
 }

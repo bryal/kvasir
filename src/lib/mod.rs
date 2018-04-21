@@ -1,12 +1,25 @@
 pub use self::collections::ScopeStack;
+use std::collections::{BTreeMap, BTreeSet};
+use std::iter::once;
 use std::fmt;
 use std::io;
+use std::cmp;
 use std::path::{Path, PathBuf};
 
 #[macro_use]
 pub mod front;
 pub mod back;
 pub mod collections;
+
+/// Returns the unit set of the single element `x`
+fn set_of<T: cmp::Ord>(x: T) -> BTreeSet<T> {
+    once(x).collect()
+}
+
+/// Returns the map of `{k} -> {v}`
+fn map_of<K: cmp::Ord, V>(k: K, v: V) -> BTreeMap<K, V> {
+    once((k, v)).collect()
+}
 
 /// A path-buffer that is guaranteed to be canonical
 #[derive(PartialEq, Clone)]

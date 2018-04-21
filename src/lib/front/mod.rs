@@ -236,6 +236,12 @@ impl<'src> SrcPos<'src> {
         self.write_message(w, msg, &format!("Error[{}]", code), color::BRIGHT_RED);
     }
 
+    pub fn error_string<E: Display>(&self, code: ErrCode, msg: E) -> String {
+        let mut v = vec![];
+        self.write_error(&mut v, code, msg);
+        String::from_utf8(v).expect("ICE: Error string not valid utf8 in error_string")
+    }
+
     pub fn print_error<E: Display>(&self, code: ErrCode, msg: E) {
         self.write_error(&mut io::stdout(), code, msg)
     }

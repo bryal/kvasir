@@ -1,3 +1,4 @@
+use lib::set_of;
 use super::SrcPos;
 use itertools::{zip, Itertools};
 use std::collections::{BTreeMap, BTreeSet};
@@ -5,7 +6,7 @@ use std::{borrow, fmt, hash, mem, path};
 use std::iter::once;
 
 // TODO: Replace static with const to allow matching
-lazy_static!{
+lazy_static! {
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil", None);
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool", None);
     pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
@@ -432,7 +433,7 @@ impl<'src> fmt::Display for Type<'src> {
 }
 
 /// An identifier
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ident<'src> {
     pub s: &'src str,
     pub pos: SrcPos<'src>,
@@ -493,7 +494,7 @@ pub struct StrLit<'src> {
     pub pos: SrcPos<'src>,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Variable<'src> {
     pub ident: Ident<'src>,
     pub typ: Type<'src>,
@@ -745,6 +746,60 @@ pub struct New<'src> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Deconstr<'src> {
+    pub constr: Ident<'src>,
+    pub subpatts: Vec<Pattern<'src>>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum Pattern<'src> {
+    Nil(Nil<'src>),
+    NumLit(NumLit<'src>),
+    StrLit(StrLit<'src>),
+    Variable(Variable<'src>),
+    Deconstr(Box<Deconstr<'src>>),
+}
+
+impl<'src> Pattern<'src> {
+    pub fn variables(&mut self) -> BTreeSet<&mut Variable<'src>> {
+        match *self {
+            Pattern::Variable(ref mut v) => set_of(v),
+            Pattern::Deconstr(ref mut d) => {
+                d.subpatts.iter_mut().flat_map(|p| p.variables()).collect()
+            }
+            _ => BTreeSet::new(),
+        }
+    }
+
+    pub fn variable_names(&self) -> BTreeSet<&'src str> {
+        match *self {
+            Pattern::Variable(ref v) => set_of(v.ident.s),
+            Pattern::Deconstr(ref d) => {
+                d.subpatts.iter().flat_map(|p| p.variable_names()).collect()
+            }
+            _ => BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Case<'src> {
+    pub patt: Pattern<'src>,
+    pub patt_typ: Type<'src>,
+    pub body: Expr<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Match<'src> {
+    pub expr: Expr<'src>,
+    pub cases: Vec<Case<'src>>,
+    pub typ: Type<'src>,
+    pub pos: SrcPos<'src>,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Expr<'src> {
     Nil(Nil<'src>),
     NumLit(NumLit<'src>),
@@ -762,6 +817,7 @@ pub enum Expr<'src> {
     OfVariant(Box<OfVariant<'src>>),
     AsVariant(Box<AsVariant<'src>>),
     New(Box<New<'src>>),
+    Match(Box<Match<'src>>),
 }
 
 impl<'src> Expr<'src> {
@@ -783,6 +839,7 @@ impl<'src> Expr<'src> {
             Expr::OfVariant(ref x) => &x.pos,
             Expr::AsVariant(ref x) => &x.pos,
             Expr::New(ref n) => &n.pos,
+            Expr::Match(ref m) => &m.pos,
         }
     }
 
@@ -811,6 +868,7 @@ impl<'src> Expr<'src> {
             Expr::OfVariant(_) => &TYPE_BOOL,
             Expr::AsVariant(ref x) => &x.typ,
             Expr::New(ref n) => &n.typ,
+            Expr::Match(ref m) => &m.typ,
         }
     }
 

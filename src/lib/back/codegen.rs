@@ -1,15 +1,45 @@
 use lib::front::{error_exit, exit, SrcPos};
-use lib::front::ast::{self, Expr};
+use lib::front::ast::{self, Expr, Pattern};
+use lib::{map_of, set_of, ErrCode};
 use llvm_sys;
 use llvm_sys::prelude::*;
 use llvm_sys::target::LLVMTargetDataRef;
-use std::{cmp, fmt, mem};
+use std::{fmt, mem};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
-use std::iter::once;
 use super::llvm::*;
 use self::CodegenErr::*;
+
+/// Runtime errors
+#[derive(PartialEq, Eq)]
+enum RuntErr<'s> {
+    NonExhaustPatts(SrcPos<'s>),
+}
+
+impl<'s> RuntErr<'s> {
+    fn code(&self) -> ErrCode {
+        fn e(n: usize) -> ErrCode {
+            ErrCode {
+                module: "RUNTIME",
+                number: n,
+            }
+        }
+        match *self {
+            RuntErr::NonExhaustPatts(..) => e(0),
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let code = self.code();
+        match *self {
+            RuntErr::NonExhaustPatts(ref pos) => pos.error_string(
+                code,
+                format!("Non-exhaustive patterns in match. Fell all the way through!"),
+            ),
+        }
+    }
+}
 
 type Instantiations<'src> = BTreeSet<(Vec<ast::Type<'src>>, ast::Type<'src>)>;
 type FreeVarInsts<'src> = BTreeMap<&'src str, Instantiations<'src>>;
@@ -27,16 +57,6 @@ fn type_rc<'ctx>(ctx: &'ctx Context, contents: &'ctx Type) -> &'ctx Type {
         &[Type::get::<u64>(ctx), contents],
         false,
     ))
-}
-
-/// Returns the unit set of the single element `x`
-fn set_of<T: cmp::Ord>(x: T) -> BTreeSet<T> {
-    once(x).collect()
-}
-
-/// Returns the map of `{k} -> {v}`
-fn map_of<K: cmp::Ord, V>(k: K, v: V) -> BTreeMap<K, V> {
-    once((k, v)).collect()
 }
 
 fn free_vars_in_exprs<'a, 'src: 'a, T>(es: T) -> FreeVarInsts<'src>
@@ -96,6 +116,7 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         OfVariant(ref x) => free_vars_in_expr(&x.expr),
         AsVariant(ref x) => free_vars_in_expr(&x.expr),
         New(ref n) => free_vars_in_exprs(&n.members),
+        Match(ref m) => free_vars_in_exprs(m.cases.iter().map(|c| &c.body)),
     }
 }
 
@@ -637,15 +658,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         parser(self, &num.lit, &num.typ, &num.pos)
     }
 
-    fn gen_str(&self, env: &mut Env<'src, 'ctx>, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
-        let str_lit_ll = Value::new_string(self.ctx, &lit.lit, true);
+    fn gen_str_(&self, env: &mut Env<'src, 'ctx>, s: &str) -> &'ctx Value {
+        let str_lit_ll = Value::new_string(self.ctx, s, true);
         let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
         str_const.set_constant(true);
         let str_ptr = self.builder.build_gep(
             str_const,
             &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
         );
-        let s = self.build_struct(&[lit.lit.len().compile(self.ctx), str_ptr]);
+        let s = self.build_struct(&[s.len().compile(self.ctx), str_ptr]);
         s.set_name("str-lit");
         let r = match env.get("str_lit_to_string", &[]) {
             Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[s]),
@@ -653,6 +674,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         };
         r.set_name("str");
         r
+    }
+
+    fn gen_str(&self, env: &mut Env<'src, 'ctx>, lit: &'ast ast::StrLit<'src>) -> &'ctx Value {
+        self.gen_str_(env, &lit.lit)
     }
 
     /// Generate IR for a variable used as an r-value
@@ -730,25 +755,36 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
-    fn gen_if(&self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
+    fn gen_if_<'e, C, A>(
+        &self,
+        env: &'e mut Env<'src, 'ctx>,
+        pred: &'ctx Value,
+        conseq: C,
+        alt: A,
+    ) -> &'ctx Value
+    where
+        C: FnOnce(Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
+        A: FnOnce(Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
+    {
         let parent_func = self.current_func.borrow().unwrap();
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
         let next_br = parent_func.append("cond_next");
-        let pred = self.gen_expr(env, &cond.predicate, None);
         self.builder.build_cond_br(pred, then_br, else_br);
         let mut phi_nodes = vec![];
 
         self.builder.position_at_end(then_br);
         *self.current_block.borrow_mut() = Some(then_br);
-        let then_val = self.gen_expr(env, &cond.consequent, None);
+        let (env_, then_val) = conseq(mem::replace(env, Env::new()));
+        mem::replace(env, env_);
         let then_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((then_val, then_last_block));
         self.builder.build_br(next_br);
 
         self.builder.position_at_end(else_br);
         *self.current_block.borrow_mut() = Some(else_br);
-        let else_val = self.gen_expr(env, &cond.alternative, None);
+        let (env_, else_val) = alt(mem::replace(env, Env::new()));
+        mem::replace(env, env_);
         let else_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((else_val, else_last_block));
         self.builder.build_br(next_br);
@@ -758,11 +794,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_phi(then_val.get_type(), &phi_nodes)
     }
 
+    fn gen_if(&self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
+        let pred = self.gen_expr(env, &cond.predicate, None);
+        let conseq = |mut env| {
+            let v = self.gen_expr(&mut env, &cond.consequent, None);
+            (env, v)
+        };
+        let alt = |mut env| {
+            let v = self.gen_expr(&mut env, &cond.alternative, None);
+            (env, v)
+        };
+        self.gen_if_(env, pred, conseq, alt)
+    }
+
     /// Build the application of a function to an argument
     fn build_app(
         &self,
         closure: &'ctx Value,
-        (arg, arg_type): (&'ctx Value, &'ctx Type),
+        arg: &'ctx Value,
         ret_type: &'ctx Type,
     ) -> &'ctx Value {
         let func_ptr = self.builder.build_extract_value(closure, 0);
@@ -775,7 +824,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             func_ptr,
             PointerType::new(FunctionType::new(
                 ret_type,
-                &[type_generic_ptr(self.ctx), arg_type],
+                &[type_generic_ptr(self.ctx), arg.get_type()],
             )),
         );
         if func.get_name().is_none() {
@@ -791,11 +840,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let typ = app.func.get_type();
         let inst = typ.get_inst_args().unwrap_or(&[]);
         let canon = typ.canonicalize();
-        let (at, rt) = canon.get_func().expect(&format!(
-            "ICE: Invalid function type `{}`",
-            app.func.get_type(),
-        ));
-        let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
+        let rt = canon
+            .get_func()
+            .expect(&format!(
+                "ICE: Invalid function type `{}`",
+                app.func.get_type(),
+            ))
+            .1;
+        let ret_type = self.gen_type(rt);
         let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
 
         // If it's a direct application of an extern, call it as a function,
@@ -804,7 +856,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             self.builder.build_call(ext.func, &[arg])
         } else {
             let func = self.gen_expr(env, &app.func, Some("app-func"));
-            self.build_app(func, (arg, arg_type), ret_type)
+            self.build_app(func, arg, ret_type)
         }
     }
 
@@ -884,12 +936,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// `malloc` in C returns a void pointer.
     ///
     /// Will call whatever function is bound to `malloc`.
-    fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: u64) -> &'ctx Value {
+    fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: usize) -> &'ctx Value {
         let r = match env.get("malloc", &[]) {
             Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => self.build_app(
                 v,
-                (n.compile(self.ctx), Type::get::<usize>(self.ctx)),
+                n.compile(self.ctx),
                 PointerType::new(Type::get::<u8>(self.ctx)),
             ),
             None => panic!("ICE: No allocator defined or declared"),
@@ -903,7 +955,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Returns a heap pointer of type pointer to `typ`.
     fn build_malloc_of_type(&self, env: &mut Env<'src, 'ctx>, typ: &Type) -> &'ctx Value {
         let type_size = self.size_of(typ);
-        let p = self.build_malloc(env, type_size);
+        let p = self.build_malloc(env, type_size as usize);
         self.builder.build_bit_cast(p, PointerType::new(typ))
     }
 
@@ -994,6 +1046,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_extract_value(cons, 0)
     }
 
+    pub fn build_extract_cdr(&self, cons: &Value) -> &'ctx Value {
+        self.builder.build_extract_value(cons, 1)
+    }
+
     /// Bitcast arbitrary (i.e. potentially aggregate) value in register to other type
     pub fn build_cast(&self, val: &'ctx Value, typ: &'ctx Type) -> &'ctx Value {
         let val_type = val.get_type();
@@ -1012,6 +1068,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let r = self.builder.build_load(target_stack);
         r.set_name("build-cast_target");
         r
+    }
+
+    fn build_panic(&self, env: &mut Env<'src, 'ctx>, s: &str) {
+        let s = self.gen_str_(env, s);
+        match env.get("_panic", &[]) {
+            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[s]),
+            Some(Var::Val(v)) => self.build_app(v, s, self.named_types.nil),
+            None => panic!("ICE: No _panic defined or declared"),
+        };
     }
 
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
@@ -1052,7 +1117,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
-        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type));
+        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
         let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
         undef_heap_captures_generic_rc.set_name(&format!("{}-undef-capts-gen", name));
         let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
@@ -1263,19 +1328,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         })
     }
 
-    /// Generate LLVM IR for the test of whether an algebraic data
-    /// type value is of a specific variant
-    fn gen_of_variant(
-        &self,
-        env: &mut Env<'src, 'ctx>,
-        test: &'ast ast::OfVariant<'src>,
-    ) -> &'ctx Value {
+    fn build_of_variant(&self, val: &'ctx Value, variant: &str) -> &'ctx Value {
         let e_i = self.adts
-            .variant_index(test.variant.s)
+            .variant_index(variant)
             .expect("ICE: No variant_index in gen_of_variant");
         let expected_i = (e_i as u16).compile(self.ctx);
-        let val = self.gen_expr(env, &test.expr, Some("of-variant_test-expr"));
-        let found_i = if self.adts.adt_of_variant_is_recursive(test.variant.s) {
+        let found_i = if self.adts.adt_of_variant_is_recursive(variant) {
             // If ADT is recursive, it's also behind a refcount pointer
             let val_ = self.build_gep_rc_contents(val);
             val_.set_name("of-variant_inner-ptr");
@@ -1289,13 +1347,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    fn gen_as_variant(
+    /// Generate LLVM IR for the test of whether an algebraic data
+    /// type value is of a specific variant
+    fn gen_of_variant(
         &self,
         env: &mut Env<'src, 'ctx>,
-        as_v: &'ast ast::AsVariant<'src>,
+        test: &'ast ast::OfVariant<'src>,
     ) -> &'ctx Value {
-        let wrapped = self.gen_expr(env, &as_v.expr, Some("as-variant_wrapped"));
-        let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(as_v.variant.s) {
+        let val = self.gen_expr(env, &test.expr, Some("of-variant_test-expr"));
+        self.build_of_variant(val, test.variant.s)
+    }
+
+    fn build_as_variant(&self, wrapped: &'ctx Value, variant: &str) -> &'ctx Value {
+        let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(variant) {
             // If ADT is recursive, it's also behind a refcount pointer
             self.build_gep_rc_contents(wrapped)
         } else {
@@ -1310,7 +1374,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         );
         unwrapped_ptr_of_largest_member_type.set_name("as-variant_unwrapped-largest");
         let unwrapped_type = self.gen_type(&self.adts
-            .type_of_variant(as_v.variant.s)
+            .type_of_variant(variant)
             .expect("ICE: No type_of_variant in gen_as_variant"));
         let unwrapped_ptr = self.builder.build_bit_cast(
             unwrapped_ptr_of_largest_member_type,
@@ -1320,6 +1384,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let r = self.builder.build_load(unwrapped_ptr);
         r.set_name("as-variant_unwrapped");
         r
+    }
+
+    fn gen_as_variant(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        as_v: &'ast ast::AsVariant<'src>,
+    ) -> &'ctx Value {
+        let wrapped = self.gen_expr(env, &as_v.expr, Some("as-variant_wrapped"));
+        self.build_as_variant(wrapped, as_v.variant.s)
     }
 
     fn gen_tuple(&self, env: &mut Env<'src, 'ctx>, es: &[Expr<'src>]) -> &'ctx Value {
@@ -1380,6 +1453,141 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
+    fn gen_match_case_(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        bindings: &mut BTreeMap<&'src str, (&'ast SrcPos<'src>, &'ctx Value)>,
+        matchee: &'ctx Value,
+        patt: &'ast Pattern<'src>,
+        body_type: &'ctx Type,
+        next_branch: &'ctx BasicBlock,
+    ) {
+        match *patt {
+            Pattern::Nil(_) => (),
+            Pattern::NumLit(_) => unimplemented!(),
+            Pattern::StrLit(_) => unimplemented!(),
+            Pattern::Variable(ref var) => if let Some((prev_pos, _)) =
+                bindings.insert(var.ident.s, (&var.ident.pos, matchee))
+            {
+                unimplemented!()
+            },
+            Pattern::Deconstr(ref deconst) => {
+                let of_variant = self.build_of_variant(matchee, deconst.constr.s);
+                let conseq = |mut env| {
+                    let inner = self.build_as_variant(matchee, deconst.constr.s);
+                    let (last_sub, subs) = deconst
+                        .subpatts
+                        .split_last()
+                        .expect("ICE: No subpatterns in deconstr, gen_match_case_");
+                    let mut remaining = inner;
+                    for sub in subs {
+                        let sub_matchee = self.build_extract_car(remaining);
+                        self.gen_match_case_(
+                            &mut env,
+                            bindings,
+                            sub_matchee,
+                            sub,
+                            body_type,
+                            next_branch,
+                        );
+                        remaining = self.build_extract_cdr(remaining);
+                    }
+                    let sub_matchee = remaining;
+                    self.gen_match_case_(
+                        &mut env,
+                        bindings,
+                        sub_matchee,
+                        last_sub,
+                        body_type,
+                        next_branch,
+                    );
+                    (env, self.new_nil_val())
+                };
+                let alt = |env| {
+                    self.builder.build_br(next_branch);
+                    (env, self.new_nil_val())
+                };
+                self.gen_if_(env, of_variant, conseq, alt);
+            }
+        }
+        // Match against pattern recursively
+        // if ident {
+        //     bind
+        // } else {
+        //     if of variant {
+        //         match children
+        //     } else {
+        //         is a mismatch;
+        //         pop bound vars (alg was keeping count of how many);
+        //         branch to next case;
+        //     }
+        // }
+        // is a match;
+        // branch to match
+    }
+
+    fn gen_match_case(
+        &self,
+        env: &mut Env<'src, 'ctx>,
+        matchee: &'ctx Value,
+        case: &ast::Case<'src>,
+        next_branch: &'ctx BasicBlock,
+    ) -> &'ctx Value {
+        let mut patt_bindings = BTreeMap::new();
+        self.gen_match_case_(
+            env,
+            &mut patt_bindings,
+            matchee,
+            &case.patt,
+            self.gen_type(case.body.get_type()),
+            next_branch,
+        );
+        for (var, &(_, val)) in &patt_bindings {
+            env.push_var(var, map_of(vec![], val));
+        }
+        let r = self.gen_expr(env, &case.body, Some("case_body"));
+        for (var, _) in patt_bindings {
+            env.pop(var);
+        }
+        r
+    }
+
+    fn gen_match(&self, env: &mut Env<'src, 'ctx>, m: &'ast ast::Match<'src>) -> &'ctx Value {
+        let expr = self.gen_expr(env, &m.expr, Some("matchee"));
+        let parent_func = self.current_func.borrow().unwrap();
+
+        let case_blocks = m.cases
+            .iter()
+            .enumerate()
+            .map(|(i, case)| (case, parent_func.append(&format!("case_{}", i))))
+            .collect::<Vec<_>>();
+        let default_block = parent_func.append("case_default");
+        let final_block = parent_func.append("case_final");
+        let mut case_phi_nodes = Vec::new();
+        let mut it = case_blocks.iter().peekable();
+        for &(case, block) in it.next() {
+            self.builder.position_at_end(block);
+            *self.current_block.borrow_mut() = Some(block);
+            let next_block = it.peek().map(|&&(_, b)| b).unwrap_or(default_block);
+            let case_val = self.gen_match_case(env, expr, &case, next_block);
+            // The block jumped from to `final_block` on successful match.
+            // I.e., the one to use in the phi node
+            let case_last_block = self.current_block.borrow().unwrap();
+            self.builder.build_br(final_block);
+            case_phi_nodes.push((case_val, case_last_block));
+        }
+
+        // Default block. What to do when all user-defined cases fell through (runtime error)
+        self.builder.position_at_end(default_block);
+        *self.current_block.borrow_mut() = Some(default_block);
+        self.build_panic(env, &RuntErr::NonExhaustPatts(m.pos.clone()).to_string());
+
+        self.builder.position_at_end(final_block);
+        *self.current_block.borrow_mut() = Some(final_block);
+        self.builder
+            .build_phi(self.gen_type(&m.typ), &case_phi_nodes)
+    }
+
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(
         &self,
@@ -1406,6 +1614,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::OfVariant(ref x) => opt_set_name(self.gen_of_variant(env, x), name),
             Expr::AsVariant(ref x) => opt_set_name(self.gen_as_variant(env, x), name),
             Expr::New(ref n) => opt_set_name(self.gen_new(env, n), name),
+            Expr::Match(ref m) => opt_set_name(self.gen_match(env, m), name),
         }
     }
 
@@ -1449,7 +1658,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 if main.typ.is_monomorphic() {
                     main.pos.error_exit(error_msg)
                 } else {
-                    main.pos.print_error(::lib::ErrCode::undefined(), error_msg);
+                    main.pos.print_error(ErrCode::undefined(), error_msg);
                     main.pos.print_help(
                         "Try adding type annotations to enforce correct type \
                          during type-checking.\n\
@@ -1483,11 +1692,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         // Call user defined `main`
         let user_main = env.get_var("main", &[])
             .expect("ICE: No monomorphic user defined `main`");
-        self.build_app(
-            user_main,
-            (self.new_nil_val(), self.named_types.nil),
-            self.named_types.nil,
-        );
+        self.build_app(user_main, self.new_nil_val(), self.named_types.nil);
         self.builder.build_ret(0i32.compile(self.ctx));
     }
 }

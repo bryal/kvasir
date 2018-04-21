@@ -86,7 +86,7 @@ impl KvsString {
     }
 }
 
-unsafe fn kvs_string_to_string(mut s: KvsString) -> String {
+pub unsafe fn kvs_string_to_string(mut s: KvsString) -> String {
     let mut buf = String::new();
     loop {
         if let Some((c, s_)) = s.split_first() {

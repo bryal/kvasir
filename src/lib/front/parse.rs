@@ -27,8 +27,8 @@ enum PErr<'s> {
     InvalidTVar(SrcPos<'s>),
     /// Invalid type
     InvalidType(SrcPos<'s>),
-    /// Invalid pattern
-    InvalidPatt(SrcPos<'s>),
+    /// Invalid binding pattern
+    InvalidBindPatt(SrcPos<'s>),
     /// Invalid top level item
     InvalidTopLevelItem(SrcPos<'s>),
     /// Invalid Algebraic Data Type identifier
@@ -84,7 +84,7 @@ impl<'s> PErr<'s> {
             InvalidConstr(..) => e(5),
             InvalidTVar(..) => e(6),
             InvalidType(..) => e(7),
-            InvalidPatt(..) => e(8),
+            InvalidBindPatt(..) => e(8),
             InvalidTopLevelItem(..) => e(9),
             InvalidAdtIdent(..) => e(10),
             InvalidAdtConstrIdent(..) => e(11),
@@ -127,7 +127,7 @@ impl<'s> PErr<'s> {
                 "Invalid type variable. Type variable must begin with a lower case letter",
             ),
             InvalidType(ref pos) => pos.write_error(w, code, "Invalid type"),
-            InvalidPatt(ref pos) => pos.write_error(w, code, "Invalid pattern"),
+            InvalidBindPatt(ref pos) => pos.write_error(w, code, "Invalid binding pattern"),
             InvalidTopLevelItem(ref pos) => pos.write_error(w, code, "Invalid top level item"),
             InvalidAdtIdent(ref pos, name) => pos.write_error(
                 w,
@@ -228,7 +228,7 @@ type PRes<'s, T> = Result<T, PErr<'s>>;
 /// A binding pattern
 ///
 /// Patterns are used in variable bindings as a sort of syntax sugar
-enum Pattern<'s> {
+enum BindPattern<'s> {
     /// Just an identifier
     Var(Ident<'s>),
     /// A function-binding pattern. E.g. `(inc x)`
@@ -558,25 +558,29 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             .map(|t| t.canonicalize())
     }
 
-    fn parse_app_pattern(&mut self, app: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Pattern<'s>> {
+    fn parse_app_bind_pattern(
+        &mut self,
+        app: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, BindPattern<'s>> {
         let (fst, rest) = split_first(app, pos)?;
         let f_id = ident(fst)?;
         let first_param = first(rest, pos)?;
         let last_param = last(rest, pos)?;
         let params_pos = first_param.pos().to(last_param.pos());
         let params_ids = rest.iter().map(|a| ident(a)).collect::<PRes<Vec<_>>>()?;
-        Ok(Pattern::Func(f_id, (params_ids, params_pos)))
+        Ok(BindPattern::Func(f_id, (params_ids, params_pos)))
     }
 
-    /// Parse a syntax tree as a Pattern
-    fn parse_pattern(&mut self, cst: &Cst<'s>) -> PRes<'s, Pattern<'s>> {
+    /// Parse a syntax tree as a BindPattern
+    fn parse_bind_pattern(&mut self, cst: &Cst<'s>) -> PRes<'s, BindPattern<'s>> {
         match *cst {
-            Cst::Ident(s, ref pos) => Ok(Pattern::Var(Ident {
+            Cst::Ident(s, ref pos) => Ok(BindPattern::Var(Ident {
                 s,
                 pos: pos.clone(),
             })),
-            Cst::Sexpr(ref app, ref pos) => self.parse_app_pattern(app, pos),
-            _ => Err(InvalidPatt(cst.pos().clone())),
+            Cst::Sexpr(ref app, ref pos) => self.parse_app_bind_pattern(app, pos),
+            _ => Err(InvalidBindPatt(cst.pos().clone())),
         }
     }
 
@@ -652,12 +656,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     /// Parse a sequence of token trees as the clauses of a `cond` special form
     ///
     /// Translate to nested `If`s
-    fn parse_cond(
-        &mut self,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-        args_pos: &SrcPos<'s>,
-    ) -> PRes<'s, Expr<'s>> {
+    fn parse_cond(&mut self, csts: &[Cst<'s>], args_pos: &SrcPos<'s>) -> PRes<'s, Expr<'s>> {
         let (last, init) = split_last(csts, args_pos)?;
         let else_val = self.parse_else_clause(last);
         init.iter().rev().fold(else_val, |alternative, c| {
@@ -729,15 +728,15 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         let typ = maybe_typ
             .map(|c| self.parse_type(c))
             .unwrap_or_else(|| Ok(self.gen_type_var()))?;
-        Ok(match self.parse_pattern(patt)? {
-            Pattern::Var(ident) => Binding {
+        Ok(match self.parse_bind_pattern(patt)? {
+            BindPattern::Var(ident) => Binding {
                 ident: ident,
                 typ: typ,
                 val: self.parse_expr(val)?,
                 mono_insts: BTreeMap::new(),
                 pos: pos.clone(),
             },
-            Pattern::Func(f_id, (params_ids, params_pos)) => {
+            BindPattern::Func(f_id, (params_ids, params_pos)) => {
                 let params = params_ids
                     .into_iter()
                     .map(|id| (id, self.gen_type_var()))
@@ -980,6 +979,74 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
+    fn parse_deconstr_pattern(
+        &mut self,
+        csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Deconstr<'s>> {
+        let (head, tail) = split_first(csts, pos)?;
+        let constr = ident(head)?;
+        let subpatts = tail.iter()
+            .map(|c| self.parse_pattern(c))
+            .collect::<PRes<_>>()?;
+        Ok(Deconstr {
+            constr,
+            subpatts,
+            pos: pos.clone(),
+        })
+    }
+
+    fn parse_pattern(&mut self, cst: &Cst<'s>) -> PRes<'s, Pattern<'s>> {
+        match *cst {
+            Cst::Sexpr(ref sexpr, ref pos) => self.parse_deconstr_pattern(sexpr, pos)
+                .map(|d| Pattern::Deconstr(box d)),
+            Cst::Ident("nil", ref pos) => Ok(Pattern::Nil(Nil { pos: pos.clone() })),
+            Cst::Ident(ident, ref pos) => Ok(Pattern::Variable(Variable {
+                ident: Ident::new(ident, pos.clone()),
+                typ: self.gen_type_var(),
+            })),
+            Cst::Num(num, ref pos) => Ok(Pattern::NumLit(NumLit {
+                lit: num,
+                typ: self.gen_type_var(),
+                pos: pos.clone(),
+            })),
+            Cst::Str(ref s, ref pos) => Ok(Pattern::StrLit(StrLit {
+                lit: s.clone(),
+                typ: self.gen_type_var(),
+                pos: pos.clone(),
+            })),
+        }
+    }
+
+    fn parse_case(&mut self, cst: &Cst<'s>) -> PRes<'s, Case<'s>> {
+        let (patt_cst, body_cst) = pair(cst)?;
+        Ok(Case {
+            patt: self.parse_pattern(patt_cst)?,
+            patt_typ: self.gen_type_var(),
+            body: self.parse_expr(body_cst)?,
+            pos: cst.pos().clone(),
+        })
+    }
+
+    fn parse_cases(&mut self, csts: &[Cst<'s>]) -> PRes<'s, Vec<Case<'s>>> {
+        csts.iter().map(|c| self.parse_case(c)).collect()
+    }
+
+    fn parse_match(
+        &mut self,
+        csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+        args_pos: &SrcPos<'s>,
+    ) -> PRes<'s, Match<'s>> {
+        let (first, rest) = split_first(csts, args_pos)?;
+        Ok(Match {
+            expr: self.parse_expr(first)?,
+            cases: self.parse_cases(rest)?,
+            typ: self.gen_type_var(),
+            pos: pos.clone(),
+        })
+    }
+
     fn parse_special_form(
         &mut self,
         head: &Cst<'s>,
@@ -1016,9 +1083,14 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 &tail_pos,
             )?))),
             "new" => Ok(Expr::New(Box::new(self.parse_new(tail, pos, &tail_pos)?))),
+            "match" => Ok(Expr::Match(Box::new(self.parse_match(
+                tail,
+                pos,
+                &tail_pos,
+            )?))),
 
             // "Macros"
-            "cond" => self.parse_cond(tail, pos, &tail_pos),
+            "cond" => self.parse_cond(tail, &tail_pos),
             _ => Err(NotASpecForm(form.pos.clone(), form.s)),
         }
     }

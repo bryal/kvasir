@@ -74,6 +74,14 @@
           [real-world2 (cdr r)]]
       (cons (f v) real-world2))))
 
+;;; Section Panicking
+
+(extern _panic (-> String Nil))
+
+(define: (panic msg)
+    (-> String a)
+  (undef (_panic msg)))
+
 ;; ;;; Section Random number generation
 ;; ;;;
 ;; ;;; Uses a global rng

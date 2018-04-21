@@ -10,6 +10,20 @@ use std::iter::once;
 use std::collections::{BTreeMap, BTreeSet};
 use super::ast::*;
 
+fn sibling_refs_match<'s>(m: &Match<'s>, siblings: &mut BTreeSet<&'s str>) -> BTreeSet<&'s str> {
+    let mut refs = BTreeSet::new();
+    for case in &m.cases {
+        let shadoweds = case.patt
+            .variable_names()
+            .into_iter()
+            .filter_map(|id| if siblings.remove(id) { Some(id) } else { None })
+            .collect::<Vec<_>>();
+        refs.extend(sibling_refs(&case.body, siblings));
+        siblings.extend(shadoweds)
+    }
+    refs
+}
+
 /// Returns a set of all siblings being referred to in this expression
 fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut BTreeSet<&'src str>) -> BTreeSet<&'src str> {
     use self::Expr::*;
@@ -48,9 +62,7 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut BTreeSet<&'src str>) -> BTr
                 .chain(once(&l.body))
                 .flat_map(|e2| sibling_refs(e2, siblings))
                 .collect();
-            for s in shadoweds {
-                siblings.insert(s);
-            }
+            siblings.extend(shadoweds);
             refs
         }
         Cons(ref c) => [&c.car, &c.cdr]
@@ -67,6 +79,7 @@ fn sibling_refs<'src>(e: &Expr<'src>, siblings: &mut BTreeSet<&'src str>) -> BTr
             .iter()
             .flat_map(|e2| sibling_refs(e2, siblings))
             .collect(),
+        Match(ref m) => sibling_refs_match(m, siblings),
         Nil(_) | NumLit(_) | StrLit(_) => BTreeSet::new(),
     }
 }
