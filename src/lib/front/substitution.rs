@@ -98,6 +98,6 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
             }
             subst_expr(&mut case.body, s);
         },
-        Expr::Nil(_) | Expr::StrLit(_) => (),
+        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }

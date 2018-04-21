@@ -1,10 +1,3 @@
-(data Bool
-  False
-  True)
-
-(define true (new True))
-(define false (new False))
-
 ;;; Section Strings
 ;;;
 ;;; Represent strings as a pair of (pointer to string data) and length

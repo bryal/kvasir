@@ -133,7 +133,7 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
             monomorphize_defs_of_insts_in_expr(member, env)
         },
         Expr::Match(ref mut m) => monomorphize_defs_of_insts_in_match(m, env),
-        Expr::Nil(_) | Expr::StrLit(_) => (),
+        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
 

@@ -180,7 +180,7 @@ fn wrap_vars_types_in_apps_<'src>(
             wrap_vars_types_in_apps_(member, vars, app_args)
         },
         Expr::Match(ref mut m) => wrap_vars_types_in_apps_match(m, vars, app_args),
-        Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) => (),
+        Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
 
@@ -247,6 +247,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 "UInt32" => Core,
                 "UInt64" => Core,
                 "UIntPtr" => Core,
+                "Bool" => Core,
                 "Float32" => Core,
                 "Float64" => Core,
                 "Nil" => Core,
@@ -455,6 +456,12 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
         self.unify(expected_type, &TYPE_STRING)
             .unwrap_or_else(|(e, f)| lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
+    }
+
+    /// Check that the expected type of a boolean literal is unifiable with the boolean type
+    fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
+        self.unify(expected_type, &TYPE_BOOL)
+            .unwrap_or_else(|(e, f)| b.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Infer the type of a numeric literal
@@ -934,6 +941,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         match *expr {
             Expr::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
             Expr::StrLit(ref mut l) => self.infer_str_lit(l, expected_type),
+            Expr::Bool(ref mut b) => self.infer_bool(b, expected_type),
             Expr::NumLit(ref mut l) => self.infer_num_lit(l, expected_type).clone(),
             Expr::Variable(ref mut var) => self.infer_variable(var, expected_type).clone(),
             Expr::App(ref mut app) => self.infer_app(app, expected_type).clone(),

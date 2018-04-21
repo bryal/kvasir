@@ -75,7 +75,7 @@ where
 fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
     use self::ast::Expr::*;
     match *e {
-        Nil(_) | NumLit(_) | StrLit(_) => FreeVarInsts::new(),
+        Nil(_) | NumLit(_) | StrLit(_) | Bool(_) => FreeVarInsts::new(),
         Variable(ref v) => {
             map_of(
                 v.ident.s,
@@ -350,6 +350,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::Const("UInt16", _) => Type::get::<u16>(self.ctx),
             ast::Type::Const("UInt32", _) => Type::get::<u32>(self.ctx),
             ast::Type::Const("UInt64", _) => Type::get::<u64>(self.ctx),
+            ast::Type::Const("Bool", _) => Type::get::<bool>(self.ctx),
             ast::Type::Const("Float32", _) => Type::get::<f32>(self.ctx),
             ast::Type::Const("Float64", _) => Type::get::<f64>(self.ctx),
             ast::Type::Const("Nil", _) => self.named_types.nil,
@@ -650,6 +651,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::Const("UInt32", _) => CodeGenerator::parse_gen_lit::<u32>,
             ast::Type::Const("UInt64", _) => CodeGenerator::parse_gen_lit::<u64>,
             ast::Type::Const("UIntPtr", _) => CodeGenerator::parse_gen_lit::<usize>,
+            ast::Type::Const("Bool", _) => CodeGenerator::parse_gen_lit::<bool>,
             ast::Type::Const("Float32", _) => CodeGenerator::parse_gen_lit::<f32>,
             ast::Type::Const("Float64", _) => CodeGenerator::parse_gen_lit::<f64>,
             _ => num.pos
@@ -1600,6 +1602,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::Nil(_) => self.new_nil_val(),
             Expr::NumLit(ref n) => self.gen_num(n),
             Expr::StrLit(ref s) => self.gen_str(env, s),
+            Expr::Bool(ref b) => b.val.compile(self.ctx),
             Expr::Variable(ref var) => self.gen_variable(env, var),
             Expr::App(ref app) => opt_set_name(self.gen_app(env, app), name),
             Expr::If(ref cond) => opt_set_name(self.gen_if(env, cond), name),
