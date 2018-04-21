@@ -768,12 +768,21 @@ pub enum Pattern<'src> {
 }
 
 impl<'src> Pattern<'src> {
-    pub fn variables(&mut self) -> BTreeSet<&mut Variable<'src>> {
+    pub fn variables(&self) -> BTreeSet<&Variable<'src>> {
+        match *self {
+            Pattern::Variable(ref v) => set_of(v),
+            Pattern::Deconstr(ref d) => d.subpatts.iter().flat_map(|p| p.variables()).collect(),
+            _ => BTreeSet::new(),
+        }
+    }
+
+    pub fn variables_mut(&mut self) -> BTreeSet<&mut Variable<'src>> {
         match *self {
             Pattern::Variable(ref mut v) => set_of(v),
-            Pattern::Deconstr(ref mut d) => {
-                d.subpatts.iter_mut().flat_map(|p| p.variables()).collect()
-            }
+            Pattern::Deconstr(ref mut d) => d.subpatts
+                .iter_mut()
+                .flat_map(|p| p.variables_mut())
+                .collect(),
             _ => BTreeSet::new(),
         }
     }
@@ -952,6 +961,13 @@ pub struct Adts<'src> {
 }
 
 impl<'src> Adts<'src> {
+    pub fn new() -> Self {
+        Adts {
+            defs: BTreeMap::new(),
+            variants: BTreeMap::new(),
+        }
+    }
+
     fn is_rec_const(&self, name: &str, origin: &str) -> bool {
         if name == origin {
             true
@@ -1032,6 +1048,10 @@ impl<'src> Adts<'src> {
 
     pub fn variant_index(&self, v: &str) -> Option<usize> {
         self.parent_adt_of_variant(v)?.variant_index(v)
+    }
+
+    pub fn variant_exists(&self, v: &str) -> bool {
+        self.variants.contains_key(v)
     }
 }
 

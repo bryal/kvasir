@@ -7,6 +7,7 @@ use lib::CanonPathBuf;
 use lib::collections::AddMap;
 use lib::front::lex::lex_file;
 use std::collections::BTreeMap;
+use std::mem;
 
 /// Constructors for common parse errors to prevent repetition and spelling mistakes
 #[derive(PartialEq, Eq)]
@@ -329,6 +330,7 @@ fn is_special_operator(op: &Cst) -> bool {
         "of-variant?",
         "as-variant",
         "new",
+        "match",
     ];
     ident_s(op)
         .map(|s| special_operators.contains(&s))
@@ -340,6 +342,8 @@ struct Parser<'tvg, 's> {
     sources: &'s AddMap<CanonPathBuf, String>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'tvg mut TypeVarGen,
+    /// Algebraic data type definitions
+    adts: Adts<'s>,
 }
 
 impl<'tvg, 's> Parser<'tvg, 's> {
@@ -347,6 +351,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Parser {
             sources,
             type_var_gen,
+            adts: Adts::new(),
         }
     }
 
@@ -1001,6 +1006,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             Cst::Sexpr(ref sexpr, ref pos) => self.parse_deconstr_pattern(sexpr, pos)
                 .map(|d| Pattern::Deconstr(box d)),
             Cst::Ident("nil", ref pos) => Ok(Pattern::Nil(Nil { pos: pos.clone() })),
+            Cst::Ident(ident, ref pos) if self.adts.variant_exists(ident) => {
+                Ok(Pattern::Deconstr(box Deconstr {
+                    constr: Ident::new(ident, pos.clone()),
+                    subpatts: vec![],
+                    pos: pos.clone(),
+                }))
+            }
             Cst::Ident(ident, ref pos) => Ok(Pattern::Variable(Variable {
                 ident: Ident::new(ident, pos.clone()),
                 typ: self.gen_type_var(),
@@ -1195,17 +1207,10 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
-    fn parse_data_type_defs(
-        &mut self,
-        defs_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)],
-    ) -> PRes<'s, Adts<'s>> {
-        let mut adts = Adts {
-            defs: BTreeMap::new(),
-            variants: BTreeMap::new(),
-        };
+    fn parse_data_type_defs(&mut self, defs_csts: &[(Vec<Cst<'s>>, SrcPos<'s>)]) -> PRes<'s, ()> {
         for &(ref def_csts, ref pos) in defs_csts {
             let def = self.parse_data_type_def(def_csts, pos)?;
-            if let Some(prev_def) = adts.defs.insert(def.name.s, def.clone()) {
+            if let Some(prev_def) = self.adts.defs.insert(def.name.s, def.clone()) {
                 return Err(DataTypeDuplDef {
                     pos: def.pos,
                     name: prev_def.name.s,
@@ -1213,13 +1218,14 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 });
             }
             for variant in &def.variants {
-                if !adts.variants.contains_key(variant.name.s) {
-                    adts.variants.insert(variant.name.s, def.name.s);
+                if !self.adts.variants.contains_key(variant.name.s) {
+                    self.adts.variants.insert(variant.name.s, def.name.s);
                 } else {
                     return Err(DataConstrDuplDef {
                         pos: variant.pos.clone(),
                         name: variant.name.s,
-                        prev_pos: adts.adt_variant_of_name(variant.name.s)
+                        prev_pos: self.adts
+                            .adt_variant_of_name(variant.name.s)
                             .expect("ICE: No adt_variant_of_name")
                             .pos
                             .clone(),
@@ -1227,7 +1233,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 }
             }
         }
-        Ok(adts)
+        Ok(())
     }
 
     fn _get_top_level_csts<'c>(
@@ -1289,10 +1295,13 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             .iter()
             .map(|&(is_typed, ref v, ref p)| (is_typed, v.as_slice(), p.clone()))
             .collect::<Vec<_>>();
+        self.parse_data_type_defs(&adts_csts)?;
+        let externs = self.parse_externs(&externs_csts)?;
+        let globals = self.parse_bindings(&globals_csts_slc)?;
         Ok(Ast {
-            externs: self.parse_externs(&externs_csts)?,
-            globals: self.parse_bindings(&globals_csts_slc)?,
-            adts: self.parse_data_type_defs(&adts_csts)?,
+            externs,
+            globals,
+            adts: mem::replace(&mut self.adts, Adts::new()),
         })
     }
 

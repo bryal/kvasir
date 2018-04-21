@@ -10,12 +10,9 @@
   (StrCons UInt32 String))
 
 (define (concat s1 s2)
-  (if (of-variant? s1 StrEmpty)
-      s2
-    (let [[x   (as-variant s1 StrCons)]
-          [c   (car x)]
-          [s1' (cdr x)]]
-      (new StrCons c (concat s1' s2)))))
+  (match s1
+    [StrEmpty        s2]
+    [(StrCons c s1') (new StrCons c (concat s1' s2))]))
 
 ;;; Section Input/output
 

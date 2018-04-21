@@ -116,7 +116,7 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         OfVariant(ref x) => free_vars_in_expr(&x.expr),
         AsVariant(ref x) => free_vars_in_expr(&x.expr),
         New(ref n) => free_vars_in_exprs(&n.members),
-        Match(ref m) => free_vars_in_exprs(m.cases.iter().map(|c| &c.body)),
+        Match(ref m) => free_vars_in_match(m),
     }
 }
 
@@ -137,6 +137,18 @@ fn free_vars_in_lambda_filter_externs<'src, 'ctx>(
         .into_iter()
         .filter(|&(k, _)| !env.externs.contains_key(k))
         .collect::<FreeVarInsts>()
+}
+
+fn free_vars_in_match<'src>(m: &ast::Match<'src>) -> FreeVarInsts<'src> {
+    let mut fvs = free_vars_in_expr(&m.expr);
+    for case in &m.cases {
+        let mut case_fvs = free_vars_in_expr(&case.body);
+        for v in case.patt.variables() {
+            case_fvs.remove(v.ident.s);
+        }
+        fvs.extend(case_fvs);
+    }
+    fvs
 }
 
 enum CodegenErr {
@@ -1475,17 +1487,24 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             },
             Pattern::Deconstr(ref deconst) => {
                 let of_variant = self.build_of_variant(matchee, deconst.constr.s);
-                let conseq = |mut env| {
+                let parent_func = self.current_func.borrow().unwrap();
+                let then_br = parent_func.append("cond_then");
+                let else_br = parent_func.append("cond_else");
+                self.builder.build_cond_br(of_variant, then_br, else_br);
+
+                self.builder.position_at_end(else_br);
+                *self.current_block.borrow_mut() = Some(else_br);
+                self.builder.build_br(next_branch);
+
+                self.builder.position_at_end(then_br);
+                *self.current_block.borrow_mut() = Some(then_br);
+                if let Some((last_sub, subs)) = deconst.subpatts.split_last() {
                     let inner = self.build_as_variant(matchee, deconst.constr.s);
-                    let (last_sub, subs) = deconst
-                        .subpatts
-                        .split_last()
-                        .expect("ICE: No subpatterns in deconstr, gen_match_case_");
                     let mut remaining = inner;
                     for sub in subs {
                         let sub_matchee = self.build_extract_car(remaining);
                         self.gen_match_case_(
-                            &mut env,
+                            env,
                             bindings,
                             sub_matchee,
                             sub,
@@ -1496,36 +1515,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                     }
                     let sub_matchee = remaining;
                     self.gen_match_case_(
-                        &mut env,
+                        env,
                         bindings,
                         sub_matchee,
                         last_sub,
                         body_type,
                         next_branch,
                     );
-                    (env, self.new_nil_val())
-                };
-                let alt = |env| {
-                    self.builder.build_br(next_branch);
-                    (env, self.new_nil_val())
-                };
-                self.gen_if_(env, of_variant, conseq, alt);
+                }
             }
         }
-        // Match against pattern recursively
-        // if ident {
-        //     bind
-        // } else {
-        //     if of variant {
-        //         match children
-        //     } else {
-        //         is a mismatch;
-        //         pop bound vars (alg was keeping count of how many);
-        //         branch to next case;
-        //     }
-        // }
-        // is a match;
-        // branch to match
     }
 
     fn gen_match_case(
@@ -1566,8 +1565,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let default_block = parent_func.append("case_default");
         let final_block = parent_func.append("case_final");
         let mut case_phi_nodes = Vec::new();
+
+        let first_case_block = case_blocks.get(0).expect("ICE: No cases in gen_match").1;
+        self.builder.build_br(first_case_block);
+
         let mut it = case_blocks.iter().peekable();
-        for &(case, block) in it.next() {
+        while let Some(&(case, block)) = it.next() {
             self.builder.position_at_end(block);
             *self.current_block.borrow_mut() = Some(block);
             let next_block = it.peek().map(|&&(_, b)| b).unwrap_or(default_block);
@@ -1583,6 +1586,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.position_at_end(default_block);
         *self.current_block.borrow_mut() = Some(default_block);
         self.build_panic(env, &RuntErr::NonExhaustPatts(m.pos.clone()).to_string());
+        self.builder.build_br(final_block);
+        let ret_type = self.gen_type(&m.typ);
+        case_phi_nodes.push((Value::new_undef(ret_type), default_block));
 
         self.builder.position_at_end(final_block);
         *self.current_block.borrow_mut() = Some(final_block);

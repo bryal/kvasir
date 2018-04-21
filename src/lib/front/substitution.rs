@@ -92,12 +92,17 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
         Expr::New(ref mut n) => for member in &mut n.members {
             subst_expr(member, s);
         },
-        Expr::Match(ref mut m) => for case in &mut m.cases {
-            for v in case.patt.variables() {
-                v.typ = subst(&v.typ, s);
+        Expr::Match(ref mut m) => {
+            subst_expr(&mut m.expr, s);
+            m.typ = subst(&m.typ, s);
+            for case in &mut m.cases {
+                case.patt_typ = subst(&case.patt_typ, s);
+                for v in case.patt.variables_mut() {
+                    v.typ = subst(&v.typ, s);
+                }
+                subst_expr(&mut case.body, s);
             }
-            subst_expr(&mut case.body, s);
-        },
+        }
         Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }

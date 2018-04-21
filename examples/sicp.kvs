@@ -86,4 +86,4 @@
   (= (remainder b a) 0))
 
 (define main
-  (display "Hello, World!"))
+  (display (concat "Hello, " "World!")))

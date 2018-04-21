@@ -34,6 +34,10 @@ enum InferenceErr<'src> {
         sub_found: Type<'src>,
     },
     ArmsDiffer(Type<'src>, Type<'src>),
+    ConstrWrongNumArgs {
+        expected: usize,
+        found: usize,
+    },
 }
 
 impl<'src> Display for InferenceErr<'src> {
@@ -60,6 +64,11 @@ impl<'src> Display for InferenceErr<'src> {
                 "Consequent and alternative have different types. Expected `{}` from \
                  alternative, found `{}`",
                 c, a
+            ),
+            ConstrWrongNumArgs { expected, found } => write!(
+                f,
+                "Wrong number of arguments in constructor in pattern. Expected {}, found {}",
+                expected, found
             ),
         }
     }
@@ -890,7 +899,10 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Pattern::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
             Pattern::NumLit(ref mut num) => self.infer_num_lit(num, expected_type).clone(),
             Pattern::StrLit(ref mut lit) => self.infer_str_lit(lit, expected_type),
-            Pattern::Variable(ref mut var) => self.infer_variable(var, expected_type).clone(),
+            Pattern::Variable(ref mut var) => {
+                var.typ = expected_type.clone();
+                var.typ.clone()
+            }
             Pattern::Deconstr(ref mut dec) => {
                 let adt_type = self.adts
                     .parent_type_of_variant(dec.constr.s)
@@ -899,6 +911,19 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                     dec.pos
                         .error_exit(type_mis(&mut self.type_var_map, expected_type, &adt_type))
                 });
+                let adt_variant = self.adts
+                    .adt_variant_of_name(dec.constr.s)
+                    .expect("ICE: No adt variant of name in infer_pattern");
+                let (n_subs, n_members) = (dec.subpatts.len(), adt_variant.members.len());
+                if n_subs != n_members {
+                    dec.pos.error_exit(ConstrWrongNumArgs {
+                        expected: n_members,
+                        found: n_subs,
+                    })
+                }
+                for (subpatt, member_type) in dec.subpatts.iter_mut().zip(&adt_variant.members) {
+                    self.infer_pattern(subpatt, member_type);
+                }
                 typ
             }
         }

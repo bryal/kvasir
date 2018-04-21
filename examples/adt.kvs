@@ -1,30 +1,28 @@
-(extern print_int64 (-> (Cons Int64 RealWorld) (Cons Nil RealWorld)))
+(extern _panic (-> String Nil))
 
-(define (print-int64 x)
-  (lambda (real-world)
-    (print_int64 (cons x real-world))))
+(define: (panic msg)
+    (-> String a)
+  (undef (_panic msg)))
+
+(extern str_lit_to_string (-> (Cons UIntPtr (Ptr UInt8)) String))
+
+(extern c_display (-> (Cons String RealWorld)
+                      (Cons Nil RealWorld)))
+
+(define (display s real-world) (c_display (cons s real-world)))
+
+(data String
+  StrEmpty
+  (StrCons UInt32 String))
+
+(define (concat s1 s2)
+  (match s1
+    [StrEmpty        s2]
+    [(StrCons c s1') (new StrCons c (concat s1' s2))]))
 
 (define: (undef _)
     (-> Nil t)
   (undef nil))
 
-(define: (add _)
-    (-> (Cons (: t Num) t) t)
-  (undef nil))
-
-(define (+ x y) (add (cons x y)))
-
-(data Sum
-  (Term Int64)
-  (Add Int64 Sum))
-
-(define (eval sum)
-  (if (of-variant? sum Term)
-      (as-variant sum Term)
-    (let [[add' (as-variant sum Add)]
-          [x    (car add')]
-          [sum' (cdr add')]]
-      (+ x (eval sum')))))
-
 (define main
-  (print-int64 (eval (new Add 1300 (new Term 37)))))
+  (display (concat "Foo" "Bar")))
