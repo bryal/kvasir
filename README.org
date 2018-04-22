@@ -7,6 +7,24 @@ The project may be difficult to build and buggy to use./
    Kvasir is a toy programming language, much inspired by Haskell, LISP/Scheme/Racket, and Rust.
    Kvasir is intended to in the future maybe be used for interactive and type-safe game programming.
 
+*** Example
+
+#+BEGIN_SRC racket
+;; Exercise 1.16 in SICP
+;;
+;; A logarithmic implementation of exponentiation.
+;; Uses iterative recursion to accumulate the answer.
+(define (expt b n)
+  (let [[(iter acc b i)
+         (cond ((= i 0)
+                acc)
+               ((even? i)
+                (iter acc (square b) (/ i 2)))
+               (else
+                (iter (* acc b) b (- i 1))))]]
+    (iter 1 b n)))
+#+END_SRC
+
 *** Features
     - LISP style, parenthesis based syntax.
     - Strong, static typing
