@@ -48,6 +48,17 @@ pub enum TypeFunc<'src> {
     Poly(Poly<'src>),
 }
 
+impl<'s> TypeFunc<'s> {
+    pub fn apply_constraints(&mut self, _: &BTreeMap<&str, BTreeSet<&str>>) {
+        match *self {
+            TypeFunc::Const(_) => (),
+            TypeFunc::Poly(_) => unreachable!(
+                "ICE: No `TypeFunc::Poly`s should exist yet when `apply_constraints` is relevant? (parse phase)"
+            ),
+        }
+    }
+}
+
 impl<'src> fmt::Display for TypeFunc<'src> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -372,6 +383,19 @@ impl<'src> Type<'src> {
 
     pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
         self.get_bin("Cons")
+    }
+
+    pub fn apply_constraints(&mut self, cs: &BTreeMap<&'src str, BTreeSet<&'src str>>) {
+        match *self {
+            Type::Var(ref mut tv) => if let Some(name) = tv.explicit {
+                if let Some(classes) = cs.get(name) {
+                    tv.constrs.extend(classes);
+                }   
+            },
+            Type::Const(..) => (),
+            Type::App(box ref mut tf, ref mut ts) => { tf.apply_constraints(cs); for t in ts { t.apply_constraints(cs) } },
+            Type::Poly(_) => unreachable!("ICE: No `Poly`s should exist yet when `apply_constraints` is relevant? (parse phase)"),
+        }
     }
 
     pub fn fulfills_constraints(&self, cs: &BTreeSet<&str>) -> bool {

@@ -40,12 +40,6 @@ enum PErr<'s> {
     InvalidAdtVariant(SrcPos<'s>),
     /// Not a special form
     NotASpecForm(SrcPos<'s>, &'s str),
-    /// Duplicate constraints definition for type variable
-    TVarDuplDef {
-        pos: SrcPos<'s>,
-        name: &'s str,
-        prev_pos: SrcPos<'s>,
-    },
     /// Duplicate definition of algebraic data type
     DataTypeDuplDef {
         pos: SrcPos<'s>,
@@ -95,7 +89,6 @@ impl<'s> PErr<'s> {
             InvalidAdtConstrIdent(..) => e(11),
             InvalidAdtVariant(..) => e(12),
             NotASpecForm(..) => e(13),
-            TVarDuplDef { .. } => e(14),
             DataTypeDuplDef { .. } => e(15),
             UndefTypeCon(..) => e(16),
             VarDuplDef { .. } => e(17),
@@ -153,27 +146,6 @@ impl<'s> PErr<'s> {
             }
             NotASpecForm(ref pos, s) => {
                 pos.write_error(w, code, format!("Not a special form: `{}`", s))
-            }
-            TVarDuplDef {
-                ref pos,
-                name,
-                ref prev_pos,
-            } => {
-                pos.write_error(
-                    w,
-                    code,
-                    format!(
-                        "Type variable `{}` has already been defined in this scope",
-                        name
-                    ),
-                );
-                prev_pos.write_note(
-                    w,
-                    "A type variable is implicitly defined the first time it is used \
-                     in a scope.\nTry removing the constraints of this instance of \
-                     the type variable, \nand add them to the first instance instead.\n\
-                     The first instance of the type variable is here:",
-                )
             }
             DataTypeDuplDef {
                 ref pos,
@@ -428,7 +400,16 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(externs)
     }
 
-    fn parse_constraint(&mut self, cst: &Cst<'s>) -> PRes<'s, &'s str> {
+    fn parse_type_var_ident(&mut self, cst: &Cst<'s>) -> PRes<'s, Ident<'s>> {
+        let id = ident(cst)?;
+        if id.s.starts_with(char::is_lowercase) {
+            Ok(id)
+        } else {
+            Err(InvalidTVar(id.pos))
+        }
+    }
+
+    fn parse_constraint_class(&mut self, cst: &Cst<'s>) -> PRes<'s, &'s str> {
         match *cst {
             Cst::Ident("Num", _) => Ok("Num"),
             Cst::Ident(s, ref pos) => Err(UndefConstr(pos.clone(), s)),
@@ -436,115 +417,98 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
-    /// Parse a definition of constraints
-    fn parse_constraints_def(
+    fn parse_constraints(
         &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
+        csts: &[Cst<'s>],
+    ) -> PRes<'s, BTreeMap<&'s str, BTreeSet<&'s str>>> {
+        let mut constrs = BTreeMap::new();
+        for cst in csts {
+            let (a, b) = pair(cst)?;
+            let class = self.parse_constraint_class(a)?;
+            let tvar = self.parse_type_var_ident(b)?;
+            constrs
+                .entry(tvar.s)
+                .or_insert(BTreeSet::new())
+                .insert(class);
+        }
+        Ok(constrs)
+    }
+
+    /// Parse a definition of constraints
+    fn parse_constrained_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
+        let (a, b) = two(csts, pos)?;
+        let cs = sexpr(a)?;
+        let constraints = self.parse_constraints(cs)?;
+        let mut body_type = self.parse_type(b)?;
+        body_type.apply_constraints(&constraints);
+        Ok(body_type)
+    }
+
+    fn parse_def_type_sig_sexpr(
+        &mut self,
         csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Type<'s>> {
-        let (first, rest) = split_first(csts, pos)?;
-        let id = ident(first)?;
-        let (name, pos) = (id.s, id.pos);
-        if name.starts_with(char::is_lowercase) {
-            if tvars.contains_key(name) {
-                let first_pos = tvars.get(name).unwrap().1.clone();
-                Err(TVarDuplDef {
-                    name: name,
-                    pos: pos.clone(),
-                    prev_pos: first_pos,
-                })
-            } else {
-                let tv = TVar {
-                    id: self.type_var_gen.gen(),
-                    constrs: rest.iter()
-                        .map(|cst| self.parse_constraint(cst))
-                        .collect::<PRes<'s, BTreeSet<&'s str>>>()?,
-                    explicit: Some(name),
-                };
-                tvars.insert(name, (tv.clone(), pos.clone()));
-                Ok(Type::Var(tv))
-            }
+        let is_constrain = csts.first()
+            .and_then(|c| ident_s(c).ok().map(|s| s == "constrain"))
+            .unwrap_or(false);
+        if is_constrain {
+            self.parse_constrained_type(&csts[1..], pos)
         } else {
-            Err(InvalidTVar(pos.clone()))
+            self.parse_type_sexpr(csts, pos)
         }
     }
 
-    fn parse_func_type(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    fn parse_def_type_sig(&mut self, cst: &Cst<'s>) -> PRes<'s, Type<'s>> {
+        match *cst {
+            Cst::Sexpr(ref app, ref pos) => self.parse_def_type_sig_sexpr(app, pos),
+            _ => self.parse_type(cst),
+        }
+    }
+
+    fn parse_func_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         let (ret, init) = split_last(csts, pos)?;
         let (last_param, init_params) = split_last(init, pos)?;
-
-        let last_fn = Type::new_func(
-            self.parse_type_with_tvars(tvars, last_param)?,
-            self.parse_type_with_tvars(tvars, ret)?,
-        );
+        let last_fn = Type::new_func(self.parse_type(last_param)?, self.parse_type(ret)?);
         init_params.iter().rev().fold(Ok(last_fn), |acc, t| {
-            Ok(Type::new_func(self.parse_type_with_tvars(tvars, t)?, acc?))
+            Ok(Type::new_func(self.parse_type(t)?, acc?))
         })
     }
 
-    fn parse_cons_type(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    fn parse_cons_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         let (a, b) = two(csts, pos)?;
-        let car = self.parse_type_with_tvars(tvars, a)?;
-        let cdr = self.parse_type_with_tvars(tvars, b)?;
+        let car = self.parse_type(a)?;
+        let cdr = self.parse_type(b)?;
         Ok(Type::new_cons(car, cdr))
     }
 
-    fn parse_ptr_type(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
-        self.parse_type_with_tvars(tvars, one(csts, pos)?)
-            .map(Type::new_ptr)
+    fn parse_ptr_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
+        self.parse_type(one(csts, pos)?).map(Type::new_ptr)
     }
 
-    fn parse_type_sexpr(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        app: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    fn parse_type_sexpr(&mut self, app: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         let (first, rest) = split_first(app, pos)?;
         let id = ident(first)?;
         let (s, p) = (id.s, id.pos);
         match s {
-            ":" => self.parse_constraints_def(tvars, rest, pos),
-            "->" => self.parse_func_type(tvars, rest, pos),
-            "Cons" => self.parse_cons_type(tvars, rest, pos),
-            "Ptr" => self.parse_ptr_type(tvars, rest, pos),
+            "->" => self.parse_func_type(rest, pos),
+            "Cons" => self.parse_cons_type(rest, pos),
+            "Ptr" => self.parse_ptr_type(rest, pos),
             _ => Err(UndefTypeCon(p.clone(), s)),
         }
     }
 
-    fn parse_type_ident(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        id: &'s str,
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    fn parse_type_ident(&mut self, id: &'s str, pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         match id {
             "_" => Ok(self.gen_type_var()),
             "Nil" => Ok(TYPE_NIL.clone()),
             // The type identifier starts with a lowercase letter => Is a type variable
             s if s.starts_with(char::is_lowercase) => {
-                let local = TVar {
+                let tv = TVar {
                     id: self.type_var_gen.gen(),
                     constrs: BTreeSet::new(),
                     explicit: Some(s),
                 };
-                let tv = tvars.entry(s).or_insert((local, pos.clone())).0.clone();
                 Ok(Type::Var(tv))
             }
             // Doesn't start with lowercase => Is a type constant e.g. Int32
@@ -552,23 +516,14 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
-    /// Parse a syntax tree as a `Type`, keeping track och implicitly defined type variables
-    fn parse_type_with_tvars(
-        &mut self,
-        tvars: &mut BTreeMap<&'s str, (TVar<'s>, SrcPos<'s>)>,
-        tree: &Cst<'s>,
-    ) -> PRes<'s, Type<'s>> {
-        match *tree {
-            Cst::Sexpr(ref sexp, ref pos) => self.parse_type_sexpr(tvars, sexp, pos),
-            Cst::Ident(s, ref pos) => self.parse_type_ident(tvars, s, &pos),
-            _ => Err(InvalidType(tree.pos().clone())),
-        }
-    }
-
     /// Parse a syntax tree as a `Type`
     fn parse_type(&mut self, tree: &Cst<'s>) -> PRes<'s, Type<'s>> {
-        self.parse_type_with_tvars(&mut BTreeMap::new(), tree)
-            .map(|t| t.canonicalize())
+        let t = match *tree {
+            Cst::Sexpr(ref sexp, ref pos) => self.parse_type_sexpr(sexp, pos),
+            Cst::Ident(s, ref pos) => self.parse_type_ident(s, &pos),
+            _ => Err(InvalidType(tree.pos().clone())),
+        };
+        t.map(|t| t.canonicalize())
     }
 
     fn parse_app_bind_pattern(
@@ -739,7 +694,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Binding<'s>> {
         let typ = maybe_typ
-            .map(|c| self.parse_type(c))
+            .map(|c| self.parse_def_type_sig(c))
             .unwrap_or_else(|| Ok(self.gen_type_var()))?;
         Ok(match self.parse_bind_pattern(patt)? {
             BindPattern::Var(ident) => Binding {
