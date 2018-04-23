@@ -906,7 +906,10 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
             Pattern::Deconstr(ref mut dec) => {
                 let adt_type = self.adts
                     .parent_type_of_variant(dec.constr.s)
-                    .expect("ICE: No parent type of variant in infer_pattern");
+                    .expect(&format!(
+                        "ICE: No parent type of variant `{}` in infer_pattern",
+                        dec.constr.s,
+                    ));
                 let typ = self.unify(expected_type, &adt_type).unwrap_or_else(|_| {
                     dec.pos
                         .error_exit(type_mis(&mut self.type_var_map, expected_type, &adt_type))
@@ -998,6 +1001,7 @@ fn assert_externs_monomorphic(externs: &BTreeMap<&str, ExternDecl>) {
 pub fn infer_types(ast: &mut Ast, type_var_generator: &mut TypeVarGen) {
     assert_externs_monomorphic(&ast.externs);
     let mut inferrer = Inferrer::new(&mut ast.externs, &mut ast.adts, type_var_generator);
+
     inferrer.infer_bindings(&mut ast.globals);
 
     // Apply all substitutions recursively to get rid of reduntant, indirect type variables

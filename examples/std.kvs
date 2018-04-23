@@ -17,7 +17,7 @@
 (define (i-to-s' s n)
   (let ([n' (/ n 10)]
         [r  (remainder n 10)]
-        [c  (+ 48 r)]
+        [c  (cast (+ 48 r) UInt32)]
         [s' (new StrCons c s)])
     (if (= n' 0)
         s'

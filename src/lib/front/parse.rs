@@ -66,6 +66,10 @@ enum PErr<'s> {
         name: &'s str,
         prev_pos: SrcPos<'s>,
     },
+    UndefDataConstr {
+        pos: SrcPos<'s>,
+        name: &'s str,
+    },
 }
 
 impl<'s> PErr<'s> {
@@ -96,6 +100,7 @@ impl<'s> PErr<'s> {
             UndefTypeCon(..) => e(16),
             VarDuplDef { .. } => e(17),
             DataConstrDuplDef { .. } => e(18),
+            UndefDataConstr { .. } => e(19),
         }
     }
 
@@ -215,6 +220,9 @@ impl<'s> PErr<'s> {
                     ),
                 );
                 prev_pos.write_note(w, "The previous definition of the constructor is here:")
+            }
+            UndefDataConstr { ref pos, name } => {
+                pos.write_error(w, code, format!("Undefined data constructor `{}`", name));
             }
         }
     }
@@ -930,6 +938,18 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         })
     }
 
+    fn parse_variant(&mut self, cst: &Cst<'s>) -> PRes<'s, Ident<'s>> {
+        let constr = ident(cst)?;
+        if self.adts.variant_exists(constr.s) {
+            Ok(constr)
+        } else {
+            Err(UndefDataConstr {
+                pos: constr.pos,
+                name: constr.s,
+            })
+        }
+    }
+
     /// Parse a variant test
     ///
     /// `(of-variant? VAL TYPE)`, e.g. `(of-variant? x Cons)`
@@ -942,7 +962,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         let (a, b) = two(csts, args_pos)?;
         Ok(OfVariant {
             expr: self.parse_expr(a)?,
-            variant: ident(b)?,
+            variant: self.parse_variant(b)?,
             pos: pos.clone(),
         })
     }
@@ -959,7 +979,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         let (a, b) = two(csts, args_pos)?;
         Ok(AsVariant {
             expr: self.parse_expr(a)?,
-            variant: ident(b)?,
+            variant: self.parse_variant(b)?,
             typ: self.gen_type_var(),
             pos: pos.clone(),
         })
@@ -972,7 +992,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         args_pos: &SrcPos<'s>,
     ) -> PRes<'s, New<'s>> {
         let (first, rest) = split_first(csts, args_pos)?;
-        let constr = ident(first)?;
+        let constr = self.parse_variant(first)?;
         let members = rest.iter()
             .map(|c| self.parse_expr(c))
             .collect::<PRes<_>>()?;
@@ -990,7 +1010,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Deconstr<'s>> {
         let (head, tail) = split_first(csts, pos)?;
-        let constr = ident(head)?;
+        let constr = self.parse_variant(head)?;
         let subpatts = tail.iter()
             .map(|c| self.parse_pattern(c))
             .collect::<PRes<_>>()?;
