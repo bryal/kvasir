@@ -129,7 +129,7 @@ $ ./examples/test.bin
 ** License
    Copyright (C) 2017 Johan Johansson
 
-   Licensed under the GPLv3
+   GPLv3
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
