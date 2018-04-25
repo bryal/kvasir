@@ -33,14 +33,14 @@
   (/ (+ x y) 2))
 
 (define (sqrt x)
-  (let (((improve guess x)
-         (average guess (/ x guess)))
-        ((good-enough? guess x)
-         (< (abs (- (square guess) x)) 0.0001))
-        ((sqrt-iter guess x)
+  (let [[(improve guess x)
+         (average guess (/ x guess))]
+        [(good-enough? guess x)
+         (< (abs (- (square guess) x)) 0.0001)]
+        [(sqrt-iter guess x)
          (if (good-enough? guess x)
              guess
-           (sqrt-iter (improve guess x) x))))
+           (sqrt-iter (improve guess x) x))]]
     (sqrt-iter 1.0 x)))
 
 (define (factorial n)
@@ -86,4 +86,4 @@
   (= (remainder b a) 0))
 
 (define main
-  (display (concat "Hello, " "World!")))
+  (display (dec-to-s (: 0.123 Float64))))

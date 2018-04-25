@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use lib::front::ast::*;
 
-fn subst_poly<'src>(p: &Poly<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Poly<'src> {
+fn subst_poly<'src>(p: &Poly<'src>, s: &mut BTreeMap<TVar<'src>, Type<'src>>) -> Poly<'src> {
     let shadowed_mappings = p.params
         .iter()
-        .filter_map(|tv| s.remove(&tv.id).map(|t| (tv.id, t)))
+        .filter_map(|(param_v, _)| s.remove(&param_v).map(|t| (*param_v, t)))
         .collect::<Vec<_>>();
     let substituted = subst(&p.body, s);
     s.extend(shadowed_mappings);
@@ -14,7 +14,10 @@ fn subst_poly<'src>(p: &Poly<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Poly<'
     }
 }
 
-fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> TypeFunc<'src> {
+fn subst_type_func<'src>(
+    f: &TypeFunc<'src>,
+    s: &mut BTreeMap<TVar<'src>, Type<'src>>,
+) -> TypeFunc<'src> {
     match *f {
         TypeFunc::Const(c) => TypeFunc::Const(c),
         TypeFunc::Poly(ref p) => TypeFunc::Poly(subst_poly(p, s)),
@@ -22,9 +25,9 @@ fn subst_type_func<'src>(f: &TypeFunc<'src>, s: &mut BTreeMap<u64, Type<'src>>) 
 }
 
 /// Apply substitutions in `s` to free type variables in `t`
-pub fn subst<'src>(t: &Type<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Type<'src> {
+pub fn subst<'src>(t: &Type<'src>, s: &mut BTreeMap<TVar<'src>, Type<'src>>) -> Type<'src> {
     match *t {
-        Type::Var(ref tv) => s.get(&tv.id)
+        Type::Var(ref tv) => s.get(&tv)
             .cloned()
             .map(|t2| subst(&t2, s))
             .unwrap_or(t.clone()),
@@ -38,7 +41,7 @@ pub fn subst<'src>(t: &Type<'src>, s: &mut BTreeMap<u64, Type<'src>>) -> Type<'s
 }
 
 /// Apply substitutions in `s` to type variables in types in `e`
-pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
+pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<TVar<'src>, Type<'src>>) {
     match *e {
         Expr::NumLit(ref mut n) => n.typ = subst(&n.typ, s),
         Expr::Variable(ref mut bnd) => bnd.typ = subst(&bnd.typ, s),
@@ -60,7 +63,7 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<u64, Type<'src>>) {
         }
         Expr::Let(ref mut l) => {
             for binding in l.bindings.bindings_mut() {
-                binding.typ = subst(&binding.typ, s);
+                binding.sig.body = subst(&binding.sig.body, s);
                 subst_expr(&mut binding.val, s);
             }
             subst_expr(&mut l.body, s);

@@ -49,7 +49,7 @@ pub extern "C" fn print_uint64(n: u64) {
 }
 
 #[no_mangle]
-pub extern "C" fn print_float64(x: u64) {
+pub extern "C" fn print_float64(x: f64) {
     println!("{}", x)
 }
 

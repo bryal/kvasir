@@ -14,33 +14,37 @@
 //       as new info might have been gathered in second branch
 
 use self::InferenceErr::*;
+use lib::set_of;
 use lib::front::*;
 use lib::front::ast::*;
 use lib::front::monomorphization::*;
 use lib::front::substitution::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
-use std::iter::{once, FromIterator};
 use itertools::{zip, Itertools};
 
-enum InferenceErr<'src> {
+lazy_static! {
+    pub static ref EMPTY_SET: BTreeSet<&'static str> = BTreeSet::new();
+}
+
+enum InferenceErr<'s> {
     /// Type mismatch. (expected, found)
-    TypeMis(Type<'src>, Type<'src>),
+    TypeMis(Type<'s>, Type<'s>),
     /// Type mismatch with specified mismatching nodes
     TypeMisSub {
-        expected: Type<'src>,
-        found: Type<'src>,
-        sub_expected: Type<'src>,
-        sub_found: Type<'src>,
+        expected: Type<'s>,
+        found: Type<'s>,
+        sub_expected: Type<'s>,
+        sub_found: Type<'s>,
     },
-    ArmsDiffer(Type<'src>, Type<'src>),
+    ArmsDiffer(Type<'s>, Type<'s>),
     ConstrWrongNumArgs {
         expected: usize,
         found: usize,
     },
 }
 
-impl<'src> Display for InferenceErr<'src> {
+impl<'s> Display for InferenceErr<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             TypeMis(ref expected, ref found) => write!(
@@ -74,21 +78,21 @@ impl<'src> Display for InferenceErr<'src> {
     }
 }
 
-fn type_mis<'src>(
-    type_var_map: &mut BTreeMap<u64, Type<'src>>,
-    expected: &Type<'src>,
-    found: &Type<'src>,
-) -> InferenceErr<'src> {
+fn type_mis<'s>(
+    type_var_map: &mut BTreeMap<TVar<'s>, Type<'s>>,
+    expected: &Type<'s>,
+    found: &Type<'s>,
+) -> InferenceErr<'s> {
     TypeMis(subst(expected, type_var_map), subst(found, type_var_map))
 }
 
-fn type_mis_sub<'src>(
-    type_var_map: &mut BTreeMap<u64, Type<'src>>,
-    expected: &Type<'src>,
-    found: &Type<'src>,
-    sub_expected: &Type<'src>,
-    sub_found: &Type<'src>,
-) -> InferenceErr<'src> {
+fn type_mis_sub<'s>(
+    type_var_map: &mut BTreeMap<TVar<'s>, Type<'s>>,
+    expected: &Type<'s>,
+    found: &Type<'s>,
+    sub_expected: &Type<'s>,
+    sub_found: &Type<'s>,
+) -> InferenceErr<'s> {
     TypeMisSub {
         expected: subst(expected, type_var_map),
         found: subst(found, type_var_map),
@@ -100,11 +104,10 @@ fn type_mis_sub<'src>(
 /// Returns whether type variable `t` occurs in type `u` with substitutions `s`
 ///
 /// Useful to check for circular type variable mappings
-fn occurs_in(t: u64, u: &Type, s: &BTreeMap<u64, Type>) -> bool {
+fn occurs_in(t: &TVar, u: &Type, s: &BTreeMap<TVar, Type>) -> bool {
     match *u {
-        Type::Var(ref tv) if t == tv.id => true,
-        Type::Var(ref tv) => s.get(&tv.id).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
-
+        Type::Var(ref tv) if t == tv => true,
+        Type::Var(ref tv) => s.get(&tv).map(|u2| occurs_in(t, u2, s)).unwrap_or(false),
         Type::App(_, ref us) => us.iter().any(|u2| occurs_in(t, u2, s)),
         // TODO: Verify that this is correct
         //        Type::Scheme(ref is, ref u2) => !is.contains(&t) && occurs_in(t, u2, s),
@@ -117,10 +120,10 @@ fn occurs_in(t: u64, u: &Type, s: &BTreeMap<u64, Type>) -> bool {
 //       If a LOCKED type variable needs to be specialized during inference,
 //       raise an error instead of adding substitution/constraint/redefinition.
 
-fn wrap_vars_types_in_apps_match<'src>(
-    m: &mut Match<'src>,
-    vars: &mut BTreeMap<&'src str, Poly<'src>>,
-    app_args: &[Type<'src>],
+fn wrap_vars_types_in_apps_match<'s>(
+    m: &mut Match<'s>,
+    vars: &mut BTreeMap<&'s str, Poly<'s>>,
+    app_args: &[Type<'s>],
 ) {
     for case in &mut m.cases {
         let shadoweds = case.patt
@@ -133,12 +136,12 @@ fn wrap_vars_types_in_apps_match<'src>(
     }
 }
 
-fn wrap_vars_types_in_apps_<'src>(
-    e: &mut Expr<'src>,
-    vars: &mut BTreeMap<&'src str, Poly<'src>>,
-    app_args: &[Type<'src>],
+fn wrap_vars_types_in_apps_<'s>(
+    e: &mut Expr<'s>,
+    vars: &mut BTreeMap<&'s str, Poly<'s>>,
+    app_args: &[Type<'s>],
 ) {
-    let wrap = |p: &Poly<'src>| Type::App(Box::new(TypeFunc::Poly(p.clone())), app_args.to_vec());
+    let wrap = |p: &Poly<'s>| Type::App(Box::new(TypeFunc::Poly(p.clone())), app_args.to_vec());
     match *e {
         Expr::Variable(ref mut var) => match vars.get(var.ident.s) {
             Some(p) => var.typ = wrap(p),
@@ -195,10 +198,10 @@ fn wrap_vars_types_in_apps_<'src>(
 
 /// To correctly generate monomorphizations, wrap the type of a recursive
 /// variable in an application
-fn wrap_vars_types_in_apps<'src>(
-    e: &mut Expr<'src>,
-    vars: &mut BTreeMap<&'src str, Poly<'src>>,
-    app_args: &[TVar<'src>],
+fn wrap_vars_types_in_apps<'s>(
+    e: &mut Expr<'s>,
+    vars: &mut BTreeMap<&'s str, Poly<'s>>,
+    app_args: &[TVar<'s>],
 ) {
     let app_args_t = app_args.iter().collect::<Vec<_>>();
     wrap_vars_types_in_apps_(
@@ -221,27 +224,28 @@ enum TypeDef {
     // TODO: Type alias
 }
 
-struct Inferrer<'a, 'src: 'a> {
+struct Inferrer<'a, 's: 'a> {
     /// The environment of variables from let-bindings and function-parameters
-    var_env: BTreeMap<&'src str, Vec<Type<'src>>>,
+    var_env: BTreeMap<&'s str, Vec<Type<'s>>>,
     /// Declarations of external variables
-    externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
-    /// A map of free type variables to their instantiations
-    type_var_map: BTreeMap<u64, Type<'src>>,
+    externs: &'a BTreeMap<&'s str, ExternDecl<'s>>,
+    /// Environment of what constraints are bound to a type variable
+    type_var_env: BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
+    type_var_map: BTreeMap<TVar<'s>, Type<'s>>,
     /// Counter for generation of unique type variable ids
     type_var_gen: &'a mut TypeVarGen,
     /// Defined algebraic data types
-    adts: &'a Adts<'src>,
+    adts: &'a Adts<'s>,
     /// A map of core types and used defined types
     ///
     /// Numeric types, cons, (TODO) type aliases, data type definitions
-    type_defs: BTreeMap<&'src str, TypeDef>,
+    type_defs: BTreeMap<&'s str, TypeDef>,
 }
 
-impl<'a, 'src: 'a> Inferrer<'a, 'src> {
+impl<'a, 's: 'a> Inferrer<'a, 's> {
     fn new(
-        externs: &'a BTreeMap<&'src str, ExternDecl<'src>>,
-        adts: &'a Adts<'src>,
+        externs: &'a BTreeMap<&'s str, ExternDecl<'s>>,
+        adts: &'a Adts<'s>,
         type_var_gen: &'a mut TypeVarGen,
     ) -> Self {
         use self::TypeDef::*;
@@ -266,6 +270,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         Inferrer {
             var_env: BTreeMap::new(),
             externs,
+            type_var_env: BTreeMap::new(),
             type_var_map: BTreeMap::new(),
             type_var_gen,
             adts,
@@ -273,123 +278,137 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         }
     }
 
-    fn push_var(&mut self, id: &'src str, t: Type<'src>) {
+    fn push_var(&mut self, id: &'s str, t: Type<'s>) {
         self.var_env.entry(id).or_insert(Vec::new()).push(t)
     }
 
-    fn pop_var(&mut self, id: &str) -> Option<Type<'src>> {
+    fn pop_var(&mut self, id: &str) -> Option<Type<'s>> {
         self.var_env.get_mut(id).and_then(|v| v.pop())
     }
 
-    fn get_var(&self, id: &str) -> Option<&Type<'src>> {
+    fn get_var(&self, id: &str) -> Option<&Type<'s>> {
         self.var_env.get(id).and_then(|v| v.last())
     }
 
+    fn get_type_var_constraints(&self, id: &TVar<'s>) -> &BTreeSet<&'s str> {
+        self.type_var_env.get(id).unwrap_or(&EMPTY_SET)
+    }
+
     /// Returns an iterator of all free type variables that occur in `p`
-    fn free_type_vars_poly(&self, p: &Poly<'src>) -> BTreeSet<TVar<'src>> {
+    fn free_type_vars_poly(&self, p: &Poly<'s>) -> BTreeSet<TVar<'s>> {
         let mut set = self.free_type_vars(&p.body);
-        for tv in &p.params {
-            set.remove(&tv);
+        for (param_v, _) in &p.params {
+            set.remove(param_v);
         }
         set
     }
 
     /// Returns an iterator of all free type variables that occur in `t`
-    fn free_type_vars(&self, t: &Type<'src>) -> BTreeSet<TVar<'src>> {
+    fn free_type_vars(&self, t: &Type<'s>) -> BTreeSet<TVar<'s>> {
         match *t {
             Type::Var(ref tv) => {
                 self.type_var_map
-                    .get(&tv.id)
+                    .get(tv)
                     .map(|u| {
-                        if occurs_in(tv.id, u, &self.type_var_map) {
+                        if occurs_in(tv, u, &self.type_var_map) {
                             // NOTE: Shouldn't be able to happen if no bugs right?
                             panic!("ICE: in get_type_vars: t occurs in u")
                         } else {
                             self.free_type_vars(u)
                         }
                     })
-                    .unwrap_or(BTreeSet::from_iter(once(tv.clone())))
+                    .unwrap_or(set_of(tv.clone()))
             }
             Type::App(_, ref ts) => ts.iter()
                 .flat_map(move |t2| self.free_type_vars(t2))
                 .collect(),
             Type::Poly(ref p) => self.free_type_vars_poly(p),
-            _ => BTreeSet::new(),
+            Type::Const(..) => BTreeSet::new(),
         }
     }
 
     /// Quantifying monotype variables in `t` that are not bound in the context
     ///
     /// Used for generalization.
-    fn free_type_vars_in_context(&self, t: &Type<'src>) -> BTreeSet<TVar<'src>> {
-        let env_type_vars = self.var_env
-            .iter()
-            .flat_map(|(_, v)| v.iter())
-            .flat_map(|v_t| self.free_type_vars(v_t))
-            .collect::<BTreeSet<_>>();
-        let t_type_vars = self.free_type_vars(t);
-        t_type_vars.difference(&env_type_vars).cloned().collect()
+    fn free_type_vars_in_context(
+        &self,
+        t: &Type<'s>,
+        context: &BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
+    ) -> BTreeSet<TVar<'s>> {
+        let mut tvs = self.free_type_vars(t);
+        for tv in context.keys() {
+            tvs.remove(tv);
+        }
+        tvs
     }
 
     /// Generalize type by quantifying monotype variables in `t` that are not bound in the context
-    fn generalize(&self, t: &Type<'src>) -> Type<'src> {
-        let frees = self.free_type_vars_in_context(t);
-        if frees.is_empty() {
-            t.clone()
-        } else {
-            Type::Poly(Box::new(Poly {
-                params: frees.into_iter().collect(),
-                body: t.clone(),
-            }))
-        }
+    fn generalize(
+        &self,
+        t: &Type<'s>,
+        context: &BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
+    ) -> BTreeMap<TVar<'s>, BTreeSet<&'s str>> {
+        self.free_type_vars_in_context(t, context)
+            .into_iter()
+            .map(|tv| (tv, self.get_type_var_constraints(&tv).clone()))
+            .collect()
     }
 
-    // TODO: Separate polytypes from normal types?
     /// Instantiate a polymorphic value
-    fn instantiate(&mut self, t: &Type<'src>) -> Type<'src> {
+    fn instantiate(&mut self, t: &Type<'s>) -> Type<'s> {
         match *t {
             Type::Poly(ref p) => {
-                let tvs = p.params
+                let fresh_tvs = p.params
                     .iter()
-                    .map(|ref tv| {
-                        Type::Var(TVar {
-                            id: self.type_var_gen.gen(),
-                            constrs: tv.constrs.clone(),
-                            explicit: None,
-                        })
+                    .map(|(_, constrs)| {
+                        let tv = self.type_var_gen.gen_tv();
+                        self.type_var_env.insert(tv, constrs.clone());
+                        Type::Var(tv)
                     })
                     .collect::<Vec<_>>();
-                Type::App(Box::new(TypeFunc::Poly((**p).clone())), tvs)
+                Type::App(Box::new(TypeFunc::Poly((**p).clone())), fresh_tvs)
             }
             _ => t.clone(),
         }
     }
 
-    /// Unify two `Var`s
-    fn unify_vars(
-        &mut self,
-        t: &TVar<'src>,
-        u: &TVar<'src>,
-    ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
-        match (t.explicit, t.explicit) {
-            (a, b) if a == b => {
-                let joined_constrs = Type::Var(TVar {
-                    id: self.type_var_gen.gen(),
-                    constrs: t.constrs.union(&u.constrs).cloned().collect(),
-                    explicit: a.clone(),
-                });
-                self.type_var_map.insert(t.id, joined_constrs.clone());
-                self.type_var_map.insert(u.id, joined_constrs.clone());
-                Ok(joined_constrs)
+    fn unify_vars(&mut self, t: &TVar<'s>, u: &TVar<'s>) -> Result<TVar<'s>, (Type<'s>, Type<'s>)> {
+        use self::TVar::*;
+        match (*t, *u) {
+            (Explicit(a), Explicit(b)) => if a == b {
+                Ok(t.clone())
+            } else {
+                Err((Type::Var(t.clone()), Type::Var(u.clone())))
+            },
+            (Implicit(_), Explicit(_)) => {
+                let is_subset = {
+                    let t_constrs = self.get_type_var_constraints(t);
+                    let u_constrs = self.get_type_var_constraints(u);
+                    t_constrs.is_subset(&u_constrs)
+                };
+                let v = u.clone();
+                if is_subset {
+                    self.type_var_map.insert(*t, Type::Var(v));
+                    Ok(v)
+                } else {
+                    Err((Type::Var(t.clone()), Type::Var(v)))
+                }
             }
-            (Some(_), Some(_)) => Err((Type::Var(t.clone()), Type::Var(u.clone()))),
-            (Some(_), None) => {
-                self.type_var_map.insert(u.id, Type::Var(t.clone()));
-                Ok(Type::Var(t.clone()))
+            (Explicit(_), Implicit(_)) => self.unify_vars(u, t),
+            (Implicit(a), Implicit(b)) => {
+                let joined_constrs = {
+                    let t_constrs = self.get_type_var_constraints(t);
+                    let u_constrs = self.get_type_var_constraints(u);
+                    t_constrs | u_constrs
+                };
+                let joined_constrs_tv = self.type_var_gen.gen_tv();
+                self.type_var_env.insert(joined_constrs_tv, joined_constrs);
+                self.type_var_map.insert(*t, Type::Var(joined_constrs_tv));
+                if a != b {
+                    self.type_var_map.insert(*u, Type::Var(joined_constrs_tv));
+                }
+                Ok(joined_constrs_tv)
             }
-            (None, Some(_)) => self.unify_vars(u, t),
-            (None, None) if t.id == u.id => Ok(Type::Var(t.clone())),
-            _ => unreachable!(),
         }
     }
 
@@ -401,36 +420,48 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// On success, returns the unification. On failure, returns the conflicting nodes
     fn unify<'t>(
         &mut self,
-        a: &'t Type<'src>,
-        b: &'t Type<'src>,
-    ) -> Result<Type<'src>, (Type<'src>, Type<'src>)> {
+        a: &'t Type<'s>,
+        b: &'t Type<'s>,
+    ) -> Result<Type<'s>, (Type<'s>, Type<'s>)> {
         use self::Type::*;
         match (a, b) {
-            (&Var(ref tv), x) | (x, &Var(ref tv)) if self.type_var_map.contains_key(&tv.id) => {
-                let t = self.type_var_map[&tv.id].clone();
+            (&Var(ref tv), x) | (x, &Var(ref tv)) if self.type_var_map.contains_key(tv) => {
+                let t = self.type_var_map[tv].clone();
                 self.unify(&t, x)
             }
-            (&Var(ref t), &Var(ref u)) => self.unify_vars(t, u),
-            (&Var(ref tv), _) if occurs_in(tv.id, b, &self.type_var_map) => {
-                panic!("ICE: unify: `{}` occurs in `{}`", tv.id, b);
-            }
-            (&Var(ref tv), _) if tv.explicit.is_some() => Err((a.clone(), b.clone())),
-            (&Var(ref tv), _) if b.fulfills_constraints(&tv.constrs) => {
-                self.type_var_map.insert(tv.id, b.clone());
-                Ok(b.clone())
-            }
-            (_, &Var { .. }) => self.unify(b, a),
             (&App(box TypeFunc::Poly(ref p), ref ts), x)
             | (x, &App(box TypeFunc::Poly(ref p), ref ts)) => {
                 assert_eq!(p.params.len(), ts.len());
-                self.type_var_map
-                    .extend(zip(&p.params, ts).map(|(param, t)| (param.id, t.clone())));
+                self.type_var_map.extend(
+                    p.params
+                        .iter()
+                        .zip(ts)
+                        .map(|((&param_v, _), t)| (param_v, t.clone())),
+                );
                 let t = subst(&p.body, &mut self.type_var_map);
-                for param in &p.params {
-                    self.type_var_map.remove(&param.id);
+                for (tv, _) in &p.params {
+                    self.type_var_map.remove(tv);
                 }
                 self.unify(&t, x)
             }
+            (&Var(ref t), &Var(ref u)) => self.unify_vars(t, u).map(Type::Var),
+            (&Var(ref tv), _) if occurs_in(tv, b, &self.type_var_map) => {
+                panic!("ICE: unify: `{}` occurs in `{}`", tv, b);
+            }
+            (&Var(TVar::Explicit(_)), _) => Err((a.clone(), b.clone())),
+            (&Var(ref tv), _) => {
+                let fulfills_constrs = {
+                    let tv_constrs = self.get_type_var_constraints(tv);
+                    b.fulfills_constraints(&tv_constrs)
+                };
+                if fulfills_constrs {
+                    self.type_var_map.insert(*tv, b.clone());
+                    Ok(b.clone())
+                } else {
+                    Err((a.clone(), b.clone()))
+                }
+            }
+            (_, &Var(_)) => self.unify(b, a),
             (&App(box TypeFunc::Const(c1), ref ts1), &App(box TypeFunc::Const(c2), ref ts2))
                 if c1 == c2 && ts1.len() == ts2.len() =>
             {
@@ -456,19 +487,19 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     /// Check that the expected type of a nil expression is unifiable with the nil type
-    fn infer_nil(&mut self, nil: &mut Nil<'src>, expected_type: &Type<'src>) -> Type<'src> {
+    fn infer_nil(&mut self, nil: &mut Nil<'s>, expected_type: &Type<'s>) -> Type<'s> {
         self.unify(expected_type, &TYPE_NIL)
             .unwrap_or_else(|(e, f)| nil.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Check that the expected type of a string literal is unifiable with the string type
-    fn infer_str_lit(&mut self, lit: &mut StrLit<'src>, expected_type: &Type<'src>) -> Type<'src> {
+    fn infer_str_lit(&mut self, lit: &mut StrLit<'s>, expected_type: &Type<'s>) -> Type<'s> {
         self.unify(expected_type, &TYPE_STRING)
             .unwrap_or_else(|(e, f)| lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
 
     /// Check that the expected type of a boolean literal is unifiable with the boolean type
-    fn infer_bool(&mut self, b: &mut Bool<'src>, expected_type: &Type<'src>) -> Type<'src> {
+    fn infer_bool(&mut self, b: &mut Bool<'s>, expected_type: &Type<'s>) -> Type<'s> {
         self.unify(expected_type, &TYPE_BOOL)
             .unwrap_or_else(|(e, f)| b.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
     }
@@ -478,24 +509,28 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Type can be one of a selection of numeric types.
     fn infer_num_lit<'n>(
         &mut self,
-        lit: &'n mut NumLit<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'n Type<'src> {
-        let mut num_constraint = BTreeSet::new();
-        num_constraint.insert("Num");
-        let tv_num = Type::Var(TVar {
-            id: self.type_var_gen.gen(),
-            constrs: num_constraint,
-            explicit: None,
-        });
-        let num_type = self.unify(expected_type, &tv_num).unwrap_or_else(|_| {
-            lit.pos.error_exit(format!(
-                "Type mismatch. Expected `{}`, found numeric literal",
-                expected_type
-            ))
-        });
-        lit.typ = num_type;
-        &lit.typ
+        lit: &'n mut NumLit<'s>,
+        expected_type: &Type<'s>,
+    ) -> &'n Type<'s> {
+        if lit.lit.contains('.') {
+            lit.typ = self.unify(expected_type, &TYPE_FLOAT64)
+                .unwrap_or_else(|(e, f)| {
+                    lit.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f))
+                });
+            &lit.typ
+        } else {
+            let num_constraint = set_of("Num");
+            let tv_num = self.type_var_gen.gen_tv();
+            self.type_var_env.insert(tv_num, num_constraint);
+            lit.typ = self.unify(expected_type, &Type::Var(tv_num))
+                .unwrap_or_else(|_| {
+                    lit.pos.error_exit(format!(
+                        "Type mismatch. Expected `{}`, found numeric literal",
+                        expected_type
+                    ))
+                });
+            &lit.typ
+        }
     }
 
     /// Infer the type of a variable
@@ -503,11 +538,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// If the variable does not refer to an extern, instantiate the variable
     /// and unify with expected type. If it does refer to an extern,
     /// unify type of extern with expected type.
-    fn infer_variable(
-        &mut self,
-        var: &mut Variable<'src>,
-        expected_type: &Type<'src>,
-    ) -> Type<'src> {
+    fn infer_variable(&mut self, var: &mut Variable<'s>, expected_type: &Type<'s>) -> Type<'s> {
         if let Some(typ) = self.get_var(var.ident.s).cloned() {
             // Either not an extern, or shadowing an extern. I.e. a lambda parameter or let binding
 
@@ -560,15 +591,13 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     //       How to write type ascriptions for such a function?
     //       Alt. force use of PhantomData<T> like inputs?
     /// Infer types in a function application
-    fn infer_app<'c>(
-        &mut self,
-        app: &'c mut App<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'c Type<'src> {
-        let expected_func_type =
-            Type::new_func(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
+    fn infer_app<'c>(&mut self, app: &'c mut App<'s>, expected_type: &Type<'s>) -> &'c Type<'s> {
+        let expected_func_type = Type::new_func(
+            self.type_var_gen.gen_type_var(),
+            self.type_var_gen.gen_type_var(),
+        );
         let func_type = self.infer_expr(&mut app.func, &expected_func_type);
-        let expected_arg_type = self.type_var_gen.gen_tv();
+        let expected_arg_type = self.type_var_gen.gen_type_var();
         let arg_type = self.infer_expr(&mut app.arg, &expected_arg_type);
         let (func_param_type, func_ret_type) = func_type
             .get_func()
@@ -597,11 +626,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &app.typ
     }
 
-    fn infer_if<'i>(
-        &mut self,
-        cond: &'i mut If<'src>,
-        expected_typ: &Type<'src>,
-    ) -> &'i Type<'src> {
+    fn infer_if<'i>(&mut self, cond: &'i mut If<'s>, expected_typ: &Type<'s>) -> &'i Type<'s> {
         self.infer_expr(&mut cond.predicate, &TYPE_BOOL);
         let consequent_type = self.infer_expr(&mut cond.consequent, expected_typ);
         let alternative_type = self.infer_expr(&mut cond.alternative, expected_typ);
@@ -616,14 +641,14 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Infer types for a lambda
     fn infer_lambda<'l>(
         &mut self,
-        lam: &'l mut Lambda<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'l Type<'src> {
+        lam: &'l mut Lambda<'s>,
+        expected_type: &Type<'s>,
+    ) -> &'l Type<'s> {
         // Infer type of param by adding it to the environment and applying constraints based on
         // how it is used during inference of lambda body.
 
-        let param_type = self.type_var_gen.gen_tv();
-        let body_type = self.type_var_gen.gen_tv();
+        let param_type = self.type_var_gen.gen_type_var();
+        let body_type = self.type_var_gen.gen_type_var();
         let func_type = Type::new_func(param_type.clone(), body_type);
         let (expected_param_type, expected_body_type) = self.unify(expected_type, &func_type)
             .unwrap_or_else(|_| {
@@ -645,12 +670,12 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &lam.typ
     }
 
-    fn infer_recursive_binding(&mut self, binding: &mut Binding<'src>, bindings_ids: &[&'src str]) {
+    fn infer_recursive_binding(&mut self, binding: &mut Binding<'s>, bindings_ids: &[&'s str]) {
         let id = binding.ident.s;
         // Only allow recursion for functions. Stuff like `let a = a + 1`
         // can't be compiled without laziness.
         if binding.val.first_non_type_ascr_is_lambda() {
-            self.infer_expr(&mut binding.val, &binding.typ);
+            self.infer_expr(&mut binding.val, &binding.sig.body);
         } else {
             let refs_s = if bindings_ids.len() == 1 {
                 "itself".to_string()
@@ -671,24 +696,34 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     /// Infer types for a group of mutually recursively defined bindings
-    fn infer_recursion_group(&mut self, group: &mut Group<'src>) {
+    fn infer_recursion_group(&mut self, group: &mut Group<'s>) {
         match *group {
             Group::Uncircular(id, ref mut binding) => {
-                self.infer_expr(&mut binding.val, &binding.typ);
-                binding.typ = self.generalize(&binding.typ);
-                self.push_var(id, binding.typ.clone());
+                let old_tv_env = self.type_var_env.clone();
+                for (&tv, constrs) in &binding.sig.params {
+                    self.type_var_env.insert(tv, constrs.clone());
+                }
+                self.infer_expr(&mut binding.val, &binding.sig.body);
+                let generalized_params = self.generalize(&binding.sig.body, &old_tv_env);
+                self.type_var_env = old_tv_env;
+                binding.sig.params = generalized_params;
+                self.push_var(id, binding.get_type());
             }
             Group::Circular(ref mut bindings) => {
-                let bindings_ids = bindings.keys().cloned().collect::<Vec<_>>();
+                let old_tv_env = self.type_var_env.clone();
+                let mut bindings_ids = vec![];
                 // Add bindings being inferred to env to allow recursive refs.
-                for (id, binding) in bindings.iter() {
-                    self.push_var(*id, binding.typ.clone());
+                for (&id, binding) in bindings.iter() {
+                    self.push_var(id, binding.sig.body.clone());
+                    bindings_ids.push(id);
+                    for (&tv, constrs) in &binding.sig.params {
+                        self.type_var_env.insert(tv, constrs.clone());
+                    }
                 }
                 // Infer bindings
                 for (_, binding) in bindings.iter_mut() {
                     self.infer_recursive_binding(binding, &bindings_ids)
                 }
-                // Remove bindings from env to get only surrounding env for generalization
                 for (id, _) in bindings.iter() {
                     self.pop_var(id).unwrap_or_else(|| {
                         panic!("ICE: infer_recursion_group: binding gone from var_env")
@@ -696,29 +731,26 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
                 }
                 // Because of mutual recursion, all bindings in group must have the
                 // same polytype arguments
-                let frees = bindings
+                let generalized_params = bindings
                     .values()
-                    .flat_map(|b| self.free_type_vars_in_context(&b.typ))
-                    .unique()
-                    .collect::<Vec<_>>();
-                if !frees.is_empty() {
-                    let mut vars_polys = BTreeMap::new();
-                    for (id, binding) in bindings.iter_mut() {
-                        let p = Poly {
-                            params: frees.clone(),
-                            body: binding.typ.clone(),
-                        };
-                        binding.typ = Type::Poly(Box::new(p.clone()));
-                        vars_polys.insert(*id, p);
-                    }
-                    for (_, binding) in bindings.iter_mut() {
-                        wrap_vars_types_in_apps(&mut binding.val, &mut vars_polys, &frees)
-                    }
+                    .flat_map(|b| self.generalize(&b.sig.body, &old_tv_env))
+                    .collect::<BTreeMap<_, _>>();
+                let mut vars_polys = BTreeMap::new();
+                for (id, binding) in bindings.iter_mut() {
+                    binding.sig.params = generalized_params.clone();
+                    vars_polys.insert(*id, binding.sig.clone());
+                }
+                for (_, binding) in bindings.iter_mut() {
+                    wrap_vars_types_in_apps(
+                        &mut binding.val,
+                        &mut vars_polys,
+                        &generalized_params.keys().cloned().collect::<Vec<_>>(),
+                    )
                 }
                 // Push vars to env again to make available for the
                 // next group in the topological order
                 for (id, binding) in bindings.iter() {
-                    self.push_var(*id, binding.typ.clone())
+                    self.push_var(*id, Type::Poly(box binding.sig.clone()))
                 }
             }
         }
@@ -726,17 +758,13 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     /// Infer types for global bindings or bindings of a let-form
     /// and push them to the environment.
-    fn infer_bindings(&mut self, bindings: &mut TopologicallyOrderedDependencyGroups<'src>) {
+    fn infer_bindings(&mut self, bindings: &mut TopologicallyOrderedDependencyGroups<'s>) {
         for mut recursion_group in bindings.groups_mut().rev() {
             self.infer_recursion_group(recursion_group);
         }
     }
 
-    fn infer_let<'l>(
-        &mut self,
-        let_: &'l mut Let<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'l Type<'src> {
+    fn infer_let<'l>(&mut self, let_: &'l mut Let<'s>, expected_type: &Type<'s>) -> &'l Type<'s> {
         self.infer_bindings(&mut let_.bindings);
         let_.typ = self.infer_expr(&mut let_.body, expected_type).clone();
         for name in let_.bindings.ids() {
@@ -751,11 +779,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     /// Unify ascription type with expected type, replace the ascription
     /// with the inner expression it ascribes a type to in the AST,
     /// and infer types for the inner expression
-    fn infer_type_ascription(
-        &mut self,
-        expr: &mut Expr<'src>,
-        expected_type: &Type<'src>,
-    ) -> Type<'src> {
+    fn infer_type_ascription(&mut self, expr: &mut Expr<'s>, expected_type: &Type<'s>) -> Type<'s> {
         let ascr_pos = expr.pos().clone();
         match expr.remove_type_ascription() {
             Some(ascribed) => {
@@ -768,13 +792,11 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         }
     }
 
-    fn infer_cons<'c>(
-        &mut self,
-        cons: &'c mut Cons<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'c Type<'src> {
-        let arbitrary_cons_type =
-            Type::new_cons(self.type_var_gen.gen_tv(), self.type_var_gen.gen_tv());
+    fn infer_cons<'c>(&mut self, cons: &'c mut Cons<'s>, expected_type: &Type<'s>) -> &'c Type<'s> {
+        let arbitrary_cons_type = Type::new_cons(
+            self.type_var_gen.gen_type_var(),
+            self.type_var_gen.gen_type_var(),
+        );
         let expected_type2 = self.unify(expected_type, &arbitrary_cons_type)
             .unwrap_or_else(|_| {
                 cons.pos.error_exit(type_mis(
@@ -792,12 +814,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &cons.typ
     }
 
-    fn infer_car<'c>(
-        &mut self,
-        car: &'c mut Car<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'c Type<'src> {
-        let expected_cons_type = Type::new_cons(expected_type.clone(), self.type_var_gen.gen_tv());
+    fn infer_car<'c>(&mut self, car: &'c mut Car<'s>, expected_type: &Type<'s>) -> &'c Type<'s> {
+        let expected_cons_type =
+            Type::new_cons(expected_type.clone(), self.type_var_gen.gen_type_var());
         let cons_type = self.infer_expr(&mut car.expr, &expected_cons_type);
         car.typ = cons_type
             .get_cons()
@@ -807,12 +826,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &car.typ
     }
 
-    fn infer_cdr<'c>(
-        &mut self,
-        cdr: &'c mut Cdr<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'c Type<'src> {
-        let expected_cons_type = Type::new_cons(self.type_var_gen.gen_tv(), expected_type.clone());
+    fn infer_cdr<'c>(&mut self, cdr: &'c mut Cdr<'s>, expected_type: &Type<'s>) -> &'c Type<'s> {
+        let expected_cons_type =
+            Type::new_cons(self.type_var_gen.gen_type_var(), expected_type.clone());
         let cons_type = self.infer_expr(&mut cdr.expr, &expected_cons_type);
         cdr.typ = cons_type
             .get_cons()
@@ -822,12 +838,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &cdr.typ
     }
 
-    fn infer_cast<'c>(
-        &mut self,
-        cast: &'c mut Cast<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'c Type<'src> {
-        let expected_from = self.type_var_gen.gen_tv();
+    fn infer_cast<'c>(&mut self, cast: &'c mut Cast<'s>, expected_type: &Type<'s>) -> &'c Type<'s> {
+        let expected_from = self.type_var_gen.gen_type_var();
         self.infer_expr(&mut cast.expr, &expected_from);
         cast.typ = self.unify(expected_type, &cast.typ).unwrap_or_else(|_| {
             cast.pos
@@ -838,9 +850,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     fn infer_of_variant<'x>(
         &mut self,
-        x: &'x mut OfVariant<'src>,
-        expected_type: &Type<'src>,
-    ) -> Type<'src> {
+        x: &'x mut OfVariant<'s>,
+        expected_type: &Type<'s>,
+    ) -> Type<'s> {
         let expected_expr_type = self.adts
             .parent_type_of_variant(x.variant.s)
             .expect("ICE: No parent type of variant in infer_of_variant");
@@ -851,9 +863,9 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     fn infer_as_variant<'x>(
         &mut self,
-        x: &'x mut AsVariant<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'x Type<'src> {
+        x: &'x mut AsVariant<'s>,
+        expected_type: &Type<'s>,
+    ) -> &'x Type<'s> {
         let expected_from = self.adts
             .parent_type_of_variant(x.variant.s)
             .expect("ICE: No parent type of variant in infer_as_variant");
@@ -868,11 +880,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &x.typ
     }
 
-    fn infer_new<'n>(
-        &mut self,
-        n: &'n mut New<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'n Type<'src> {
+    fn infer_new<'n>(&mut self, n: &'n mut New<'s>, expected_type: &Type<'s>) -> &'n Type<'s> {
         let expected_member_types = &self.adts
             .adt_variant_of_name(n.constr.s)
             .expect("ICE: No adt_variant_of_name in infer_new")
@@ -890,11 +898,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         &n.typ
     }
 
-    fn infer_pattern(
-        &mut self,
-        patt: &mut Pattern<'src>,
-        expected_type: &Type<'src>,
-    ) -> Type<'src> {
+    fn infer_pattern(&mut self, patt: &mut Pattern<'s>, expected_type: &Type<'s>) -> Type<'s> {
         match *patt {
             Pattern::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
             Pattern::NumLit(ref mut num) => self.infer_num_lit(num, expected_type).clone(),
@@ -934,10 +938,10 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
 
     fn infer_case<'c>(
         &mut self,
-        case: &'c mut Case<'src>,
-        expected_patt_type: &Type<'src>,
-        expected_body_type: &Type<'src>,
-    ) -> (&'c Type<'src>, &'c Type<'src>) {
+        case: &'c mut Case<'s>,
+        expected_patt_type: &Type<'s>,
+        expected_body_type: &Type<'s>,
+    ) -> (&'c Type<'s>, &'c Type<'s>) {
         case.patt_typ = self.infer_pattern(&mut case.patt, &expected_patt_type);
         for var in case.patt.variables() {
             self.push_var(var.ident.s, var.typ.clone())
@@ -950,12 +954,8 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
         (&case.patt_typ, case.body.get_type())
     }
 
-    fn infer_match<'m>(
-        &mut self,
-        m: &'m mut Match<'src>,
-        expected_type: &Type<'src>,
-    ) -> &'m Type<'src> {
-        let expected_expr_type = self.type_var_gen.gen_tv();
+    fn infer_match<'m>(&mut self, m: &'m mut Match<'s>, expected_type: &Type<'s>) -> &'m Type<'s> {
+        let expected_expr_type = self.type_var_gen.gen_type_var();
         let expr_typ = self.infer_expr(&mut m.expr, &expected_expr_type);
         for case in &mut m.cases {
             self.infer_case(case, &expr_typ, expected_type);
@@ -965,7 +965,7 @@ impl<'a, 'src: 'a> Inferrer<'a, 'src> {
     }
 
     // The type of an expression will only be inferred once
-    fn infer_expr(&mut self, expr: &mut Expr<'src>, expected_type: &Type<'src>) -> Type<'src> {
+    fn infer_expr(&mut self, expr: &mut Expr<'s>, expected_type: &Type<'s>) -> Type<'s> {
         match *expr {
             Expr::Nil(ref mut nil) => self.infer_nil(nil, expected_type),
             Expr::StrLit(ref mut l) => self.infer_str_lit(l, expected_type),
@@ -1006,7 +1006,7 @@ pub fn infer_types(ast: &mut Ast, type_var_generator: &mut TypeVarGen) {
 
     // Apply all substitutions recursively to get rid of reduntant, indirect type variables
     for binding in ast.globals.bindings_mut() {
-        binding.typ = subst(&binding.typ, &mut inferrer.type_var_map);
+        binding.sig.body = subst(&binding.sig.body, &mut inferrer.type_var_map);
         subst_expr(&mut binding.val, &mut inferrer.type_var_map);
     }
 

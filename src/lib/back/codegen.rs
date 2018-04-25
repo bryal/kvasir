@@ -96,7 +96,7 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Let(box ref l) => {
             let mut es = vec![&l.body];
             for binding in l.bindings.bindings() {
-                if binding.typ.is_monomorphic() {
+                if binding.sig.is_monomorphic() {
                     es.push(&binding.val)
                 } else {
                     es.extend(binding.mono_insts.values())
@@ -347,10 +347,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
         match *typ {
-            ast::Type::Var(ref tv) if tv.constrs.len() == 1 && tv.constrs.contains("Num") => {
-                Type::get::<isize>(self.ctx)
-            }
-            ast::Type::Var { .. } => panic!("Type was Unknown at compile time"),
+            // If type var at compile time, gotta be a numlit where
+            // (Num t) was allowed to remain, or bug
+            ast::Type::Var(_) => Type::get::<isize>(self.ctx),
             ast::Type::Const("Int8", _) => Type::get::<i8>(self.ctx),
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
@@ -649,10 +648,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
         let parser = match num.typ {
-            // If it's an arbitrary number, default to isize (Int)
-            ast::Type::Var(ref tv) if tv.constrs.len() == 1 && tv.constrs.contains("Num") => {
-                CodeGenerator::parse_gen_lit::<isize>
-            }
+            // If it's a type variable, gotta be numlit where (Num t)
+            // was allowed to remain, unless bug
+            ast::Type::Var(_) => CodeGenerator::parse_gen_lit::<isize>,
             ast::Type::Const("Int8", _) => CodeGenerator::parse_gen_lit::<i8>,
             ast::Type::Const("Int16", _) => CodeGenerator::parse_gen_lit::<i16>,
             ast::Type::Const("Int32", _) => CodeGenerator::parse_gen_lit::<i32>,
@@ -705,7 +703,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         match env.get(var.ident.s, inst) {
             // NOTE: Ugly hack to fix generic codegen for some binops
             _ if arithm_binops.contains(var.ident.s) => {
-                let maybe_op_typ = type_canon.get_cons_binop().map(|t| t.num_to_int64());
+                let maybe_op_typ = type_canon.get_cons_binop().map(|t| t.var_to_int64());
                 let op_typ = maybe_op_typ
                     .unwrap_or_else(|| panic!("ICE: binop has bad type {}", type_canon));
                 assert!(
@@ -723,7 +721,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             _ if relational_binops.contains(var.ident.s) => {
                 let maybe_op_typ = type_canon
                     .get_cons_relational_binop()
-                    .map(|t| t.num_to_int64());
+                    .map(|t| t.var_to_int64());
                 let op_typ = maybe_op_typ.unwrap_or_else(|| {
                     panic!("ICE: binary relational op has bad type {}", type_canon)
                 });
@@ -1191,20 +1189,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate LLVM definitions for the variable/function bindings `bs`
     ///
-    /// Assumes that the variable bindings in `bs` are in reverse topologically order
-    /// for the relation: "depends on".
+    /// Assumes that the variable bindings in `bs` are in reverse
+    /// topologically order for the relation: "depends on".
     fn gen_bindings(&self, env: &mut Env<'src, 'ctx>, bindings: &[&'ast ast::Binding<'src>]) {
-        // To solve the problem of recursive references in closure captures, e.g. two mutually
-        // recursive functions that need to capture each other: First create closures where
-        // captures are left as allocated, but undefined space. Second, fill in captures
-        // with all closures with pointers available to refer to.
+        // To solve the problem of recursive references in closure
+        // captures, e.g. two mutually recursive functions that need
+        // to capture each other: First create closures where captures
+        // are left as allocated, but undefined space. Second, fill in
+        // captures with all closures with pointers available to refer
+        // to.
 
         let empty_vec = vec![];
         // Flatten with regards to mono insts
         let mut bindings_insts: Vec<(_, &Vec<ast::Type>, _)> = Vec::new();
         for binding in bindings {
             env.push_var(binding.ident.s, BTreeMap::new());
-            if binding.typ.is_monomorphic() {
+            if binding.sig.is_monomorphic() {
                 bindings_insts.push((binding.ident.s, &empty_vec, &binding.val));
             } else {
                 for (inst_ts, val_inst) in &binding.mono_insts {
@@ -1661,12 +1661,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 .find(|b| b.ident.s == "main")
                 .unwrap_or_else(|| error_exit("main function not found"));
             let expect = ast::Type::new_io(ast::TYPE_NIL.clone());
-            if main.typ != expect {
+            if main.sig.body != expect {
                 let error_msg = format!(
                     "main function has wrong type. Expected type `{}`, found type `{}`",
-                    expect, main.typ
+                    expect, main.sig
                 );
-                if main.typ.is_monomorphic() {
+                if main.sig.is_monomorphic() {
                     main.pos.error_exit(error_msg)
                 } else {
                     main.pos.print_error(ErrCode::undefined(), error_msg);

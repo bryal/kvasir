@@ -9,57 +9,58 @@ use std::iter::once;
 lazy_static! {
     pub static ref TYPE_NIL: Type<'static> = Type::Const("Nil", None);
     pub static ref TYPE_BOOL: Type<'static> = Type::Const("Bool", None);
+    pub static ref TYPE_FLOAT64: Type<'static> = Type::Const("Float64", None);
     pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
     pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld", None);
 }
 
-/// A polytype
+/// A Polytype / Type scheme
+///
+/// Lika a lambda at type level. Where the parameter types of a lambda
+/// limit what values may be passed as arguments, the parameter
+/// constraints of a polytype similarly limit what types may be passed
+/// as arguments.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Poly<'src> {
-    pub params: Vec<TVar<'src>>,
-    pub body: Type<'src>,
+pub struct Poly<'s> {
+    pub params: BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
+    pub body: Type<'s>,
 }
 
-impl<'src> fmt::Display for Poly<'src> {
+impl<'s> Poly<'s> {
+    fn is_monomorphic_in_context(&self, bound: &mut BTreeSet<TVar<'s>>) -> bool {
+        self.params.is_empty() && self.body.is_monomorphic_in_context(bound)
+    }
+
+    pub fn is_monomorphic(&self) -> bool {
+        self.is_monomorphic_in_context(&mut BTreeSet::new())
+    }
+}
+
+impl<'s> fmt::Display for Poly<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let params_s = self.params
             .iter()
-            .map(|tv| {
-                format!(
-                    "(: ${} {})",
-                    tv.id,
-                    tv.constrs
-                        .iter()
-                        .cloned()
-                        .intersperse(" ")
-                        .collect::<String>()
-                )
+            .map(|(tv, cs)| {
+                let cs_s = cs.iter()
+                    .map(|c| c.to_string())
+                    .intersperse(" ".to_string())
+                    .collect::<String>();
+                format!("({} {})", tv, cs_s)
             })
             .intersperse(" ".to_string())
             .collect::<String>();
-        write!(f, "(for ({}) {})", params_s, self.body)
+        write!(f, "(for [{}] {})", params_s, self.body)
     }
 }
 
 /// A type function
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TypeFunc<'src> {
-    Const(&'src str),
-    Poly(Poly<'src>),
+pub enum TypeFunc<'s> {
+    Const(&'s str),
+    Poly(Poly<'s>),
 }
 
-impl<'s> TypeFunc<'s> {
-    pub fn apply_constraints(&mut self, _: &BTreeMap<&str, BTreeSet<&str>>) {
-        match *self {
-            TypeFunc::Const(_) => (),
-            TypeFunc::Poly(_) => unreachable!(
-                "ICE: No `TypeFunc::Poly`s should exist yet when `apply_constraints` is relevant? (parse phase)"
-            ),
-        }
-    }
-}
-
-impl<'src> fmt::Display for TypeFunc<'src> {
+impl<'s> fmt::Display for TypeFunc<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             TypeFunc::Const(s) => fmt::Display::fmt(s, f),
@@ -68,39 +69,19 @@ impl<'src> fmt::Display for TypeFunc<'src> {
     }
 }
 
-/// A type variable uniquely identified by an integer id
-/// and constrained by a set of type classes
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TVar<'src> {
-    /// A unique identifier
-    pub id: u64,
-    /// A set of constraints that applies to the polytype
-    pub constrs: BTreeSet<&'src str>,
-    /// Whether the variable is explicit in source, and if so, what it's name is
-    ///
-    /// The variable being explicit implies that it is immutable.
-    /// If a more specific type is encountered during inference, do not unify to the more
-    /// explicit type, but instead produce an error.
-    pub explicit: Option<&'src str>,
+/// A type variable. Either an explicit string name,
+/// or an implicit automatically generated unique integer id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TVar<'s> {
+    Explicit(&'s str),
+    Implicit(u64),
 }
 
-impl<'src> fmt::Display for TVar<'src> {
+impl<'s> fmt::Display for TVar<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let tv = format!("${}", self.id);
-        let name = self.explicit.unwrap_or(&tv);
-        if self.constrs.is_empty() {
-            write!(f, "{}", name)
-        } else {
-            write!(
-                f,
-                "(: {} {})",
-                name,
-                self.constrs
-                    .iter()
-                    .cloned()
-                    .intersperse(" ")
-                    .collect::<String>()
-            )
+        match *self {
+            TVar::Explicit(s) => write!(f, "{}", s),
+            TVar::Implicit(n) => write!(f, "${}", n),
         }
     }
 }
@@ -111,47 +92,47 @@ impl<'src> fmt::Display for TVar<'src> {
 
 /// A type
 #[derive(Clone, Debug, PartialOrd, Ord, Hash)]
-pub enum Type<'src> {
+pub enum Type<'s> {
     /// A type variable uniquely identified by an integer id
     /// and constrained by a set of type classes
-    Var(TVar<'src>),
+    Var(TVar<'s>),
     /// A monotype constant, like `int`, or `string`
     ///
     /// Can also refer to user-defined algebraic data types
-    Const(&'src str, Option<SrcPos<'src>>),
+    Const(&'s str, Option<SrcPos<'s>>),
     /// An application of a type function over one/some/no monotype(s)
-    App(Box<TypeFunc<'src>>, Vec<Type<'src>>),
+    App(Box<TypeFunc<'s>>, Vec<Type<'s>>),
     /// A polytype
-    Poly(Box<Poly<'src>>),
+    Poly(Box<Poly<'s>>),
 }
 
 /// The tuple has the type constructor `*`, as it is a
 /// [product type](https://en.wikipedia.org/wiki/Product_type).
 /// Nil is implemented as the empty tuple
-impl<'src> Type<'src> {
-    pub fn new_func(arg: Type<'src>, ret: Type<'src>) -> Self {
+impl<'s> Type<'s> {
+    pub fn new_func(arg: Type<'s>, ret: Type<'s>) -> Self {
         Type::App(Box::new(TypeFunc::Const("->")), vec![arg, ret])
     }
 
-    pub fn new_currying_func(args: &[Type<'src>], ret: Type<'src>) -> Self {
+    pub fn new_currying_func(args: &[Type<'s>], ret: Type<'s>) -> Self {
         args.iter()
             .rev()
             .cloned()
             .fold(ret, |acc, t| Type::new_func(t, acc))
     }
 
-    pub fn new_io(ret: Type<'src>) -> Self {
+    pub fn new_io(ret: Type<'s>) -> Self {
         Type::new_func(
             TYPE_REALWORLD.clone(),
             Type::new_cons(ret, TYPE_REALWORLD.clone()),
         )
     }
 
-    pub fn new_cons(car_typ: Type<'src>, cdr_typ: Type<'src>) -> Self {
+    pub fn new_cons(car_typ: Type<'s>, cdr_typ: Type<'s>) -> Self {
         Type::App(Box::new(TypeFunc::Const("Cons")), vec![car_typ, cdr_typ])
     }
 
-    pub fn new_tuple(types: &[Type<'src>]) -> Self {
+    pub fn new_tuple(types: &[Type<'s>]) -> Self {
         if let Some((last, init)) = types.split_last() {
             init.iter()
                 .rev()
@@ -162,15 +143,15 @@ impl<'src> Type<'src> {
         }
     }
 
-    pub fn new_ptr(typ: Type<'src>) -> Self {
+    pub fn new_ptr(typ: Type<'s>) -> Self {
         Type::App(Box::new(TypeFunc::Const("Ptr")), vec![typ])
     }
 
-    pub fn new_binop(typ: Type<'src>) -> Self {
+    pub fn new_binop(typ: Type<'s>) -> Self {
         Type::new_func(Type::new_cons(typ.clone(), typ.clone()), typ)
     }
 
-    pub fn new_relational_binop(typ: Type<'src>) -> Self {
+    pub fn new_relational_binop(typ: Type<'s>) -> Self {
         Type::new_func(Type::new_cons(typ.clone(), typ), Type::Const("Bool", None))
     }
 
@@ -182,16 +163,16 @@ impl<'src> Type<'src> {
     }
 
     /// If this type is an instantiated polytype, return the instantiation args
-    pub fn get_inst_args(&self) -> Option<&[Type<'src>]> {
+    pub fn get_inst_args(&self) -> Option<&[Type<'s>]> {
         match *self {
             Type::App(box TypeFunc::Poly(_), ref args) => Some(args),
             _ => None,
         }
     }
 
-    fn is_monomorphic_in_context(&self, bound: &mut BTreeSet<u64>) -> bool {
+    fn is_monomorphic_in_context(&self, bound: &mut BTreeSet<TVar<'s>>) -> bool {
         match *self {
-            Type::Var(ref v) => bound.contains(&v.id),
+            Type::Var(ref v) => bound.contains(&v),
             Type::Const(_, _) => true,
             Type::App(ref f, ref args) => {
                 let all_args_mono = args.iter().all(|arg| arg.is_monomorphic_in_context(bound));
@@ -199,20 +180,24 @@ impl<'src> Type<'src> {
                     TypeFunc::Const(_) => all_args_mono,
                     TypeFunc::Poly(ref p) => {
                         let mut dup = BTreeSet::new();
-                        for &TVar { id: param, .. } in &p.params {
-                            if !bound.insert(param) {
-                                dup.insert(param);
+                        for (&tv, _) in &p.params {
+                            if !bound.insert(tv) {
+                                dup.insert(tv);
                             }
                         }
                         let body_is_mono = p.body.is_monomorphic_in_context(bound);
-                        for param in p.params.iter().filter(|&param| !dup.contains(&param.id)) {
-                            bound.remove(&param.id);
+                        for tv in p.params
+                            .iter()
+                            .map(|(tv, _)| tv)
+                            .filter(|tv| !dup.contains(tv))
+                        {
+                            bound.remove(tv);
                         }
                         all_args_mono && body_is_mono
                     }
                 }
             }
-            Type::Poly(ref p) => p.params.is_empty() && p.body.is_monomorphic_in_context(bound),
+            Type::Poly(ref p) => p.is_monomorphic_in_context(bound),
         }
     }
 
@@ -221,10 +206,10 @@ impl<'src> Type<'src> {
         self.is_monomorphic_in_context(&mut BTreeSet::new())
     }
 
-    pub fn canonicalize_in_context(&self, s: &mut BTreeMap<u64, Type<'src>>) -> Type<'src> {
+    pub fn canonicalize_in_context(&self, s: &mut BTreeMap<TVar<'s>, Type<'s>>) -> Type<'s> {
         match *self {
             Type::Const(_, _) => self.clone(),
-            Type::Var(ref v) => s.get(&v.id).unwrap_or(self).clone(),
+            Type::Var(ref tv) => s.get(tv).unwrap_or(self).clone(),
             Type::App(box TypeFunc::Const(c), ref args) => Type::App(
                 Box::new(TypeFunc::Const(c)),
                 args.iter()
@@ -233,8 +218,8 @@ impl<'src> Type<'src> {
             ),
             Type::App(box TypeFunc::Poly(ref p), ref args) => {
                 let shadoweds = zip(&p.params, args)
-                    .filter_map(|(param, arg)| {
-                        s.insert(param.id, arg.clone()).map(|shad| (param.id, shad))
+                    .filter_map(|((&param_v, _), arg)| {
+                        s.insert(param_v, arg.clone()).map(|shad| (param_v, shad))
                     })
                     .collect::<Vec<_>>();
                 let b = p.body.canonicalize_in_context(s);
@@ -252,12 +237,12 @@ impl<'src> Type<'src> {
     ///
     /// # Examples
     /// `canonicalize (app (poly (t u) (-> t u)) Int Float) == (-> Int Float)`
-    pub fn canonicalize(&self) -> Type<'src> {
+    pub fn canonicalize(&self) -> Type<'s> {
         self.canonicalize_in_context(&mut BTreeMap::new())
     }
 
     /// If a type constant, return the name
-    pub fn get_const(&self) -> Option<&'src str> {
+    pub fn get_const(&self) -> Option<&'s str> {
         match *self {
             Type::Const(s, _) => Some(s),
             _ => None,
@@ -314,18 +299,14 @@ impl<'src> Type<'src> {
 
     /// If a type variable with only the `Num` constraint, translate
     /// to default integer type Int64
-    pub fn num_to_int64(&self) -> Self {
+    pub fn var_to_int64(&self) -> Self {
         match *self {
-            Type::Var(TVar { ref constrs, .. })
-                if constrs.len() == 1 && constrs.contains("Num") =>
-            {
-                Type::Const("Int64", None)
-            }
+            Type::Var(_) => Type::Const("Int64", None),
             _ => self.clone(),
         }
     }
 
-    fn get_bin(&self, con: &'src str) -> Option<(&Type<'src>, &Type<'src>)> {
+    fn get_bin(&self, con: &'s str) -> Option<(&Type<'s>, &Type<'s>)> {
         match *self {
             Type::App(ref f, ref ts) if **f == TypeFunc::Const(con) => {
                 assert_eq!(ts.len(), 2);
@@ -336,12 +317,12 @@ impl<'src> Type<'src> {
     }
 
     /// If the type is a function type signature, extract the parameter type and the return type.
-    pub fn get_func(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+    pub fn get_func(&self) -> Option<(&Type<'s>, &Type<'s>)> {
         self.get_bin("->")
     }
 
     /// If the type is of the form `(-> (Cons A B) C)`, return the tuple `(A, B, C)`
-    pub fn get_cons_binary_func(&self) -> Option<(&Type<'src>, &Type<'src>, &Type<'src>)> {
+    pub fn get_cons_binary_func(&self) -> Option<(&Type<'s>, &Type<'s>, &Type<'s>)> {
         self.get_func()
             .and_then(|(c, r)| c.get_cons().map(|(a, b)| (a, b, r)))
     }
@@ -381,21 +362,8 @@ impl<'src> Type<'src> {
         }
     }
 
-    pub fn get_cons(&self) -> Option<(&Type<'src>, &Type<'src>)> {
+    pub fn get_cons(&self) -> Option<(&Type<'s>, &Type<'s>)> {
         self.get_bin("Cons")
-    }
-
-    pub fn apply_constraints(&mut self, cs: &BTreeMap<&'src str, BTreeSet<&'src str>>) {
-        match *self {
-            Type::Var(ref mut tv) => if let Some(name) = tv.explicit {
-                if let Some(classes) = cs.get(name) {
-                    tv.constrs.extend(classes);
-                }   
-            },
-            Type::Const(..) => (),
-            Type::App(box ref mut tf, ref mut ts) => { tf.apply_constraints(cs); for t in ts { t.apply_constraints(cs) } },
-            Type::Poly(_) => unreachable!("ICE: No `Poly`s should exist yet when `apply_constraints` is relevant? (parse phase)"),
-        }
     }
 
     pub fn fulfills_constraints(&self, cs: &BTreeSet<&str>) -> bool {
@@ -422,13 +390,11 @@ impl<'src> Type<'src> {
     }
 }
 
-impl<'src> PartialEq for Type<'src> {
+impl<'s> PartialEq for Type<'s> {
     fn eq(&self, other: &Self) -> bool {
         use self::Type::*;
         match (self, other) {
-            (&Var(ref v1), &Var(ref v2)) => {
-                v1.id == v2.id && v1.constrs == v2.constrs && v1.explicit == v2.explicit
-            }
+            (&Var(ref v1), &Var(ref v2)) => v1 == v2,
             (&Const(t, _), &Const(u, _)) => t == u,
             (&App(ref f, ref v), &App(ref g, ref w)) => f == g && v == w,
             (&Poly(ref p), &Poly(ref q)) => p == q,
@@ -437,9 +403,9 @@ impl<'src> PartialEq for Type<'src> {
     }
 }
 
-impl<'src> Eq for Type<'src> {}
+impl<'s> Eq for Type<'s> {}
 
-impl<'src> fmt::Display for Type<'src> {
+impl<'s> fmt::Display for Type<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Type::Var(ref tv) => tv.fmt(f),
@@ -458,124 +424,134 @@ impl<'src> fmt::Display for Type<'src> {
 
 /// An identifier
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Ident<'src> {
-    pub s: &'src str,
-    pub pos: SrcPos<'src>,
+pub struct Ident<'s> {
+    pub s: &'s str,
+    pub pos: SrcPos<'s>,
 }
-impl<'src> Ident<'src> {
-    pub fn new(s: &'src str, pos: SrcPos<'src>) -> Ident<'src> {
+impl<'s> Ident<'s> {
+    pub fn new(s: &'s str, pos: SrcPos<'s>) -> Ident<'s> {
         Ident { s: s, pos: pos }
     }
 }
-impl<'src> PartialEq<str> for Ident<'src> {
+impl<'s> PartialEq<str> for Ident<'s> {
     fn eq(&self, rhs: &str) -> bool {
         self.s == rhs
     }
 }
-impl<'src> hash::Hash for Ident<'src> {
+impl<'s> hash::Hash for Ident<'s> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.s.hash(state);
     }
 }
-impl<'src> borrow::Borrow<str> for Ident<'src> {
+impl<'s> borrow::Borrow<str> for Ident<'s> {
     fn borrow(&self) -> &str {
         &self.s
     }
 }
-impl<'src> fmt::Display for Ident<'src> {
+impl<'s> fmt::Display for Ident<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.s, f)
     }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct ExternDecl<'src> {
-    pub ident: Ident<'src>,
+pub struct ExternDecl<'s> {
+    pub ident: Ident<'s>,
     /// The type of the external variable being declared.
     ///
     /// Guaranteed during parsing to be monomorphic and canonical
     /// I.e. no type variables or polytype applications
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Nil<'src> {
-    pub pos: SrcPos<'src>,
+pub struct Nil<'s> {
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct NumLit<'src> {
-    pub lit: &'src str,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct NumLit<'s> {
+    pub lit: &'s str,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct StrLit<'src> {
-    pub lit: borrow::Cow<'src, str>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct StrLit<'s> {
+    pub lit: borrow::Cow<'s, str>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
-pub struct Variable<'src> {
-    pub ident: Ident<'src>,
-    pub typ: Type<'src>,
+pub struct Variable<'s> {
+    pub ident: Ident<'s>,
+    pub typ: Type<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Bool<'src> {
+pub struct Bool<'s> {
     pub val: bool,
-    pub pos: SrcPos<'src>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct App<'src> {
-    pub func: Expr<'src>,
-    pub arg: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct App<'s> {
+    pub func: Expr<'s>,
+    pub arg: Expr<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 /// if-then-else expression
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct If<'src> {
-    pub predicate: Expr<'src>,
-    pub consequent: Expr<'src>,
-    pub alternative: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct If<'s> {
+    pub predicate: Expr<'s>,
+    pub consequent: Expr<'s>,
+    pub alternative: Expr<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Lambda<'src> {
-    pub param_ident: Ident<'src>,
-    pub param_type: Type<'src>,
-    pub body: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Lambda<'s> {
+    pub param_ident: Ident<'s>,
+    pub param_type: Type<'s>,
+    pub body: Expr<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 /// A binding of a name to a value, i.e. a variable definition.
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Binding<'src> {
-    pub ident: Ident<'src>,
-    pub typ: Type<'src>,
-    pub val: Expr<'src>,
+pub struct Binding<'s> {
+    pub ident: Ident<'s>,
+    pub sig: Poly<'s>,
+    pub val: Expr<'s>,
     /// If this binding is polymorphic, here will be mappings from
     /// application arguments to monomorphic instantiation of `val`
-    pub mono_insts: BTreeMap<Vec<Type<'src>>, Expr<'src>>,
-    pub pos: SrcPos<'src>,
+    pub mono_insts: BTreeMap<Vec<Type<'s>>, Expr<'s>>,
+    pub pos: SrcPos<'s>,
+}
+
+impl<'s> Binding<'s> {
+    pub fn get_type(&self) -> Type<'s> {
+        if self.sig.params.is_empty() {
+            self.sig.body.clone()
+        } else {
+            Type::Poly(box self.sig.clone())
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum Group<'src> {
-    Circular(BTreeMap<&'src str, Binding<'src>>),
-    Uncircular(&'src str, Binding<'src>),
+pub enum Group<'s> {
+    Circular(BTreeMap<&'s str, Binding<'s>>),
+    Uncircular(&'s str, Binding<'s>),
 }
 
-impl<'src> Group<'src> {
+impl<'s> Group<'s> {
     pub fn contains(&self, e: &str) -> bool {
         match *self {
             Group::Circular(ref xs) => xs.contains_key(e),
@@ -583,21 +559,21 @@ impl<'src> Group<'src> {
         }
     }
 
-    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
+    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'s str> + 'a> {
         match *self {
             Group::Circular(ref xs) => Box::new(xs.keys().map(|s| *s)),
             Group::Uncircular(x, _) => Box::new(once(x)),
         }
     }
 
-    pub fn bindings<'s>(&'s self) -> Box<Iterator<Item = &'s Binding<'src>> + 's> {
+    pub fn bindings<'g>(&'g self) -> Box<Iterator<Item = &'g Binding<'s>> + 'g> {
         match *self {
             Group::Circular(ref xs) => Box::new(xs.iter().map(|(_, b)| b)),
             Group::Uncircular(_, ref b) => Box::new(once(b)),
         }
     }
 
-    pub fn bindings_mut<'s>(&'s mut self) -> Box<Iterator<Item = &'s mut Binding<'src>> + 's> {
+    pub fn bindings_mut<'g>(&'g mut self) -> Box<Iterator<Item = &'g mut Binding<'s>> + 'g> {
         match *self {
             Group::Circular(ref mut xs) => Box::new(xs.iter_mut().map(|(_, b)| b)),
             Group::Uncircular(_, ref mut b) => Box::new(once(b)),
@@ -661,15 +637,15 @@ impl<'src> Group<'src> {
 /// `a`. Both `f` and `g` are given the same type parameters, and the result is
 /// `(: f (for (a) (-> Int a a)))` and `(: g (for (a) (-> Int a a)))`.
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct TopologicallyOrderedDependencyGroups<'src>(pub Vec<Group<'src>>);
+pub struct TopologicallyOrderedDependencyGroups<'s>(pub Vec<Group<'s>>);
 
-impl<'src> TopologicallyOrderedDependencyGroups<'src> {
-    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'src str> + 'a> {
+impl<'s> TopologicallyOrderedDependencyGroups<'s> {
+    pub fn ids<'a>(&'a self) -> Box<Iterator<Item = &'s str> + 'a> {
         Box::new(self.groups().flat_map(|g| g.ids()))
     }
 
     /// Returns an iterator of bindings from the root of the topological order
-    pub fn bindings<'s>(&'s self) -> Box<DoubleEndedIterator<Item = &'s Binding<'src>> + 's> {
+    pub fn bindings<'g>(&'g self) -> Box<DoubleEndedIterator<Item = &'g Binding<'s>> + 'g> {
         Box::new(
             self.groups()
                 .flat_map(|g| g.bindings())
@@ -679,9 +655,9 @@ impl<'src> TopologicallyOrderedDependencyGroups<'src> {
     }
 
     /// Returns an iterator bindings from the root of the topological order
-    pub fn bindings_mut<'s>(
-        &'s mut self,
-    ) -> Box<DoubleEndedIterator<Item = &'s mut Binding<'src>> + 's> {
+    pub fn bindings_mut<'g>(
+        &'g mut self,
+    ) -> Box<DoubleEndedIterator<Item = &'g mut Binding<'s>> + 'g> {
         Box::new(
             self.groups_mut()
                 .flat_map(|g| g.bindings_mut())
@@ -691,108 +667,106 @@ impl<'src> TopologicallyOrderedDependencyGroups<'src> {
     }
 
     /// Returns an iterator of groups from the root of the topological order
-    pub fn groups<'s>(&'s self) -> Box<DoubleEndedIterator<Item = &'s Group<'src>> + 's> {
+    pub fn groups<'g>(&'g self) -> Box<DoubleEndedIterator<Item = &'g Group<'s>> + 'g> {
         Box::new(self.0.iter())
     }
 
     /// Returns an iterator of groups from the root of the topological order
-    pub fn groups_mut<'s>(
-        &'s mut self,
-    ) -> Box<DoubleEndedIterator<Item = &'s mut Group<'src>> + 's> {
+    pub fn groups_mut<'g>(&'g mut self) -> Box<DoubleEndedIterator<Item = &'g mut Group<'s>> + 'g> {
         Box::new(self.0.iter_mut())
     }
 }
 
 /// A `let` special form
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Let<'src> {
-    pub bindings: TopologicallyOrderedDependencyGroups<'src>,
-    pub body: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Let<'s> {
+    pub bindings: TopologicallyOrderedDependencyGroups<'s>,
+    pub body: Expr<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 /// A type ascription.
 ///
 /// Ascribes a specific type to an expression
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct TypeAscript<'src> {
-    pub typ: Type<'src>,
-    pub expr: Expr<'src>,
-    pub pos: SrcPos<'src>,
+pub struct TypeAscript<'s> {
+    pub typ: Type<'s>,
+    pub expr: Expr<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Cons<'src> {
-    pub typ: Type<'src>,
-    pub car: Expr<'src>,
-    pub cdr: Expr<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Cons<'s> {
+    pub typ: Type<'s>,
+    pub car: Expr<'s>,
+    pub cdr: Expr<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Car<'src> {
-    pub typ: Type<'src>,
-    pub expr: Expr<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Car<'s> {
+    pub typ: Type<'s>,
+    pub expr: Expr<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Cdr<'src> {
-    pub typ: Type<'src>,
-    pub expr: Expr<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Cdr<'s> {
+    pub typ: Type<'s>,
+    pub expr: Expr<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 /// A type cast
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Cast<'src> {
-    pub expr: Expr<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Cast<'s> {
+    pub expr: Expr<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct OfVariant<'src> {
-    pub expr: Expr<'src>,
-    pub variant: Ident<'src>,
-    pub pos: SrcPos<'src>,
+pub struct OfVariant<'s> {
+    pub expr: Expr<'s>,
+    pub variant: Ident<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct AsVariant<'src> {
-    pub expr: Expr<'src>,
-    pub variant: Ident<'src>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct AsVariant<'s> {
+    pub expr: Expr<'s>,
+    pub variant: Ident<'s>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct New<'src> {
-    pub constr: Ident<'src>,
-    pub members: Vec<Expr<'src>>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct New<'s> {
+    pub constr: Ident<'s>,
+    pub members: Vec<Expr<'s>>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Deconstr<'src> {
-    pub constr: Ident<'src>,
-    pub subpatts: Vec<Pattern<'src>>,
-    pub pos: SrcPos<'src>,
+pub struct Deconstr<'s> {
+    pub constr: Ident<'s>,
+    pub subpatts: Vec<Pattern<'s>>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum Pattern<'src> {
-    Nil(Nil<'src>),
-    NumLit(NumLit<'src>),
-    StrLit(StrLit<'src>),
-    Variable(Variable<'src>),
-    Deconstr(Box<Deconstr<'src>>),
+pub enum Pattern<'s> {
+    Nil(Nil<'s>),
+    NumLit(NumLit<'s>),
+    StrLit(StrLit<'s>),
+    Variable(Variable<'s>),
+    Deconstr(Box<Deconstr<'s>>),
 }
 
-impl<'src> Pattern<'src> {
-    pub fn variables(&self) -> BTreeSet<&Variable<'src>> {
+impl<'s> Pattern<'s> {
+    pub fn variables(&self) -> BTreeSet<&Variable<'s>> {
         match *self {
             Pattern::Variable(ref v) => set_of(v),
             Pattern::Deconstr(ref d) => d.subpatts.iter().flat_map(|p| p.variables()).collect(),
@@ -800,7 +774,7 @@ impl<'src> Pattern<'src> {
         }
     }
 
-    pub fn variables_mut(&mut self) -> BTreeSet<&mut Variable<'src>> {
+    pub fn variables_mut(&mut self) -> BTreeSet<&mut Variable<'s>> {
         match *self {
             Pattern::Variable(ref mut v) => set_of(v),
             Pattern::Deconstr(ref mut d) => d.subpatts
@@ -811,7 +785,7 @@ impl<'src> Pattern<'src> {
         }
     }
 
-    pub fn variable_names(&self) -> BTreeSet<&'src str> {
+    pub fn variable_names(&self) -> BTreeSet<&'s str> {
         match *self {
             Pattern::Variable(ref v) => set_of(v.ident.s),
             Pattern::Deconstr(ref d) => {
@@ -823,45 +797,45 @@ impl<'src> Pattern<'src> {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Case<'src> {
-    pub patt: Pattern<'src>,
-    pub patt_typ: Type<'src>,
-    pub body: Expr<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Case<'s> {
+    pub patt: Pattern<'s>,
+    pub patt_typ: Type<'s>,
+    pub body: Expr<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Match<'src> {
-    pub expr: Expr<'src>,
-    pub cases: Vec<Case<'src>>,
-    pub typ: Type<'src>,
-    pub pos: SrcPos<'src>,
+pub struct Match<'s> {
+    pub expr: Expr<'s>,
+    pub cases: Vec<Case<'s>>,
+    pub typ: Type<'s>,
+    pub pos: SrcPos<'s>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum Expr<'src> {
-    Nil(Nil<'src>),
-    NumLit(NumLit<'src>),
-    StrLit(StrLit<'src>),
-    Bool(Bool<'src>),
-    Variable(Variable<'src>),
-    App(Box<App<'src>>),
-    If(Box<If<'src>>),
-    Lambda(Box<Lambda<'src>>),
-    Let(Box<Let<'src>>),
-    TypeAscript(Box<TypeAscript<'src>>),
-    Cons(Box<Cons<'src>>),
-    Car(Box<Car<'src>>),
-    Cdr(Box<Cdr<'src>>),
-    Cast(Box<Cast<'src>>),
-    OfVariant(Box<OfVariant<'src>>),
-    AsVariant(Box<AsVariant<'src>>),
-    New(Box<New<'src>>),
-    Match(Box<Match<'src>>),
+pub enum Expr<'s> {
+    Nil(Nil<'s>),
+    NumLit(NumLit<'s>),
+    StrLit(StrLit<'s>),
+    Bool(Bool<'s>),
+    Variable(Variable<'s>),
+    App(Box<App<'s>>),
+    If(Box<If<'s>>),
+    Lambda(Box<Lambda<'s>>),
+    Let(Box<Let<'s>>),
+    TypeAscript(Box<TypeAscript<'s>>),
+    Cons(Box<Cons<'s>>),
+    Car(Box<Car<'s>>),
+    Cdr(Box<Cdr<'s>>),
+    Cast(Box<Cast<'s>>),
+    OfVariant(Box<OfVariant<'s>>),
+    AsVariant(Box<AsVariant<'s>>),
+    New(Box<New<'s>>),
+    Match(Box<Match<'s>>),
 }
 
-impl<'src> Expr<'src> {
-    pub fn pos(&self) -> &SrcPos<'src> {
+impl<'s> Expr<'s> {
+    pub fn pos(&self) -> &SrcPos<'s> {
         match *self {
             Expr::Nil(ref n) => &n.pos,
             Expr::NumLit(ref l) => &l.pos,
@@ -884,14 +858,14 @@ impl<'src> Expr<'src> {
         }
     }
 
-    pub fn as_var(&self) -> Option<&Variable<'src>> {
+    pub fn as_var(&self) -> Option<&Variable<'s>> {
         match *self {
             Expr::Variable(ref bnd) => Some(bnd),
             _ => None,
         }
     }
 
-    pub fn get_type(&self) -> &Type<'src> {
+    pub fn get_type(&self) -> &Type<'s> {
         match *self {
             Expr::Nil(_) => &TYPE_NIL,
             Expr::NumLit(ref l) => &l.typ,
@@ -927,7 +901,7 @@ impl<'src> Expr<'src> {
     /// and return the ascribed type
     ///
     /// Returns `None` if `expr` is not a type ascription
-    pub fn remove_type_ascription(&mut self) -> Option<Type<'src>> {
+    pub fn remove_type_ascription(&mut self) -> Option<Type<'s>> {
         let (t, inner) = if let Expr::TypeAscript(ref mut ascr) = *self {
             // use dummy pos and replace with `Nil` to avoid unsafe.
             // Will be deallocated immediately afterwards
@@ -946,28 +920,28 @@ impl<'src> Expr<'src> {
 ///
 /// An ADT variant is equivalent to a constructor and a destructor
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct AdtVariant<'src> {
-    pub name: Ident<'src>,
-    pub members: Vec<Type<'src>>,
-    pub pos: SrcPos<'src>,
+pub struct AdtVariant<'s> {
+    pub name: Ident<'s>,
+    pub members: Vec<Type<'s>>,
+    pub pos: SrcPos<'s>,
 }
 
-impl<'src> AdtVariant<'src> {
-    pub fn get_type(&self) -> Type<'src> {
+impl<'s> AdtVariant<'s> {
+    pub fn get_type(&self) -> Type<'s> {
         Type::new_tuple(&self.members)
     }
 }
 
 /// Algebraic Data Type definition
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct AdtDef<'src> {
-    pub name: Ident<'src>,
-    pub variants: Vec<AdtVariant<'src>>,
-    pub pos: SrcPos<'src>,
+pub struct AdtDef<'s> {
+    pub name: Ident<'s>,
+    pub variants: Vec<AdtVariant<'s>>,
+    pub pos: SrcPos<'s>,
 }
 
-impl<'src> AdtDef<'src> {
-    pub fn get_type(&self) -> Type<'src> {
+impl<'s> AdtDef<'s> {
+    pub fn get_type(&self) -> Type<'s> {
         Type::Const(self.name.s, None)
     }
 
@@ -978,13 +952,13 @@ impl<'src> AdtDef<'src> {
 
 /// Algebraic data type definitions
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Adts<'src> {
-    pub defs: BTreeMap<&'src str, AdtDef<'src>>,
+pub struct Adts<'s> {
+    pub defs: BTreeMap<&'s str, AdtDef<'s>>,
     /// Auxiliary map for quicker access to variants parent
-    pub variants: BTreeMap<&'src str, &'src str>,
+    pub variants: BTreeMap<&'s str, &'s str>,
 }
 
-impl<'src> Adts<'src> {
+impl<'s> Adts<'s> {
     pub fn new() -> Self {
         Adts {
             defs: BTreeMap::new(),
@@ -1047,24 +1021,24 @@ impl<'src> Adts<'src> {
         self.adt_is_recursive(adt)
     }
 
-    pub fn parent_adt_of_variant<'s>(&'s self, v: &str) -> Option<&'s AdtDef<'src>> {
+    pub fn parent_adt_of_variant<'a>(&'a self, v: &str) -> Option<&'a AdtDef<'s>> {
         self.variants.get(v).and_then(|t| self.defs.get(t))
     }
 
-    pub fn parent_type_of_variant<'s>(&'s self, v: &str) -> Option<Type<'src>> {
+    pub fn parent_type_of_variant<'a>(&'a self, v: &str) -> Option<Type<'s>> {
         self.variants.get(v).map(|t| Type::Const(t, None))
     }
 
-    pub fn adt_variant_of_name<'s>(&'s self, v: &str) -> Option<&'s AdtVariant<'src>> {
+    pub fn adt_variant_of_name<'a>(&'a self, v: &str) -> Option<&'a AdtVariant<'s>> {
         self.parent_adt_of_variant(v)
             .and_then(|parent_adt| parent_adt.variants.iter().find(|av| av.name.s == v))
     }
 
-    pub fn type_of_variant(&self, v: &str) -> Option<Type<'src>> {
+    pub fn type_of_variant(&self, v: &str) -> Option<Type<'s>> {
         self.adt_variant_of_name(v).map(AdtVariant::get_type)
     }
 
-    pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'src>> {
+    pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'s>> {
         let adt_variant = self.adt_variant_of_name(v)?;
         let parent_type = self.parent_type_of_variant(v)?;
         Some(Type::new_currying_func(&adt_variant.members, parent_type))
@@ -1081,17 +1055,17 @@ impl<'src> Adts<'src> {
 
 /// A module of definitions and declarations of functions and variables
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Ast<'src> {
+pub struct Ast<'s> {
     /// External variable declarations
     ///
     /// May include declarations of external both functions and variables
-    pub externs: BTreeMap<&'src str, ExternDecl<'src>>,
+    pub externs: BTreeMap<&'s str, ExternDecl<'s>>,
     /// Global variable definitions
     ///
     /// May include both top-level functions and global variables.
     /// The bindings are grouped by circularity of definitions, and
     /// the groups are ordered topologically by inter-group dependency.
-    pub globals: TopologicallyOrderedDependencyGroups<'src>,
+    pub globals: TopologicallyOrderedDependencyGroups<'s>,
     /// Algebraic Data Type definitions
-    pub adts: Adts<'src>,
+    pub adts: Adts<'s>,
 }

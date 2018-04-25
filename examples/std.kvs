@@ -1,3 +1,33 @@
+;;; Section Logic and Math
+
+(define (not b) (if b false true))
+
+(define (+ x y) (add (cons x y)))
+(define (- x y) (sub (cons x y)))
+(define (* x y) (mul (cons x y)))
+(define (/ x y) (div (cons x y)))
+
+(define (= x y) (eq (cons x y)))
+(define (/= x y) (neq (cons x y)))
+(define (> x y) (gt (cons x y)))
+(define (>= x y) (gteq (cons x y)))
+(define (< x y) (lt (cons x y)))
+(define (<= x y) (lteq (cons x y)))
+
+(define: (int x)
+    (constrain [(Num t)] (-> t Int64))
+  (cast x Int64))
+
+(define: (floor x)
+    (constrain [(Num t)] (-> t t))
+  (cast (int x) t))
+
+(define (remainder n d)
+  (- n (* (floor (/ n d)) d)))
+
+(define (divisible-by n d)
+  (= (remainder n d) 0))
+
 ;;; Section Strings
 ;;;
 ;;; Represent strings as a pair of (pointer to string data) and length
@@ -9,22 +39,71 @@
   StrEmpty
   (StrCons UInt32 String))
 
+(define (empty? s)
+  (match s
+    [StrEmpty true]
+    [_        false]))
+
+(define (c-to-s c)
+  (prepend c (new StrEmpty)))
+
+(define (prepend c s)
+  (new StrCons c s))
+
+(define (append s c)
+  (match s
+    [StrEmpty        (prepend c "")]
+    [(StrCons c' s') (prepend c' (append s' c))]))
+
 (define (concat s1 s2)
   (match s1
     [StrEmpty        s2]
     [(StrCons c s1') (new StrCons c (concat s1' s2))]))
 
-(define (i-to-s' s n)
+(define (to-digit n)
+  (cast (+ 48 n) UInt32))
+
+(define: (int-to-s' s n)
+    (-> String Int64 String)
   (let ([n' (/ n 10)]
         [r  (remainder n 10)]
-        [c  (cast (+ 48 r) UInt32)]
+        [c  (to-digit r)]
         [s' (new StrCons c s)])
     (if (= n' 0)
         s'
-      (i-to-s' s' n'))))
+      (int-to-s' s' n'))))
 
-(define i-to-s
-  (i-to-s' ""))
+(define (int-to-s n)
+  (int-to-s' "" n))
+
+(define (dec-to-s x)
+  (let [[x'    (* x 10)]
+        [intx' (floor x')]
+        [first (to-digit intx')]]
+    (if (= x 0)
+        (c-to-s first)
+      (prepend first
+               (dec-to-s (- x' intx'))))))
+
+(define: (dec-to-s' x)
+    (-> Float64 String)
+  (let [[x'    (* x 10)]
+        [intx' (floor x')]
+        [first (to-digit intx')]]
+    (if (= x 0)
+        (c-to-s first)
+      (prepend first
+               (dec-to-s (- x' intx'))))))
+
+;; (define: (num-to-s x)
+;;     (constrain [(Num t)] (-> t String))
+;;   (let [[intx (floor x)]
+;;         [decx (- x intx)]
+;;         [ints (int-to-s (int intx))]]
+;;     (if (= decx 0)
+;;         ints
+;;       (let [[decs (dec-to-s decx)]]
+;;         (concat ints (concat "." decs))))))
 
 ;;; Section Input/output
 
@@ -164,7 +243,7 @@
 (define (break-while-io io)
   (iomap left io))
 
-;;; Section Misc
+;;; Section Misc / Builtin / Core / Intrinsics
 
 (define: (undef _)
     (-> Nil t)
@@ -201,23 +280,3 @@
 (define: (lteq _)
     (constrain [(Num t)] (-> (Cons t t) Bool))
   (undef nil))
-
-(define (not b) (if b false true))
-
-(define (+ x y) (add (cons x y)))
-(define (- x y) (sub (cons x y)))
-(define (* x y) (mul (cons x y)))
-(define (/ x y) (div (cons x y)))
-
-(define (= x y) (eq (cons x y)))
-(define (/= x y) (neq (cons x y)))
-(define (> x y) (gt (cons x y)))
-(define (>= x y) (gteq (cons x y)))
-(define (< x y) (lt (cons x y)))
-(define (<= x y) (lteq (cons x y)))
-
-(define (remainder n d)
-  (- n (* (/ n d) d)))
-
-(define (divisible-by n d)
-  (= (remainder n d) 0))

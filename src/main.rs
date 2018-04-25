@@ -78,8 +78,7 @@
 // TODO: Base macro system on pure functions that has syntax trees as input and output.
 //       This would require some kind of interpretation in order to execute code at compile time
 
-#![feature(non_ascii_idents, box_syntax, box_patterns, conservative_impl_trait)]
-#![deny(missing_docs)]
+#![feature(non_ascii_idents, box_syntax, box_patterns)]
 
 extern crate bitflags;
 extern crate cbox;

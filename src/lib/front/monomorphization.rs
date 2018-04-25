@@ -34,7 +34,7 @@ fn monomorphize_def_of_inst<'src>(
             if !b.mono_insts.contains_key(&*ts) {
                 // The monomorphization does not already exist
                 let mut s = zip(&p.params, &*ts)
-                    .map(|(param, t)| (param.id, t.clone()))
+                    .map(|((&param_v, _), t)| (param_v, t.clone()))
                     .collect();
                 let mut def_mono = b.val.clone();
                 subst_expr(&mut def_mono, &mut s);
@@ -146,7 +146,7 @@ fn monomorphize_defs_of_insts_in_let<'src>(
     let mut monos = BTreeMap::new();
     let mut bindings_flat_map = BTreeMap::new();
     for b in bindings.bindings() {
-        if b.typ.is_monomorphic() {
+        if b.sig.is_monomorphic() {
             monos.insert(b.ident.s, b.val.clone());
         }
         bindings_flat_map.insert(b.ident.s, b.clone());

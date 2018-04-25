@@ -336,11 +336,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     fn gen_tvar(&mut self) -> TVar<'s> {
-        TVar {
-            id: self.type_var_gen.gen(),
-            constrs: BTreeSet::new(),
-            explicit: None,
-        }
+        TVar::Implicit(self.type_var_gen.gen())
     }
 
     fn gen_type_var(&mut self) -> Type<'s> {
@@ -409,6 +405,11 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
+    fn parse_type_var(&mut self, cst: &Cst<'s>) -> PRes<'s, TVar<'s>> {
+        self.parse_type_var_ident(cst)
+            .map(|id| TVar::Explicit(id.s))
+    }
+
     fn parse_constraint_class(&mut self, cst: &Cst<'s>) -> PRes<'s, &'s str> {
         match *cst {
             Cst::Ident("Num", _) => Ok("Num"),
@@ -420,49 +421,51 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_constraints(
         &mut self,
         csts: &[Cst<'s>],
-    ) -> PRes<'s, BTreeMap<&'s str, BTreeSet<&'s str>>> {
+    ) -> PRes<'s, BTreeMap<TVar<'s>, BTreeSet<&'s str>>> {
         let mut constrs = BTreeMap::new();
         for cst in csts {
             let (a, b) = pair(cst)?;
             let class = self.parse_constraint_class(a)?;
-            let tvar = self.parse_type_var_ident(b)?;
-            constrs
-                .entry(tvar.s)
-                .or_insert(BTreeSet::new())
-                .insert(class);
+            let tv = self.parse_type_var(b)?;
+            constrs.entry(tv).or_insert(BTreeSet::new()).insert(class);
         }
         Ok(constrs)
     }
 
     /// Parse a definition of constraints
-    fn parse_constrained_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
+    fn parse_constrained_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Poly<'s>> {
         let (a, b) = two(csts, pos)?;
         let cs = sexpr(a)?;
-        let constraints = self.parse_constraints(cs)?;
-        let mut body_type = self.parse_type(b)?;
-        body_type.apply_constraints(&constraints);
-        Ok(body_type)
+        let params = self.parse_constraints(cs)?;
+        let body = self.parse_type(b)?;
+        Ok(Poly { params, body })
     }
 
     fn parse_def_type_sig_sexpr(
         &mut self,
         csts: &[Cst<'s>],
         pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    ) -> PRes<'s, Poly<'s>> {
         let is_constrain = csts.first()
             .and_then(|c| ident_s(c).ok().map(|s| s == "constrain"))
             .unwrap_or(false);
         if is_constrain {
             self.parse_constrained_type(&csts[1..], pos)
         } else {
-            self.parse_type_sexpr(csts, pos)
+            Ok(Poly {
+                params: BTreeMap::new(),
+                body: self.parse_type_sexpr(csts, pos)?,
+            })
         }
     }
 
-    fn parse_def_type_sig(&mut self, cst: &Cst<'s>) -> PRes<'s, Type<'s>> {
+    fn parse_def_type_sig(&mut self, cst: &Cst<'s>) -> PRes<'s, Poly<'s>> {
         match *cst {
             Cst::Sexpr(ref app, ref pos) => self.parse_def_type_sig_sexpr(app, pos),
-            _ => self.parse_type(cst),
+            _ => Ok(Poly {
+                params: BTreeMap::new(),
+                body: self.parse_type(cst)?,
+            }),
         }
     }
 
@@ -503,14 +506,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             "_" => Ok(self.gen_type_var()),
             "Nil" => Ok(TYPE_NIL.clone()),
             // The type identifier starts with a lowercase letter => Is a type variable
-            s if s.starts_with(char::is_lowercase) => {
-                let tv = TVar {
-                    id: self.type_var_gen.gen(),
-                    constrs: BTreeSet::new(),
-                    explicit: Some(s),
-                };
-                Ok(Type::Var(tv))
-            }
+            s if s.starts_with(char::is_lowercase) => Ok(Type::Var(TVar::Explicit(s))),
             // Doesn't start with lowercase => Is a type constant e.g. Int32
             s => Ok(Type::Const(s, Some(pos.clone()))),
         }
@@ -689,17 +685,22 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     fn parse_binding(
         &mut self,
         patt: &Cst<'s>,
-        maybe_typ: Option<&Cst<'s>>,
+        maybe_sig: Option<&Cst<'s>>,
         val: &Cst<'s>,
         pos: &SrcPos<'s>,
     ) -> PRes<'s, Binding<'s>> {
-        let typ = maybe_typ
+        let sig = maybe_sig
             .map(|c| self.parse_def_type_sig(c))
-            .unwrap_or_else(|| Ok(self.gen_type_var()))?;
+            .unwrap_or_else(|| {
+                Ok(Poly {
+                    params: BTreeMap::new(),
+                    body: self.gen_type_var(),
+                })
+            })?;
         Ok(match self.parse_bind_pattern(patt)? {
             BindPattern::Var(ident) => Binding {
-                ident: ident,
-                typ: typ,
+                ident,
+                sig,
                 val: self.parse_expr(val)?,
                 mono_insts: BTreeMap::new(),
                 pos: pos.clone(),
@@ -712,7 +713,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
                 let body = self.parse_expr(val)?;
                 Binding {
                     ident: f_id,
-                    typ: typ,
+                    sig: sig,
                     val: Expr::Lambda(Box::new(self.new_multary_lambda(
                         &params,
                         &params_pos,

@@ -38,12 +38,12 @@ impl TypeVarGen {
         n
     }
 
-    pub fn gen_tv<'src>(&mut self) -> ast::Type<'src> {
-        ast::Type::Var(ast::TVar {
-            id: self.gen(),
-            constrs: BTreeSet::new(),
-            explicit: None,
-        })
+    pub fn gen_tv<'src>(&mut self) -> ast::TVar<'src> {
+        ast::TVar::Implicit(self.gen())
+    }
+
+    pub fn gen_type_var<'src>(&mut self) -> ast::Type<'src> {
+        ast::Type::Var(self.gen_tv())
     }
 }
 
