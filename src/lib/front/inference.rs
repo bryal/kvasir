@@ -290,6 +290,27 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         self.var_env.get(id).and_then(|v| v.last())
     }
 
+    fn extend_type_var_env(&mut self, tvs: BTreeMap<TVar<'s>, BTreeSet<&'s str>>) {
+        for (tv, constrs) in tvs {
+            self.type_var_env.insert(tv, constrs);
+        }
+    }
+
+    fn extend_type_var_env_no_constrs(&mut self, tvs: &BTreeSet<TVar<'s>>) {
+        for &tv in tvs {
+            self.type_var_env.entry(tv).or_insert(BTreeSet::new());
+        }
+    }
+
+    fn unextend_type_var_env<I>(&mut self, tvs: I)
+    where
+        I: IntoIterator<Item = TVar<'s>>,
+    {
+        for tv in tvs {
+            self.type_var_env.remove(&tv);
+        }
+    }
+
     fn get_type_var_constraints(&self, id: &TVar<'s>) -> &BTreeSet<&'s str> {
         self.type_var_env.get(id).unwrap_or(&EMPTY_SET)
     }
@@ -303,28 +324,39 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         set
     }
 
+    fn free_type_vars_var(&self, tv: &TVar<'s>) -> BTreeSet<TVar<'s>> {
+        self.type_var_map
+            .get(tv)
+            .map(|u| {
+                if occurs_in(tv, u, &self.type_var_map) {
+                    // NOTE: Shouldn't be able to happen if no bugs right?
+                    panic!("ICE: in get_type_vars: t occurs in u")
+                } else {
+                    self.free_type_vars(u)
+                }
+            })
+            .unwrap_or(set_of(tv.clone()))
+    }
+
     /// Returns an iterator of all free type variables that occur in `t`
     fn free_type_vars(&self, t: &Type<'s>) -> BTreeSet<TVar<'s>> {
         match *t {
-            Type::Var(ref tv) => {
-                self.type_var_map
-                    .get(tv)
-                    .map(|u| {
-                        if occurs_in(tv, u, &self.type_var_map) {
-                            // NOTE: Shouldn't be able to happen if no bugs right?
-                            panic!("ICE: in get_type_vars: t occurs in u")
-                        } else {
-                            self.free_type_vars(u)
-                        }
-                    })
-                    .unwrap_or(set_of(tv.clone()))
-            }
+            Type::Var(ref tv) => self.free_type_vars_var(tv),
             Type::App(_, ref ts) => ts.iter()
                 .flat_map(move |t2| self.free_type_vars(t2))
                 .collect(),
             Type::Poly(ref p) => self.free_type_vars_poly(p),
             Type::Const(..) => BTreeSet::new(),
         }
+    }
+
+    fn bound_type_vars_in_env(
+        &self,
+        env: &BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
+    ) -> BTreeSet<TVar<'s>> {
+        env.keys()
+            .flat_map(|tv| self.free_type_vars_var(tv))
+            .collect()
     }
 
     /// Quantifying monotype variables in `t` that are not bound in the context
@@ -335,11 +367,11 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         t: &Type<'s>,
         context: &BTreeMap<TVar<'s>, BTreeSet<&'s str>>,
     ) -> BTreeSet<TVar<'s>> {
-        let mut tvs = self.free_type_vars(t);
-        for tv in context.keys() {
-            tvs.remove(tv);
-        }
-        tvs
+        &self.free_type_vars(t) - &self.bound_type_vars_in_env(context)
+        // for tv in context.keys() {
+        //     tvs.remove(tv);
+        // }
+        // tvs
     }
 
     /// Generalize type by quantifying monotype variables in `t` that are not bound in the context
@@ -647,26 +679,26 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         // Infer type of param by adding it to the environment and applying constraints based on
         // how it is used during inference of lambda body.
 
-        let param_type = self.type_var_gen.gen_type_var();
-        let body_type = self.type_var_gen.gen_type_var();
-        let func_type = Type::new_func(param_type.clone(), body_type);
-        let (expected_param_type, expected_body_type) = self.unify(expected_type, &func_type)
+        lam.typ = Type::new_func(
+            self.type_var_gen.gen_type_var(),
+            self.type_var_gen.gen_type_var(),
+        );
+        let (expected_param_type, expected_body_type) = self.unify(expected_type, &lam.typ)
             .unwrap_or_else(|_| {
                 lam.pos
-                    .error_exit(type_mis(&mut self.type_var_map, expected_type, &func_type))
+                    .error_exit(type_mis(&mut self.type_var_map, expected_type, &lam.typ))
             })
             .get_func()
             .map(|(p, b)| (p.clone(), b.clone()))
             .expect(
                 "ICE: unification with function type did not produce function type in infer_lambda",
             );
+        let param_tvars = self.free_type_vars(&expected_param_type);
+        self.extend_type_var_env_no_constrs(&param_tvars);
         self.push_var(lam.param_ident.s, expected_param_type);
-
-        let body_type = self.infer_expr(&mut lam.body, &expected_body_type);
-
-        lam.param_type = self.pop_var(lam.param_ident.s)
-            .expect("ICE: param gone from env in infer_lambda");
-        lam.typ = Type::new_func(lam.param_type.clone(), body_type.clone());
+        self.infer_expr(&mut lam.body, &expected_body_type);
+        self.pop_var(lam.param_ident.s);
+        self.unextend_type_var_env(param_tvars);
         &lam.typ
     }
 
@@ -700,9 +732,7 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         match *group {
             Group::Uncircular(id, ref mut binding) => {
                 let old_tv_env = self.type_var_env.clone();
-                for (&tv, constrs) in &binding.sig.params {
-                    self.type_var_env.insert(tv, constrs.clone());
-                }
+                self.extend_type_var_env(binding.sig.params.clone());
                 self.infer_expr(&mut binding.val, &binding.sig.body);
                 let generalized_params = self.generalize(&binding.sig.body, &old_tv_env);
                 self.type_var_env = old_tv_env;
@@ -716,9 +746,7 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                 for (&id, binding) in bindings.iter() {
                     self.push_var(id, binding.sig.body.clone());
                     bindings_ids.push(id);
-                    for (&tv, constrs) in &binding.sig.params {
-                        self.type_var_env.insert(tv, constrs.clone());
-                    }
+                    self.extend_type_var_env(binding.sig.params.clone());
                 }
                 // Infer bindings
                 for (_, binding) in bindings.iter_mut() {

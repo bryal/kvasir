@@ -57,13 +57,12 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<TVar<'src>, Type<'s
             cond.typ = subst(&cond.typ, s);
         }
         Expr::Lambda(ref mut l) => {
-            l.param_type = subst(&l.param_type, s);
             subst_expr(&mut l.body, s);
             l.typ = subst(&l.typ, s);
         }
         Expr::Let(ref mut l) => {
             for binding in l.bindings.bindings_mut() {
-                binding.sig.body = subst(&binding.sig.body, s);
+                binding.sig = subst_poly(&binding.sig, s);
                 subst_expr(&mut binding.val, s);
             }
             subst_expr(&mut l.body, s);

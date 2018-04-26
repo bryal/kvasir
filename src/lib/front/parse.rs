@@ -647,7 +647,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             .ok_or(ArityMisTooFew(params_pos.clone(), 0))?;
         let innermost = Lambda {
             param_ident: last.0.clone(),
-            param_type: last.1.clone(),
             body: body,
             typ: self.gen_type_var(),
             pos: pos.clone(),
@@ -657,7 +656,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             .cloned()
             .fold(innermost, |inner, param| Lambda {
                 param_ident: param.0,
-                param_type: param.1,
                 body: Expr::Lambda(Box::new(inner)),
                 typ: self.gen_type_var(),
                 pos: pos.clone(),

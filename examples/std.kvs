@@ -122,7 +122,7 @@
 (define read-uint64 read_uint64)
 
 (define (print-int64 x)
-  (lambda (real-world)
+  (lambda [real-world]
     (print_int64 (cons x real-world))))
 
 (define (print-uint64 x)
