@@ -2,7 +2,8 @@ use lib::set_of;
 use super::SrcPos;
 use itertools::{zip, Itertools};
 use std::collections::{BTreeMap, BTreeSet};
-use std::{borrow, fmt, hash, mem, path};
+use std::{borrow, hash, mem, path};
+use std::fmt::{self, Display};
 use std::iter::once;
 
 // TODO: Replace static with const to allow matching
@@ -12,6 +13,10 @@ lazy_static! {
     pub static ref TYPE_FLOAT64: Type<'static> = Type::Const("Float64", None);
     pub static ref TYPE_STRING: Type<'static> = Type::Const("String", None);
     pub static ref TYPE_REALWORLD: Type<'static> = Type::Const("RealWorld", None);
+}
+
+fn spaces(n: usize) -> String {
+    " ".repeat(n)
 }
 
 /// A Polytype / Type scheme
@@ -36,7 +41,7 @@ impl<'s> Poly<'s> {
     }
 }
 
-impl<'s> fmt::Display for Poly<'s> {
+impl<'s> Display for Poly<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let params_s = self.params
             .iter()
@@ -60,11 +65,11 @@ pub enum TypeFunc<'s> {
     Poly(Poly<'s>),
 }
 
-impl<'s> fmt::Display for TypeFunc<'s> {
+impl<'s> Display for TypeFunc<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            TypeFunc::Const(s) => fmt::Display::fmt(s, f),
-            TypeFunc::Poly(ref p) => fmt::Display::fmt(p, f),
+            TypeFunc::Const(s) => Display::fmt(s, f),
+            TypeFunc::Poly(ref p) => Display::fmt(p, f),
         }
     }
 }
@@ -77,7 +82,7 @@ pub enum TVar<'s> {
     Implicit(u64),
 }
 
-impl<'s> fmt::Display for TVar<'s> {
+impl<'s> Display for TVar<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             TVar::Explicit(s) => write!(f, "{}", s),
@@ -405,11 +410,11 @@ impl<'s> PartialEq for Type<'s> {
 
 impl<'s> Eq for Type<'s> {}
 
-impl<'s> fmt::Display for Type<'s> {
+impl<'s> Display for Type<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Type::Var(ref tv) => tv.fmt(f),
-            Type::Const(s, _) => fmt::Display::fmt(s, f),
+            Type::Const(s, _) => Display::fmt(s, f),
             Type::App(ref con, ref args) => {
                 let args_s = args.iter()
                     .map(ToString::to_string)
@@ -417,7 +422,7 @@ impl<'s> fmt::Display for Type<'s> {
                     .collect::<String>();
                 write!(f, "({} {})", con, args_s)
             }
-            Type::Poly(ref p) => fmt::Display::fmt(p, f),
+            Type::Poly(ref p) => Display::fmt(p, f),
         }
     }
 }
@@ -448,9 +453,9 @@ impl<'s> borrow::Borrow<str> for Ident<'s> {
         &self.s
     }
 }
-impl<'s> fmt::Display for Ident<'s> {
+impl<'s> Display for Ident<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.s, f)
+        Display::fmt(&self.s, f)
     }
 }
 
@@ -465,9 +470,21 @@ pub struct ExternDecl<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> Display for ExternDecl<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(extern {} {})", self.ident, self.typ)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Nil<'s> {
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Display for Nil<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "nil")
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -477,11 +494,23 @@ pub struct NumLit<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> Display for NumLit<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(: {} {})", self.lit, self.typ)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct StrLit<'s> {
     pub lit: borrow::Cow<'s, str>,
     pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Display for StrLit<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(: \"{}\" {})", self.lit, self.typ)
+    }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
@@ -490,10 +519,22 @@ pub struct Variable<'s> {
     pub typ: Type<'s>,
 }
 
+impl<'s> Display for Variable<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(: {} {})", self.ident, self.typ)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Bool<'s> {
     pub val: bool,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Display for Bool<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.val)
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -502,6 +543,33 @@ pub struct App<'s> {
     pub arg: Expr<'s>,
     pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> App<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        let f_s = self.func.to_string_indent(n + 4);
+        if f_s.lines().count() == 1 {
+            format!(
+                "(: ({} {})\n\
+                 {}{})",
+                f_s,
+                self.arg.to_string_indent(n + 4 + f_s.chars().count() + 1),
+                spaces(n + 3),
+                self.typ
+            )
+        } else {
+            format!(
+                "(: ({}\n\
+                 {}{})\n\
+                 {}{})",
+                f_s,
+                spaces(n + 4),
+                self.arg.to_string_indent(n + 4),
+                spaces(n + 3),
+                self.typ
+            )
+        }
+    }
 }
 
 /// if-then-else expression
@@ -514,13 +582,45 @@ pub struct If<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> If<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (if {}\n\
+             {}{}\n\
+             {}{})\n\
+             {}{})",
+            self.predicate.to_string_indent(n + 7),
+            spaces(n + 7),
+            self.consequent.to_string_indent(n + 7),
+            spaces(n + 5),
+            self.alternative.to_string_indent(n + 5),
+            spaces(n + 3),
+            self.typ
+        )
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Lambda<'s> {
     pub param_ident: Ident<'s>,
-    pub param_type: Type<'s>,
     pub body: Expr<'s>,
     pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Lambda<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (lambda [{}]\n\
+             {}{})\n\
+             {}{})",
+            self.param_ident,
+            spaces(n + 5),
+            self.body.to_string_indent(n + 5),
+            spaces(n + 3),
+            self.typ
+        )
+    }
 }
 
 /// A binding of a name to a value, i.e. a variable definition.
@@ -578,6 +678,58 @@ impl<'s> Group<'s> {
             Group::Circular(ref mut xs) => Box::new(xs.iter_mut().map(|(_, b)| b)),
             Group::Uncircular(_, ref mut b) => Box::new(once(b)),
         }
+    }
+
+    /// Interpret as let bindings
+    fn to_string_indent_as_lets(&self, n: usize) -> String {
+        self.bindings()
+            .map(|b| {
+                let id_s = b.ident.to_string();
+                let id_w = id_s.chars().count();
+                format!(
+                    "[{} (: {}\n\
+                     {}{})\n\
+                     {}[monos {}]]",
+                    id_s,
+                    b.val.to_string_indent(n + 1 + id_w + 4),
+                    spaces(n + 1 + id_w + 4),
+                    b.sig,
+                    spaces(n + 1 + id_w + 1),
+                    b.mono_insts
+                        .values()
+                        .map(|e| e.to_string_indent(n + 1 + id_w + 7))
+                        .intersperse(format!("\n{}", spaces(n + 1 + id_w + 7)))
+                        .collect::<String>()
+                )
+            })
+            .intersperse("\n".to_string())
+            .collect::<String>()
+    }
+
+    /// Interpret as global bindings, i.e. `define`s
+    fn to_string_indent_as_defs(&self, n: usize) -> String {
+        self.bindings()
+            .map(|b| {
+                format!(
+                    "(define: {}\n\
+                     {}{}\n\
+                     {}{}\n\
+                     {}[monos {}])",
+                    b.ident.to_string(),
+                    spaces(n + 4),
+                    b.sig,
+                    spaces(n + 2),
+                    b.val.to_string_indent(n + 2),
+                    spaces(n + 2),
+                    b.mono_insts
+                        .values()
+                        .map(|e| e.to_string_indent(n + 2 + 7))
+                        .intersperse(format!("\n{}", spaces(n + 2 + 7)))
+                        .collect::<String>()
+                )
+            })
+            .intersperse("\n".to_string())
+            .collect::<String>()
     }
 }
 
@@ -675,6 +827,24 @@ impl<'s> TopologicallyOrderedDependencyGroups<'s> {
     pub fn groups_mut<'g>(&'g mut self) -> Box<DoubleEndedIterator<Item = &'g mut Group<'s>> + 'g> {
         Box::new(self.0.iter_mut())
     }
+
+    /// Interpret as let bindings
+    fn to_string_indent_as_lets(&self, n: usize) -> String {
+        self.groups()
+            .rev()
+            .map(|g| g.to_string_indent_as_lets(n))
+            .intersperse(format!("\n\n{}", spaces(n)))
+            .collect()
+    }
+
+    /// Interpret as global bindings, i.e. `define`s
+    fn to_string_indent_as_defs(&self, n: usize) -> String {
+        self.groups()
+            .rev()
+            .map(|g| g.to_string_indent_as_defs(n))
+            .intersperse(format!("\n\n{}", spaces(n)))
+            .collect()
+    }
 }
 
 /// A `let` special form
@@ -684,6 +854,21 @@ pub struct Let<'s> {
     pub body: Expr<'s>,
     pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Let<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (let [{}]\n\
+             {}{})\n\
+             {}{})",
+            self.bindings.to_string_indent_as_lets(n + 9),
+            spaces(n + 5),
+            self.body.to_string_indent(n + 5),
+            spaces(n + 3),
+            self.typ
+        )
+    }
 }
 
 /// A type ascription.
@@ -696,12 +881,39 @@ pub struct TypeAscript<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> TypeAscript<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: {}\n\
+             {}{})",
+            self.expr.to_string_indent(n + 3),
+            spaces(n + 3),
+            self.typ
+        )
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Cons<'s> {
     pub typ: Type<'s>,
     pub car: Expr<'s>,
     pub cdr: Expr<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Cons<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (cons {}\n\
+             {}{})\n\
+             {}{})",
+            self.car.to_string_indent(n + 9),
+            spaces(n + 9),
+            self.cdr.to_string_indent(n + 9),
+            spaces(n + 3),
+            self.typ
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -711,11 +923,35 @@ pub struct Car<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> Car<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (car {})\n\
+             {}{})",
+            self.expr.to_string_indent(n + 8),
+            spaces(n + 3),
+            self.typ
+        )
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Cdr<'s> {
     pub typ: Type<'s>,
     pub expr: Expr<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Cdr<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (cdr {})\n\
+             {}{})",
+            self.expr.to_string_indent(n + 8),
+            spaces(n + 3),
+            self.typ
+        )
+    }
 }
 
 /// A type cast
@@ -726,6 +962,19 @@ pub struct Cast<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> Cast<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(cast {}\n\
+             {}{})",
+            self.expr.to_string_indent(n + 6),
+            spaces(n + 6),
+            self.typ
+        )
+    }
+}
+
+// TODO: Remove OfVariant and AsVariant, now that match is implemented
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct OfVariant<'s> {
     pub expr: Expr<'s>,
@@ -749,11 +998,47 @@ pub struct New<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> New<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        let constr_s = self.constr.to_string();
+        let constr_w = constr_s.chars().count();
+        format!(
+            "(: (new {}\n\
+             {}{})\n\
+             {}{})",
+            constr_s,
+            spaces(n + 8 + constr_w + 1),
+            self.members
+                .iter()
+                .map(|m| m.to_string_indent(n + 8 + constr_w + 1))
+                .intersperse(format!("\n{}", spaces(n)))
+                .collect::<String>(),
+            spaces(n + 3),
+            self.typ
+        )
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Deconstr<'s> {
     pub constr: Ident<'s>,
     pub subpatts: Vec<Pattern<'s>>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Display for Deconstr<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "({} {})",
+            self.constr,
+            self.subpatts
+                .iter()
+                .map(|p| p.to_string())
+                .intersperse(" ".to_string())
+                .collect::<String>(),
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -796,6 +1081,18 @@ impl<'s> Pattern<'s> {
     }
 }
 
+impl<'s> Display for Pattern<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Pattern::Nil(ref n) => n.fmt(f),
+            Pattern::NumLit(ref n) => n.fmt(f),
+            Pattern::StrLit(ref s) => s.fmt(f),
+            Pattern::Variable(ref v) => v.fmt(f),
+            Pattern::Deconstr(ref dec) => dec.fmt(f),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Case<'s> {
     pub patt: Pattern<'s>,
@@ -804,12 +1101,44 @@ pub struct Case<'s> {
     pub pos: SrcPos<'s>,
 }
 
+impl<'s> Case<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "[(: {} {})\n\
+             {}{}]",
+            self.patt,
+            self.patt_typ,
+            spaces(n + 1),
+            self.body.to_string_indent(n + 1),
+        )
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Match<'s> {
     pub expr: Expr<'s>,
     pub cases: Vec<Case<'s>>,
     pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
+}
+
+impl<'s> Match<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(: (match {}\n\
+             {}{})\n\
+             {}{})",
+            self.expr.to_string_indent(n + 10),
+            spaces(n + 5),
+            self.cases
+                .iter()
+                .map(|c| c.to_string_indent(n + 5))
+                .intersperse(format!("\n{}", spaces(n)))
+                .collect::<String>(),
+            spaces(n + 3),
+            self.typ
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -914,6 +1243,29 @@ impl<'s> Expr<'s> {
         *self = inner;
         Some(t)
     }
+
+    fn to_string_indent(&self, n: usize) -> String {
+        match *self {
+            Expr::Nil(ref n) => n.to_string(),
+            Expr::NumLit(ref l) => l.to_string(),
+            Expr::StrLit(ref l) => l.to_string(),
+            Expr::Bool(ref b) => b.to_string(),
+            Expr::Variable(ref v) => v.to_string(),
+            Expr::App(ref app) => app.to_string_indent(n),
+            Expr::If(ref cond) => cond.to_string_indent(n),
+            Expr::Lambda(ref l) => l.to_string_indent(n),
+            Expr::Let(ref l) => l.to_string_indent(n),
+            Expr::TypeAscript(ref a) => a.to_string_indent(n),
+            Expr::Cons(ref c) => c.to_string_indent(n),
+            Expr::Car(ref c) => c.to_string_indent(n),
+            Expr::Cdr(ref c) => c.to_string_indent(n),
+            Expr::Cast(ref c) => c.to_string_indent(n),
+            Expr::OfVariant(_) => unimplemented!(),
+            Expr::AsVariant(_) => unimplemented!(),
+            Expr::New(ref new) => new.to_string_indent(n),
+            Expr::Match(ref m) => m.to_string_indent(n),
+        }
+    }
 }
 
 /// A variant of an algebraic data type
@@ -932,6 +1284,25 @@ impl<'s> AdtVariant<'s> {
     }
 }
 
+impl<'s> Display for AdtVariant<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.members.is_empty() {
+            self.name.fmt(f)
+        } else {
+            write!(
+                f,
+                "({} {})",
+                self.name,
+                self.members
+                    .iter()
+                    .map(|m| m.to_string())
+                    .intersperse(" ".to_string())
+                    .collect::<String>()
+            )
+        }
+    }
+}
+
 /// Algebraic Data Type definition
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct AdtDef<'s> {
@@ -947,6 +1318,20 @@ impl<'s> AdtDef<'s> {
 
     pub fn variant_index(&self, v: &str) -> Option<usize> {
         self.variants.iter().position(|av| av.name.s == v)
+    }
+
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            "(data {}\n\
+             {}{})",
+            self.name,
+            spaces(n + 2),
+            self.variants
+                .iter()
+                .map(|v| v.to_string())
+                .intersperse(format!("\n{}", spaces(n)))
+                .collect::<String>()
+        )
     }
 }
 
@@ -1051,6 +1436,14 @@ impl<'s> Adts<'s> {
     pub fn variant_exists(&self, v: &str) -> bool {
         self.variants.contains_key(v)
     }
+
+    fn to_string_indent(&self, n: usize) -> String {
+        self.defs
+            .values()
+            .map(|def| def.to_string_indent(n))
+            .intersperse(format!("\n{}", spaces(n)))
+            .collect()
+    }
 }
 
 /// A module of definitions and declarations of functions and variables
@@ -1068,4 +1461,30 @@ pub struct Ast<'s> {
     pub globals: TopologicallyOrderedDependencyGroups<'s>,
     /// Algebraic Data Type definitions
     pub adts: Adts<'s>,
+}
+
+impl<'s> Ast<'s> {
+    fn to_string_indent(&self, n: usize) -> String {
+        format!(
+            ";;; Section Data type definitions\n\
+             {}\n\n\n\
+             ;;; Section External function declarations\n\
+             {}\n\n\n\
+             ;;; Section Global definitions\n\
+             {}\n",
+            self.adts.to_string_indent(n),
+            self.externs
+                .values()
+                .map(|e| e.to_string())
+                .intersperse(format!("\n{}", spaces(n)))
+                .collect::<String>(),
+            self.globals.to_string_indent_as_defs(n)
+        )
+    }
+}
+
+impl<'s> Display for Ast<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string_indent(0))
+    }
 }
