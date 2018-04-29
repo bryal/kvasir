@@ -113,8 +113,6 @@ fn free_vars_in_expr<'src>(e: &ast::Expr<'src>) -> FreeVarInsts<'src> {
         Car(box ref c) => free_vars_in_expr(&c.expr),
         Cdr(box ref c) => free_vars_in_expr(&c.expr),
         Cast(ref c) => free_vars_in_expr(&c.expr),
-        OfVariant(ref x) => free_vars_in_expr(&x.expr),
-        AsVariant(ref x) => free_vars_in_expr(&x.expr),
         New(ref n) => free_vars_in_exprs(&n.members),
         Match(ref m) => free_vars_in_match(m),
     }
@@ -1361,17 +1359,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    /// Generate LLVM IR for the test of whether an algebraic data
-    /// type value is of a specific variant
-    fn gen_of_variant(
-        &self,
-        env: &mut Env<'src, 'ctx>,
-        test: &'ast ast::OfVariant<'src>,
-    ) -> &'ctx Value {
-        let val = self.gen_expr(env, &test.expr, Some("of-variant_test-expr"));
-        self.build_of_variant(val, test.variant.s)
-    }
-
     fn build_as_variant(&self, wrapped: &'ctx Value, variant: &str) -> &'ctx Value {
         let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(variant) {
             // If ADT is recursive, it's also behind a refcount pointer
@@ -1398,15 +1385,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let r = self.builder.build_load(unwrapped_ptr);
         r.set_name("as-variant_unwrapped");
         r
-    }
-
-    fn gen_as_variant(
-        &self,
-        env: &mut Env<'src, 'ctx>,
-        as_v: &'ast ast::AsVariant<'src>,
-    ) -> &'ctx Value {
-        let wrapped = self.gen_expr(env, &as_v.expr, Some("as-variant_wrapped"));
-        self.build_as_variant(wrapped, as_v.variant.s)
     }
 
     fn gen_tuple(&self, env: &mut Env<'src, 'ctx>, es: &[Expr<'src>]) -> &'ctx Value {
@@ -1622,8 +1600,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             Expr::Car(ref c) => opt_set_name(self.gen_car(env, c), name),
             Expr::Cdr(ref c) => opt_set_name(self.gen_cdr(env, c), name),
             Expr::Cast(ref c) => opt_set_name(self.gen_cast(env, c), name),
-            Expr::OfVariant(ref x) => opt_set_name(self.gen_of_variant(env, x), name),
-            Expr::AsVariant(ref x) => opt_set_name(self.gen_as_variant(env, x), name),
             Expr::New(ref n) => opt_set_name(self.gen_new(env, n), name),
             Expr::Match(ref m) => opt_set_name(self.gen_match(env, m), name),
         }

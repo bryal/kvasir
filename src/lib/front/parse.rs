@@ -298,19 +298,7 @@ fn constant<'s, T: Eq>(x: T, y: T, err: PErr<'s>) -> PRes<'s, ()> {
 
 fn is_special_operator(op: &Cst) -> bool {
     let special_operators = [
-        "if",
-        "lambda",
-        "let",
-        ":",
-        "cons",
-        "car",
-        "cdr",
-        "cast",
-        "cond",
-        "of-variant?",
-        "as-variant",
-        "new",
-        "match",
+        "if", "lambda", "let", ":", "cons", "car", "cdr", "cast", "cond", "new", "match"
     ];
     ident_s(op)
         .map(|s| special_operators.contains(&s))
@@ -904,41 +892,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         }
     }
 
-    /// Parse a variant test
-    ///
-    /// `(of-variant? VAL TYPE)`, e.g. `(of-variant? x Cons)`
-    fn parse_of_variant(
-        &mut self,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-        args_pos: &SrcPos<'s>,
-    ) -> PRes<'s, OfVariant<'s>> {
-        let (a, b) = two(csts, args_pos)?;
-        Ok(OfVariant {
-            expr: self.parse_expr(a)?,
-            variant: self.parse_variant(b)?,
-            pos: pos.clone(),
-        })
-    }
-
-    /// Parse a variant cast
-    ///
-    /// `(as-variant VAL TYPE)`, e.g. `(as-variant x Cons)`
-    fn parse_as_variant(
-        &mut self,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-        args_pos: &SrcPos<'s>,
-    ) -> PRes<'s, AsVariant<'s>> {
-        let (a, b) = two(csts, args_pos)?;
-        Ok(AsVariant {
-            expr: self.parse_expr(a)?,
-            variant: self.parse_variant(b)?,
-            typ: self.gen_type_var(),
-            pos: pos.clone(),
-        })
-    }
-
     fn parse_new(
         &mut self,
         csts: &[Cst<'s>],
@@ -1058,16 +1011,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             "car" => Ok(Expr::Car(Box::new(self.parse_car(tail, pos, &tail_pos)?))),
             "cdr" => Ok(Expr::Cdr(Box::new(self.parse_cdr(tail, pos, &tail_pos)?))),
             "cast" => Ok(Expr::Cast(Box::new(self.parse_cast(tail, pos, &tail_pos)?))),
-            "of-variant?" => Ok(Expr::OfVariant(Box::new(self.parse_of_variant(
-                tail,
-                pos,
-                &tail_pos,
-            )?))),
-            "as-variant" => Ok(Expr::AsVariant(Box::new(self.parse_as_variant(
-                tail,
-                pos,
-                &tail_pos,
-            )?))),
             "new" => Ok(Expr::New(Box::new(self.parse_new(tail, pos, &tail_pos)?))),
             "match" => Ok(Expr::Match(Box::new(self.parse_match(
                 tail,

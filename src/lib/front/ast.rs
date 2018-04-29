@@ -974,22 +974,6 @@ impl<'s> Cast<'s> {
     }
 }
 
-// TODO: Remove OfVariant and AsVariant, now that match is implemented
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct OfVariant<'s> {
-    pub expr: Expr<'s>,
-    pub variant: Ident<'s>,
-    pub pos: SrcPos<'s>,
-}
-
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct AsVariant<'s> {
-    pub expr: Expr<'s>,
-    pub variant: Ident<'s>,
-    pub typ: Type<'s>,
-    pub pos: SrcPos<'s>,
-}
-
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct New<'s> {
     pub constr: Ident<'s>,
@@ -1157,8 +1141,6 @@ pub enum Expr<'s> {
     Car(Box<Car<'s>>),
     Cdr(Box<Cdr<'s>>),
     Cast(Box<Cast<'s>>),
-    OfVariant(Box<OfVariant<'s>>),
-    AsVariant(Box<AsVariant<'s>>),
     New(Box<New<'s>>),
     Match(Box<Match<'s>>),
 }
@@ -1180,8 +1162,6 @@ impl<'s> Expr<'s> {
             Expr::Car(ref c) => &c.pos,
             Expr::Cdr(ref c) => &c.pos,
             Expr::Cast(ref c) => &c.pos,
-            Expr::OfVariant(ref x) => &x.pos,
-            Expr::AsVariant(ref x) => &x.pos,
             Expr::New(ref n) => &n.pos,
             Expr::Match(ref m) => &m.pos,
         }
@@ -1210,8 +1190,6 @@ impl<'s> Expr<'s> {
             Expr::Car(ref c) => &c.typ,
             Expr::Cdr(ref c) => &c.typ,
             Expr::Cast(ref c) => &c.typ,
-            Expr::OfVariant(_) => &TYPE_BOOL,
-            Expr::AsVariant(ref x) => &x.typ,
             Expr::New(ref n) => &n.typ,
             Expr::Match(ref m) => &m.typ,
         }
@@ -1260,8 +1238,6 @@ impl<'s> Expr<'s> {
             Expr::Car(ref c) => c.to_string_indent(n),
             Expr::Cdr(ref c) => c.to_string_indent(n),
             Expr::Cast(ref c) => c.to_string_indent(n),
-            Expr::OfVariant(_) => unimplemented!(),
-            Expr::AsVariant(_) => unimplemented!(),
             Expr::New(ref new) => new.to_string_indent(n),
             Expr::Match(ref m) => m.to_string_indent(n),
         }

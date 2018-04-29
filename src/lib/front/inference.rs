@@ -186,8 +186,6 @@ fn wrap_vars_types_in_apps_<'s>(
         Expr::Cast(ref mut c) => {
             wrap_vars_types_in_apps_(&mut c.expr, vars, app_args);
         }
-        Expr::OfVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
-        Expr::AsVariant(ref mut x) => wrap_vars_types_in_apps_(&mut x.expr, vars, app_args),
         Expr::New(ref mut n) => for member in &mut n.members {
             wrap_vars_types_in_apps_(member, vars, app_args)
         },
@@ -876,38 +874,6 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         &cast.typ
     }
 
-    fn infer_of_variant<'x>(
-        &mut self,
-        x: &'x mut OfVariant<'s>,
-        expected_type: &Type<'s>,
-    ) -> Type<'s> {
-        let expected_expr_type = self.adts
-            .parent_type_of_variant(x.variant.s)
-            .expect("ICE: No parent type of variant in infer_of_variant");
-        self.infer_expr(&mut x.expr, &expected_expr_type);
-        self.unify(expected_type, &TYPE_BOOL)
-            .unwrap_or_else(|(e, f)| x.pos.error_exit(type_mis(&mut self.type_var_map, &e, &f)))
-    }
-
-    fn infer_as_variant<'x>(
-        &mut self,
-        x: &'x mut AsVariant<'s>,
-        expected_type: &Type<'s>,
-    ) -> &'x Type<'s> {
-        let expected_from = self.adts
-            .parent_type_of_variant(x.variant.s)
-            .expect("ICE: No parent type of variant in infer_as_variant");
-        self.infer_expr(&mut x.expr, &expected_from);
-        x.typ = self.adts
-            .type_of_variant(x.variant.s)
-            .expect("ICE: No type_of_variant in infer_as_variant");
-        x.typ = self.unify(expected_type, &x.typ).unwrap_or_else(|_| {
-            x.pos
-                .error_exit(type_mis(&mut self.type_var_map, expected_type, &x.typ))
-        });
-        &x.typ
-    }
-
     fn infer_new<'n>(&mut self, n: &'n mut New<'s>, expected_type: &Type<'s>) -> &'n Type<'s> {
         let expected_member_types = &self.adts
             .adt_variant_of_name(n.constr.s)
@@ -1009,8 +975,6 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
             Expr::Car(ref mut c) => self.infer_car(c, expected_type).clone(),
             Expr::Cdr(ref mut c) => self.infer_cdr(c, expected_type).clone(),
             Expr::Cast(ref mut c) => self.infer_cast(c, expected_type).clone(),
-            Expr::OfVariant(ref mut x) => self.infer_of_variant(x, expected_type).clone(),
-            Expr::AsVariant(ref mut x) => self.infer_as_variant(x, expected_type).clone(),
             Expr::New(ref mut n) => self.infer_new(n, expected_type).clone(),
             Expr::Match(ref mut m) => self.infer_match(m, expected_type).clone(),
         }
