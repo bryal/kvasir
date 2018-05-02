@@ -175,6 +175,17 @@ impl<'s> Type<'s> {
         }
     }
 
+    /// If this type is an instance of an ADT, return the instantiation args
+    ///
+    /// # Example
+    /// `get_adt_inst_args((Pair Int String)) == [Int, String]`
+    pub fn get_adt_inst_args(&self) -> Option<&[Type<'s>]> {
+        match *self {
+            Type::App(box TypeFunc::Const(..), ref args) => Some(args),
+            _ => None,
+        }
+    }
+
     fn is_monomorphic_in_context(&self, bound: &mut BTreeSet<TVar<'s>>) -> bool {
         match *self {
             Type::Var(ref v) => bound.contains(&v),
@@ -503,13 +514,12 @@ impl<'s> Display for NumLit<'s> {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct StrLit<'s> {
     pub lit: borrow::Cow<'s, str>,
-    pub typ: Type<'s>,
     pub pos: SrcPos<'s>,
 }
 
 impl<'s> Display for StrLit<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(: \"{}\" {})", self.lit, self.typ)
+        write!(f, "\"{}\"", self.lit)
     }
 }
 
@@ -548,27 +558,16 @@ pub struct App<'s> {
 impl<'s> App<'s> {
     fn to_string_indent(&self, n: usize) -> String {
         let f_s = self.func.to_string_indent(n + 4);
-        if f_s.lines().count() == 1 {
-            format!(
-                "(: ({} {})\n\
-                 {}{})",
-                f_s,
-                self.arg.to_string_indent(n + 4 + f_s.chars().count() + 1),
-                spaces(n + 3),
-                self.typ
-            )
-        } else {
-            format!(
-                "(: ({}\n\
-                 {}{})\n\
-                 {}{})",
-                f_s,
-                spaces(n + 4),
-                self.arg.to_string_indent(n + 4),
-                spaces(n + 3),
-                self.typ
-            )
-        }
+        format!(
+            "(: ({}\n\
+             {}{})\n\
+             {}{})",
+            f_s,
+            spaces(n + 4),
+            self.arg.to_string_indent(n + 4),
+            spaces(n + 3),
+            self.typ
+        )
     }
 }
 
@@ -984,18 +983,16 @@ pub struct New<'s> {
 
 impl<'s> New<'s> {
     fn to_string_indent(&self, n: usize) -> String {
-        let constr_s = self.constr.to_string();
-        let constr_w = constr_s.chars().count();
         format!(
             "(: (new {}\n\
              {}{})\n\
              {}{})",
-            constr_s,
-            spaces(n + 8 + constr_w + 1),
+            self.constr.to_string(),
+            spaces(n + 8),
             self.members
                 .iter()
-                .map(|m| m.to_string_indent(n + 8 + constr_w + 1))
-                .intersperse(format!("\n{}", spaces(n)))
+                .map(|m| m.to_string_indent(n + 8))
+                .intersperse(format!("\n{}", spaces(n + 8)))
                 .collect::<String>(),
             spaces(n + 3),
             self.typ
@@ -1254,12 +1251,6 @@ pub struct AdtVariant<'s> {
     pub pos: SrcPos<'s>,
 }
 
-impl<'s> AdtVariant<'s> {
-    pub fn get_type(&self) -> Type<'s> {
-        Type::new_tuple(&self.members)
-    }
-}
-
 impl<'s> Display for AdtVariant<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.members.is_empty() {
@@ -1283,31 +1274,47 @@ impl<'s> Display for AdtVariant<'s> {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct AdtDef<'s> {
     pub name: Ident<'s>,
+    pub params: Vec<&'s str>,
     pub variants: Vec<AdtVariant<'s>>,
     pub pos: SrcPos<'s>,
 }
 
 impl<'s> AdtDef<'s> {
-    pub fn get_type(&self) -> Type<'s> {
-        Type::Const(self.name.s, None)
-    }
-
     pub fn variant_index(&self, v: &str) -> Option<usize> {
         self.variants.iter().position(|av| av.name.s == v)
     }
 
     fn to_string_indent(&self, n: usize) -> String {
+        let binding = if self.params.is_empty() {
+            self.name.to_string()
+        } else {
+            format!(
+                "({} {})",
+                self.name,
+                self.params
+                    .iter()
+                    .cloned()
+                    .intersperse(" ")
+                    .collect::<String>()
+            )
+        };
         format!(
             "(data {}\n\
              {}{})",
-            self.name,
+            binding,
             spaces(n + 2),
             self.variants
                 .iter()
                 .map(|v| v.to_string())
-                .intersperse(format!("\n{}", spaces(n)))
+                .intersperse(format!("\n{}", spaces(n + 2)))
                 .collect::<String>()
         )
+    }
+}
+
+impl<'s> Display for AdtDef<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string_indent(0))
     }
 }
 
@@ -1362,15 +1369,15 @@ impl<'s> Adts<'s> {
             .any(|v| v.members.iter().any(|t| self.is_rec_type(t, origin)))
     }
 
-    pub fn variant_is_recursive(&self, v: &str) -> bool {
-        let adt_name = self.parent_adt_of_variant(v)
-            .expect("ICE: No parent_adt_of_variant in adt_variant_is_recursive")
-            .name
-            .s;
-        let typ = self.parent_type_of_variant(v)
-            .expect("ICE: No parent_type_of_variant in adt_variant_is_recursive");
-        self.is_rec_type(&typ, adt_name)
-    }
+    // pub fn variant_is_recursive(&self, v: &str) -> bool {
+    //     let adt_name = self.parent_adt_of_variant(v)
+    //         .expect("ICE: No parent_adt_of_variant in adt_variant_is_recursive")
+    //         .name
+    //         .s;
+    //     let typ = self.parent_type_of_variant(v)
+    //         .expect("ICE: No parent_type_of_variant in adt_variant_is_recursive");
+    //     self.is_rec_type(&typ, adt_name)
+    // }
 
     pub fn adt_is_recursive(&self, adt: &AdtDef) -> bool {
         self.is_rec_adt(adt, adt.name.s)
@@ -1386,23 +1393,9 @@ impl<'s> Adts<'s> {
         self.variants.get(v).and_then(|t| self.defs.get(t))
     }
 
-    pub fn parent_type_of_variant<'a>(&'a self, v: &str) -> Option<Type<'s>> {
-        self.variants.get(v).map(|t| Type::Const(t, None))
-    }
-
     pub fn adt_variant_of_name<'a>(&'a self, v: &str) -> Option<&'a AdtVariant<'s>> {
         self.parent_adt_of_variant(v)
             .and_then(|parent_adt| parent_adt.variants.iter().find(|av| av.name.s == v))
-    }
-
-    pub fn type_of_variant(&self, v: &str) -> Option<Type<'s>> {
-        self.adt_variant_of_name(v).map(AdtVariant::get_type)
-    }
-
-    pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'s>> {
-        let adt_variant = self.adt_variant_of_name(v)?;
-        let parent_type = self.parent_type_of_variant(v)?;
-        Some(Type::new_currying_func(&adt_variant.members, parent_type))
     }
 
     pub fn variant_index(&self, v: &str) -> Option<usize> {
@@ -1411,6 +1404,51 @@ impl<'s> Adts<'s> {
 
     pub fn variant_exists(&self, v: &str) -> bool {
         self.variants.contains_key(v)
+    }
+
+    pub fn members_with_inst_of_variant(
+        &self,
+        variant: &AdtVariant<'s>,
+        inst: &[Type<'s>],
+    ) -> Option<Vec<Type<'s>>> {
+        use super::substitution::subst;
+        let adt = self.parent_adt_of_variant(variant.name.s)?;
+        let mut s = adt.params
+            .iter()
+            .map(|p| TVar::Explicit(p))
+            .zip(inst.iter().cloned())
+            .collect::<BTreeMap<_, _>>();
+        Some(variant.members.iter().map(|t| subst(t, &mut s)).collect())
+    }
+
+    pub fn members_with_inst_of_variant_with_name(
+        &self,
+        v: &'s str,
+        inst: &[Type<'s>],
+    ) -> Option<Vec<Type<'s>>> {
+        self.adt_variant_of_name(v)
+            .and_then(|variant| self.members_with_inst_of_variant(variant, inst))
+    }
+
+    /// # Examples
+    /// Let `(data (Foo a b) (Bar a (List b)))`, then
+    /// `get_variant_type_with_inst("Bar", &[Int, String]) == (Cons Int (List String))`
+    pub fn type_with_inst_of_variant(
+        &self,
+        variant: &AdtVariant<'s>,
+        inst: &[Type<'s>],
+    ) -> Option<Type<'s>> {
+        self.members_with_inst_of_variant(variant, inst)
+            .map(|ts| Type::new_tuple(&ts))
+    }
+
+    pub fn type_with_inst_of_variant_with_name(
+        &self,
+        v: &'s str,
+        inst: &[Type<'s>],
+    ) -> Option<Type<'s>> {
+        self.adt_variant_of_name(v)
+            .and_then(|variant| self.type_with_inst_of_variant(variant, inst))
     }
 
     fn to_string_indent(&self, n: usize) -> String {

@@ -24,11 +24,6 @@
   ((if (> b 0) + -) a b))
 ;;;
 
-(define (abs x)
-  (if (< x 0)
-      (- 0 x)
-    x))
-
 (define (average x y)
   (/ (+ x y) 2))
 
@@ -86,4 +81,4 @@
   (= (remainder b a) 0))
 
 (define main
-  (display (dec-to-s (: 0.123 Float64))))
+  (display (num-to-s 123.456)))

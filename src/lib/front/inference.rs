@@ -276,6 +276,43 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
         }
     }
 
+    // pub fn get_type(&self) -> Type<'s> {
+    //     Type::new_tuple(&self.members)
+    // }
+
+    pub fn get_type_of_adt(&mut self, name: &str) -> Option<Type<'s>> {
+        self.adts.defs.get(name).map(|adt| {
+            if adt.params.is_empty() {
+                Type::Const(adt.name.s, None)
+            } else {
+                Type::App(
+                    box TypeFunc::Const(adt.name.s),
+                    adt.params
+                        .iter()
+                        .map(|_| self.type_var_gen.gen_type_var())
+                        .collect(),
+                )
+            }
+        })
+    }
+
+    pub fn parent_type_of_variant(&mut self, v: &str) -> Option<Type<'s>> {
+        self.adts
+            .variants
+            .get(v)
+            .and_then(|s| self.get_type_of_adt(s))
+    }
+
+    // pub fn type_of_variant(&self, v: &str) -> Option<Type<'s>> {
+    //     self.adt_variant_of_name(v).map(AdtVariant::get_type)
+    // }
+
+    // pub fn constructor_type_of_variant(&self, v: &str) -> Option<Type<'s>> {
+    //     let adt_variant = self.adt_variant_of_name(v)?;
+    //     let parent_type = self.parent_type_of_variant(v)?;
+    //     Some(Type::new_currying_func(&adt_variant.members, parent_type))
+    // }
+
     fn push_var(&mut self, id: &'s str, t: Type<'s>) {
         self.var_env.entry(id).or_insert(Vec::new()).push(t)
     }
@@ -597,17 +634,6 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                     ))
                 });
             var.typ.clone()
-        } else if let Some(t) = self.adts.constructor_type_of_variant(var.ident.s) {
-            var.typ = self.unify(expected_type, &t).unwrap_or_else(|(e, f)| {
-                var.ident.pos.error_exit(type_mis_sub(
-                    &mut self.type_var_map,
-                    expected_type,
-                    &t,
-                    &e,
-                    &f,
-                ))
-            });
-            var.typ.clone()
         } else {
             var.ident
                 .pos
@@ -875,20 +901,19 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
     }
 
     fn infer_new<'n>(&mut self, n: &'n mut New<'s>, expected_type: &Type<'s>) -> &'n Type<'s> {
-        let expected_member_types = &self.adts
-            .adt_variant_of_name(n.constr.s)
-            .expect("ICE: No adt_variant_of_name in infer_new")
-            .members;
-        for (member, expected_member_type) in n.members.iter_mut().zip(expected_member_types) {
-            self.infer_expr(member, expected_member_type);
-        }
-        n.typ = self.adts
-            .parent_type_of_variant(n.constr.s)
+        n.typ = self.parent_type_of_variant(n.constr.s)
             .expect("ICE: No type_of_variant in infer_new");
         n.typ = self.unify(expected_type, &n.typ).unwrap_or_else(|_| {
             n.pos
                 .error_exit(type_mis(&mut self.type_var_map, expected_type, &n.typ))
         });
+        let inst = n.typ.get_adt_inst_args().unwrap_or(&[]);
+        let expected_member_types = self.adts
+            .members_with_inst_of_variant_with_name(n.constr.s, inst)
+            .expect("ICE: No adt_variant_of_name in infer_new");
+        for (member, expected_member_type) in n.members.iter_mut().zip(expected_member_types) {
+            self.infer_expr(member, &expected_member_type);
+        }
         &n.typ
     }
 
@@ -902,27 +927,26 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                 var.typ.clone()
             }
             Pattern::Deconstr(ref mut dec) => {
-                let adt_type = self.adts
-                    .parent_type_of_variant(dec.constr.s)
-                    .expect(&format!(
-                        "ICE: No parent type of variant `{}` in infer_pattern",
-                        dec.constr.s,
-                    ));
+                let adt_type = self.parent_type_of_variant(dec.constr.s).expect(&format!(
+                    "ICE: No parent type of variant `{}` in infer_pattern",
+                    dec.constr.s,
+                ));
+                let adt_inst = adt_type.get_adt_inst_args().unwrap_or(&[]);
                 let typ = self.unify(expected_type, &adt_type).unwrap_or_else(|_| {
                     dec.pos
                         .error_exit(type_mis(&mut self.type_var_map, expected_type, &adt_type))
                 });
-                let adt_variant = self.adts
-                    .adt_variant_of_name(dec.constr.s)
-                    .expect("ICE: No adt variant of name in infer_pattern");
-                let (n_subs, n_members) = (dec.subpatts.len(), adt_variant.members.len());
+                let variant_members = self.adts
+                    .members_with_inst_of_variant_with_name(dec.constr.s, adt_inst)
+                    .expect("ICE: No members with inst of variant with name in infer_pattern");
+                let (n_subs, n_members) = (dec.subpatts.len(), variant_members.len());
                 if n_subs != n_members {
                     dec.pos.error_exit(ConstrWrongNumArgs {
                         expected: n_members,
                         found: n_subs,
                     })
                 }
-                for (subpatt, member_type) in dec.subpatts.iter_mut().zip(&adt_variant.members) {
+                for (subpatt, member_type) in dec.subpatts.iter_mut().zip(&variant_members) {
                     self.infer_pattern(subpatt, member_type);
                 }
                 typ

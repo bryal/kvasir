@@ -248,10 +248,8 @@ struct NamedTypes<'ctx, 'src> {
     real_world: &'ctx Type,
     rc_generic_inner: &'ctx Type,
     rc_generic: &'ctx Type,
-    /// E.g. For String == Rc of String_inner: `{ i64, %String_in }*`
-    adts: BTreeMap<&'src str, &'ctx Type>,
-    /// E.g. For String == Rc of String_inner: `%String_in`
-    adts_inner: BTreeMap<&'src str, &'ctx Type>,
+    adts: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
+    adts_inner: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
@@ -287,7 +285,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             adts: BTreeMap::new(),
             adts_inner: BTreeMap::new(),
         };
-        let mut codegen = CodeGenerator {
+        CodeGenerator {
             ctx,
             module,
             builder,
@@ -295,9 +293,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             current_block: RefCell::new(None),
             named_types,
             adts,
-        };
-        codegen.gen_adts();
-        codegen
+        }
     }
 
     fn new_nil_val(&self) -> &'ctx Value {
@@ -336,18 +332,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
-    fn gen_func_type(&self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
+    fn gen_func_type(&mut self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
         FunctionType::new(
             self.gen_type(ret),
             &[type_generic_ptr(self.ctx), self.gen_type(arg)],
         )
     }
 
-    fn gen_type(&self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
+    fn gen_type(&mut self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
         match *typ {
-            // If type var at compile time, gotta be a numlit where
-            // (Num t) was allowed to remain, or bug
-            ast::Type::Var(_) => Type::get::<isize>(self.ctx),
             ast::Type::Const("Int8", _) => Type::get::<i8>(self.ctx),
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
@@ -366,8 +359,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::Const("RealWorld", _) => self.named_types.real_world,
             // It's not a builtin type, which means it has to be a user-defined
             // algebraic data type, unless bug in typechecker.
-            ast::Type::Const(name, _) if self.named_types.adts.contains_key(name) => {
-                self.named_types.adts[name]
+            ast::Type::Const(name, _) if self.adts.defs.contains_key(name) => {
+                self.get_or_gen_adt_by_name_and_inst(name, &[])
             }
             ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
                 "->" => {
@@ -381,18 +374,21 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                     false,
                 ),
                 "Ptr" => PointerType::new(self.gen_type(&ts[0])),
+                // It's not a builtin type function, which means it
+                // has to be a user-defined algebraic data type,
+                // unless bug in typechecker.
+                name if self.adts.defs.contains_key(name) => {
+                    self.get_or_gen_adt_by_name_and_inst(name, ts)
+                }
                 _ => panic!(
                     "ICE: Type function `{}` is not implemented for codegen in gen_type",
                     s
                 ),
             },
-            _ => {
-                println!("named_types.adts: {:?}", self.named_types.adts.keys());
-                panic!(
-                    "ICE: Type `{}` is not implemented for codegen in gen_type",
-                    typ
-                )
-            }
+            _ => panic!(
+                "ICE: Type `{}` is not implemented for codegen in gen_type",
+                typ
+            ),
         }
     }
 
@@ -400,55 +396,73 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// ADTs are equivalent to tagged unions, and are represented as a pair of a 16 bit tag,
     /// and the type of the largest variant.
-    fn gen_adt(&self, adt: &ast::AdtDef) -> &'ctx Type {
+    fn gen_adt(&mut self, adt: &ast::AdtDef<'src>, inst: &[ast::Type<'src>]) -> &'ctx Type {
         let tag_type = Type::get::<i16>(self.ctx);
-        let largest_type = self.gen_largest_adt_variant_type(adt);
+        let largest_type = self.gen_largest_adt_variant_type(adt, inst);
         StructType::new_named(self.ctx, adt.name.s, &[tag_type, largest_type], false)
     }
 
     /// When ADT is recursive, it needs to be kept behind pointer
     /// as to not become infinitely large
-    fn gen_recursive_adt(
-        &self,
-        adt: &ast::AdtDef,
+    fn populate_recursive_adt(
+        &mut self,
+        adt: &ast::AdtDef<'src>,
+        inst: &[ast::Type<'src>],
         inner_struct_type: &'ctx StructType,
-    ) -> &'ctx Type {
+    ) {
         let tag_type = Type::get::<i16>(self.ctx);
-        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+        let variant_types = adt.variants
+            .iter()
+            .map(|v| {
+                let t = self.adts
+                    .type_with_inst_of_variant(v, inst)
+                    .expect("ICE: get_variant_type_with_inst failed in populate_recursive_adt");
+                self.gen_type(&t)
+            })
+            .collect::<Vec<_>>();
         let largest_type = variant_types
+            .into_iter()
             .max_by_key(|t| self.size_of(t))
             .unwrap_or(self.named_types.nil);
         inner_struct_type
             .set_elements(&[tag_type, largest_type], false)
-            .expect("ICE: non-opaque struct in gen_recursive_adt");
-        type_rc(self.ctx, inner_struct_type)
+            .expect("ICE: non-opaque struct in populate_recursive_adt");
     }
 
-    fn gen_adts(&mut self) {
-        let mut inners = Vec::new();
-        for (name, adt) in &self.adts.defs {
-            if self.adts.adt_is_recursive(adt) {
-                let inner = StructType::new_opaque(self.ctx, &format!("{}_in", adt.name.s));
-                self.named_types.adts_inner.insert(name, inner);
+    fn get_or_gen_adt_by_name_and_inst(
+        &mut self,
+        name: &'src str,
+        inst: &[ast::Type<'src>],
+    ) -> &'ctx Type {
+        if let Some(t) = self.named_types.adts.get(&(name, inst.to_vec())).cloned() {
+            t
+        } else {
+            let adt = self.adts
+                .defs
+                .get(name)
+                .expect(&format!(
+                    "ICE: No adt of name `{}` in get_or_gen_adt_by_name_and_inst",
+                    name
+                ))
+                .clone();
+            if self.adts.adt_is_recursive(&adt) {
+                let inner = StructType::new_opaque(self.ctx, &format!("{}_in", name));
+                self.named_types
+                    .adts_inner
+                    .insert((name, inst.to_vec()), inner);
                 let rc = type_rc(self.ctx, inner);
-                self.named_types.adts.insert(name, rc);
-                inners.push((adt, Some(inner)))
+                self.named_types.adts.insert((name, inst.to_vec()), rc);
+                self.populate_recursive_adt(&adt, inst, inner);
             } else {
-                inners.push((adt, None))
+                let t = self.gen_adt(&adt, inst);
+                self.named_types.adts.insert((name, inst.to_vec()), t);
             }
-        }
-        for (adt, maybe_inner) in inners {
-            let t = if let Some(inner) = maybe_inner {
-                self.gen_recursive_adt(adt, inner)
-            } else {
-                self.gen_adt(adt)
-            };
-            self.named_types.adts.insert(adt.name.s, t);
+            self.get_or_gen_adt_by_name_and_inst(name, inst)
         }
     }
 
     /// Returns the type of the free variables when captured
-    fn captures_type_of_free_vars(&self, free_vars: &FreeVarInsts<'src>) -> &'ctx Type {
+    fn captures_type_of_free_vars(&mut self, free_vars: &FreeVarInsts<'src>) -> &'ctx Type {
         let mut captures_types = Vec::new();
         for (_, insts) in free_vars {
             for &(_, ref typ) in insts {
@@ -458,7 +472,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         StructType::new(self.ctx, &captures_types, false)
     }
 
-    fn gen_func_decl(&self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
+    fn gen_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         let (arg, ret) = typ.get_func()
             .expect(&format!("ICE: Invalid function type `{}`", typ));
         let func_typ = self.gen_func_type(arg, ret);
@@ -466,7 +480,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func_decl(&self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
+    fn gen_extern_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
@@ -480,10 +494,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate a dummy closure value that wraps a call to a plain function
     fn gen_wrapping_closure(
-        &self,
+        &mut self,
         func: &'ctx Function,
         id: String,
-        func_type: &ast::Type,
+        func_type: &ast::Type<'src>,
     ) -> &'ctx Function {
         let (at, rt) = func_type
             .get_func()
@@ -502,7 +516,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func(&self, id: String, typ: &ast::Type<'src>) -> Extern<'ctx> {
+    fn gen_extern_func(&mut self, id: String, typ: &ast::Type<'src>) -> Extern<'ctx> {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
@@ -514,7 +528,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generates a simple binop function of the instruction built by `build_instr`
     fn gen_binop_func(
-        &self,
+        &mut self,
         func_name: String,
         typ: &ast::Type<'src>,
         build_instr: fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value,
@@ -531,7 +545,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         Extern { func, closure }
     }
 
-    fn gen_core_funcs(&self, env: &mut Env<'src, 'ctx>) {
+    fn gen_core_funcs(&mut self, env: &mut Env<'src, 'ctx>) {
         type BinopBuilder<'ctx> = fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value;
         assert!(
             self.current_block.borrow().is_none(),
@@ -606,7 +620,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_extern_decls(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         externs: &BTreeMap<&'src str, ast::ExternDecl<'src>>,
     ) {
@@ -644,11 +658,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .unwrap_or_else(|_| pos.error_exit(CodegenErr::num_parse_err(typ)))
     }
 
-    fn gen_num(&self, num: &ast::NumLit) -> &'ctx Value {
+    fn gen_num(&mut self, num: &ast::NumLit) -> &'ctx Value {
         let parser = match num.typ {
-            // If it's a type variable, gotta be numlit where (Num t)
-            // was allowed to remain, unless bug
-            ast::Type::Var(_) => CodeGenerator::parse_gen_lit::<isize>,
             ast::Type::Const("Int8", _) => CodeGenerator::parse_gen_lit::<i8>,
             ast::Type::Const("Int16", _) => CodeGenerator::parse_gen_lit::<i16>,
             ast::Type::Const("Int32", _) => CodeGenerator::parse_gen_lit::<i32>,
@@ -691,7 +702,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate IR for a variable used as an r-value
-    fn gen_variable(&self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
+    fn gen_variable(&mut self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
         let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
         let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
         let logic_binops = hashset!{ "and", "or", "xor" };
@@ -766,15 +777,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_if_<'e, C, A>(
-        &self,
+        &mut self,
         env: &'e mut Env<'src, 'ctx>,
         pred: &'ctx Value,
         conseq: C,
         alt: A,
     ) -> &'ctx Value
     where
-        C: FnOnce(Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
-        A: FnOnce(Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
+        C: FnOnce(&mut Self, Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
+        A: FnOnce(&mut Self, Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
     {
         let parent_func = self.current_func.borrow().unwrap();
         let then_br = parent_func.append("cond_then");
@@ -785,7 +796,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
         self.builder.position_at_end(then_br);
         *self.current_block.borrow_mut() = Some(then_br);
-        let (env_, then_val) = conseq(mem::replace(env, Env::new()));
+        let (env_, then_val) = conseq(self, mem::replace(env, Env::new()));
         mem::replace(env, env_);
         let then_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((then_val, then_last_block));
@@ -793,7 +804,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
         self.builder.position_at_end(else_br);
         *self.current_block.borrow_mut() = Some(else_br);
-        let (env_, else_val) = alt(mem::replace(env, Env::new()));
+        let (env_, else_val) = alt(self, mem::replace(env, Env::new()));
         mem::replace(env, env_);
         let else_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((else_val, else_last_block));
@@ -804,14 +815,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_phi(then_val.get_type(), &phi_nodes)
     }
 
-    fn gen_if(&self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
+    fn gen_if(&mut self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
         let pred = self.gen_expr(env, &cond.predicate, None);
-        let conseq = |mut env| {
-            let v = self.gen_expr(&mut env, &cond.consequent, None);
+        let conseq = |self_: &mut Self, mut env| {
+            let v = self_.gen_expr(&mut env, &cond.consequent, None);
             (env, v)
         };
-        let alt = |mut env| {
-            let v = self.gen_expr(&mut env, &cond.alternative, None);
+        let alt = |self_: &mut Self, mut env| {
+            let v = self_.gen_expr(&mut env, &cond.alternative, None);
             (env, v)
         };
         self.gen_if_(env, pred, conseq, alt)
@@ -846,7 +857,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     // TODO: Tail call optimization
     /// Generates IR code for a function application.
-    fn gen_app(&self, env: &mut Env<'src, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
+    fn gen_app(&mut self, env: &mut Env<'src, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
         let typ = app.func.get_type();
         let inst = typ.get_inst_args().unwrap_or(&[]);
         let canon = typ.canonicalize();
@@ -876,7 +887,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// a function to pass this environment to, together with the argument, when the closure
     /// is applied to an argument.
     fn gen_closure_anon_func(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
         lam: &'ast ast::Lambda<'src>,
@@ -1093,7 +1104,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// Returns a LLVM structure of each captured variable
     fn gen_lambda_env_capture(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
         name: &str,
@@ -1119,7 +1130,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// For use when generating bindings with recursive references
     fn gen_lambda_no_capture(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
         name: &str,
@@ -1141,7 +1152,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// May supply map of the free variables of the lambda, if saved from previously,
     /// to avoid unecessary recalculations.
     fn closure_capture_env(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         closure: &Value,
         lam: &'ast ast::Lambda<'src>,
@@ -1167,7 +1178,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate the LLVM representation of a lambda expression
     fn gen_lambda(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         lam: &'ast ast::Lambda<'src>,
         name: &str,
@@ -1189,7 +1200,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// Assumes that the variable bindings in `bs` are in reverse
     /// topologically order for the relation: "depends on".
-    fn gen_bindings(&self, env: &mut Env<'src, 'ctx>, bindings: &[&'ast ast::Binding<'src>]) {
+    fn gen_bindings(&mut self, env: &mut Env<'src, 'ctx>, bindings: &[&'ast ast::Binding<'src>]) {
         // To solve the problem of recursive references in closure
         // captures, e.g. two mutually recursive functions that need
         // to capture each other: First create closures where captures
@@ -1240,7 +1251,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate LLVM IR for a `let` special form
-    fn gen_let(&self, env: &mut Env<'src, 'ctx>, l: &'ast ast::Let<'src>) -> &'ctx Value {
+    fn gen_let(&mut self, env: &mut Env<'src, 'ctx>, l: &'ast ast::Let<'src>) -> &'ctx Value {
         let bindings = l.bindings.bindings().rev().collect::<Vec<_>>();
         self.gen_bindings(env, &bindings);
         let v = self.gen_expr(env, &l.body, None);
@@ -1251,15 +1262,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate LLVM IR for the construction of a `cons` pair
-    fn gen_cons(&self, env: &mut Env<'src, 'ctx>, cons: &'ast ast::Cons<'src>) -> &'ctx Value {
-        self.build_struct(&[
+    fn gen_cons(&mut self, env: &mut Env<'src, 'ctx>, cons: &'ast ast::Cons<'src>) -> &'ctx Value {
+        let members = [
             self.gen_expr(env, &cons.car, Some("car")),
             self.gen_expr(env, &cons.cdr, Some("cdr")),
-        ])
+        ];
+        self.build_struct(&members)
     }
 
     /// Generate LLVM IR for the extraction of the first element of a `cons` pair
-    fn gen_car(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Car<'src>) -> &'ctx Value {
+    fn gen_car(&mut self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Car<'src>) -> &'ctx Value {
         let cons = self.gen_expr(env, &c.expr, None);
         let r = self.builder.build_extract_value(cons, 0);
         r.set_name("car");
@@ -1267,7 +1279,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate LLVM IR for the extraction of the second element of a `cons` pair
-    fn gen_cdr(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cdr<'src>) -> &'ctx Value {
+    fn gen_cdr(&mut self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cdr<'src>) -> &'ctx Value {
         let cons = self.gen_expr(env, &c.expr, None);
         let r = self.builder.build_extract_value(cons, 1);
         r.set_name("cdr");
@@ -1275,7 +1287,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate LLVM IR for the cast of an expression to a type
-    fn gen_cast(&self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cast<'src>) -> &'ctx Value {
+    fn gen_cast(&mut self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cast<'src>) -> &'ctx Value {
         let ptr_size = self.ptr_size_bits();
         let from_type = c.expr.get_type();
         let to_type = &c.typ;
@@ -1340,7 +1352,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         })
     }
 
-    fn build_of_variant(&self, val: &'ctx Value, variant: &str) -> &'ctx Value {
+    fn build_of_variant(&mut self, val: &'ctx Value, variant: &str) -> &'ctx Value {
         let e_i = self.adts
             .variant_index(variant)
             .expect("ICE: No variant_index in gen_of_variant");
@@ -1359,7 +1371,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    fn build_as_variant(&self, wrapped: &'ctx Value, variant: &str) -> &'ctx Value {
+    fn build_as_variant(
+        &mut self,
+        wrapped: &'ctx Value,
+        variant: &'src str,
+        inst: &[ast::Type<'src>],
+    ) -> &'ctx Value {
         let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(variant) {
             // If ADT is recursive, it's also behind a refcount pointer
             self.build_gep_rc_contents(wrapped)
@@ -1374,9 +1391,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
         );
         unwrapped_ptr_of_largest_member_type.set_name("as-variant_unwrapped-largest");
-        let unwrapped_type = self.gen_type(&self.adts
-            .type_of_variant(variant)
-            .expect("ICE: No type_of_variant in gen_as_variant"));
+        let variant_type = self.adts
+            .type_with_inst_of_variant_with_name(variant, inst)
+            .expect("ICE: No type_of_variant in gen_as_variant");
+        let unwrapped_type = self.gen_type(&variant_type);
         let unwrapped_ptr = self.builder.build_bit_cast(
             unwrapped_ptr_of_largest_member_type,
             PointerType::new(unwrapped_type),
@@ -1387,12 +1405,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    fn gen_tuple(&self, env: &mut Env<'src, 'ctx>, es: &[Expr<'src>]) -> &'ctx Value {
+    fn gen_tuple(&mut self, env: &mut Env<'src, 'ctx>, es: &[Expr<'src>]) -> &'ctx Value {
         if let Some((last, init)) = es.split_last() {
             let last_val = self.gen_expr(env, last, None);
             last_val.set_name("gen-tuple_last");
             init.iter().rev().fold(last_val, |acc, e| {
-                let r = self.build_struct(&[self.gen_expr(env, e, Some("gen-tuple_car")), acc]);
+                let members = [self.gen_expr(env, e, Some("gen-tuple_car")), acc];
+                let r = self.build_struct(&members);
                 r.set_name("gen-tuple_cons");
                 r
             })
@@ -1401,33 +1420,51 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
-    fn gen_largest_adt_variant_type(&self, adt: &ast::AdtDef) -> &'ctx Type {
-        let variant_types = adt.variants.iter().map(|v| self.gen_type(&v.get_type()));
+    fn gen_largest_adt_variant_type(
+        &mut self,
+        adt: &ast::AdtDef<'src>,
+        inst: &[ast::Type<'src>],
+    ) -> &'ctx Type {
+        let variant_types = adt.variants
+            .iter()
+            .map(|v| {
+                let t = self.adts
+                    .type_with_inst_of_variant(v, inst)
+                    .expect("ICE: get_variant_type_with_inst failed in populate_recursive_adt");
+                self.gen_type(&t)
+            })
+            .collect::<Vec<_>>();
         variant_types
+            .into_iter()
             .max_by_key(|t| self.size_of(t))
             .unwrap_or(self.named_types.nil)
     }
 
-    fn gen_new(&self, env: &mut Env<'src, 'ctx>, n: &'ast ast::New<'src>) -> &'ctx Value {
+    fn gen_new(&mut self, env: &mut Env<'src, 'ctx>, n: &'ast ast::New<'src>) -> &'ctx Value {
         // { tag: i16, data: LARGEST-TYPE }
         let variant = n.constr.s;
         let adt = self.adts
             .parent_adt_of_variant(variant)
-            .expect("ICE: No parent_adt_of_variant in gen_new");
+            .expect("ICE: No parent_adt_of_variant in gen_new")
+            .clone();
         let i = adt.variant_index(variant)
             .expect("ICE: No variant_index in gen_new");
         let tag = (i as u16).compile(self.ctx);
-        let largest_type = self.gen_largest_adt_variant_type(adt);
+        let adt_inst = n.typ.get_adt_inst_args().unwrap_or(&[]);
+        let largest_type = self.gen_largest_adt_variant_type(&adt, adt_inst);
         let unwrapped = self.gen_tuple(env, &n.members);
         unwrapped.set_name("gen-new_unwrapped");
         let unwrapped_largest = self.build_cast(unwrapped, largest_type);
         unwrapped_largest.set_name("gen-new_unwrapped-larg");
 
-        if self.adts.adt_is_recursive(adt) {
+        if self.adts.adt_is_recursive(&adt) {
             let adt_inner_type = self.named_types
                 .adts_inner
-                .get(adt.name.s)
-                .expect("ICE: No adts_inner type in gen_new");
+                .get(&(adt.name.s, adt_inst.to_vec()))
+                .expect(&format!("ICE: No adts_inner type in gen_new\nadt {} of inst {:?} not in adts_inner: {:?}",
+                                 adt.name.s,
+                                 adt_inst,
+                                 self.named_types.adts_inner));
             let wrapped_largest =
                 self.build_struct_of_type(&[tag, unwrapped_largest], adt_inner_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
@@ -1437,8 +1474,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         } else {
             let adt_type = self.named_types
                 .adts
-                .get(adt.name.s)
-                .expect("ICE: No adts type in gen_new");
+                .get(&(adt.name.s, adt_inst.to_vec()))
+                .expect(&format!(
+                    "ICE: No adts type in gen_new\nadt {} of inst {:?} not in adts: {:?}",
+                    adt.name.s, adt_inst, self.named_types.adts
+                ));
             let wrapped_largest = self.build_struct_of_type(&[tag, unwrapped_largest], adt_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
             wrapped_largest
@@ -1446,10 +1486,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_match_case_(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         bindings: &mut BTreeMap<&'src str, (&'ast SrcPos<'src>, &'ctx Value)>,
         matchee: &'ctx Value,
+        matchee_adt_inst: &[ast::Type<'src>],
         patt: &'ast Pattern<'src>,
         body_type: &'ctx Type,
         next_branch: &'ctx BasicBlock,
@@ -1472,21 +1513,28 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 unimplemented!()
             },
             Pattern::Deconstr(ref deconst) => {
-                let of_variant = self.build_of_variant(matchee, deconst.constr.s);
+                let variant = deconst.constr.s;
+                let variant_member_types = self.adts
+                    .members_with_inst_of_variant_with_name(variant, matchee_adt_inst)
+                    .unwrap();
+                let of_variant = self.build_of_variant(matchee, variant);
                 let parent_func = self.current_func.borrow().unwrap();
                 let then_br = parent_func.append("cond_then");
                 self.builder.build_cond_br(of_variant, then_br, next_branch);
                 self.builder.position_at_end(then_br);
                 *self.current_block.borrow_mut() = Some(then_br);
                 if let Some((last_sub, subs)) = deconst.subpatts.split_last() {
-                    let inner = self.build_as_variant(matchee, deconst.constr.s);
+                    let (last_member_t, member_ts) = variant_member_types.split_last().unwrap();
+                    let inner = self.build_as_variant(matchee, variant, matchee_adt_inst);
                     let mut remaining = inner;
-                    for sub in subs {
+                    for (sub, member_t) in subs.into_iter().zip(member_ts) {
                         let sub_matchee = self.build_extract_car(remaining);
+                        let sub_matchee_adt_inst = member_t.get_adt_inst_args().unwrap_or(&[]);
                         self.gen_match_case_(
                             env,
                             bindings,
                             sub_matchee,
+                            sub_matchee_adt_inst,
                             sub,
                             body_type,
                             next_branch,
@@ -1494,10 +1542,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                         remaining = self.build_extract_cdr(remaining);
                     }
                     let sub_matchee = remaining;
+                    let sub_matchee_adt_inst = last_member_t.get_adt_inst_args().unwrap_or(&[]);
                     self.gen_match_case_(
                         env,
                         bindings,
                         sub_matchee,
+                        sub_matchee_adt_inst,
                         last_sub,
                         body_type,
                         next_branch,
@@ -1508,19 +1558,22 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_match_case(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         matchee: &'ctx Value,
+        matchee_adt_inst: &[ast::Type<'src>],
         case: &ast::Case<'src>,
         next_branch: &'ctx BasicBlock,
     ) -> &'ctx Value {
         let mut patt_bindings = BTreeMap::new();
+        let body_type = self.gen_type(case.body.get_type());
         self.gen_match_case_(
             env,
             &mut patt_bindings,
             matchee,
+            matchee_adt_inst,
             &case.patt,
-            self.gen_type(case.body.get_type()),
+            body_type,
             next_branch,
         );
         for (var, &(_, val)) in &patt_bindings {
@@ -1533,8 +1586,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    fn gen_match(&self, env: &mut Env<'src, 'ctx>, m: &'ast ast::Match<'src>) -> &'ctx Value {
+    fn gen_match(&mut self, env: &mut Env<'src, 'ctx>, m: &'ast ast::Match<'src>) -> &'ctx Value {
         let expr = self.gen_expr(env, &m.expr, Some("matchee"));
+        let expr_adt_inst = m.expr.get_type().get_adt_inst_args().unwrap_or(&[]);
         let parent_func = self.current_func.borrow().unwrap();
 
         let case_blocks = m.cases
@@ -1554,7 +1608,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             self.builder.position_at_end(block);
             *self.current_block.borrow_mut() = Some(block);
             let next_block = it.peek().map(|&&(_, b)| b).unwrap_or(default_block);
-            let case_val = self.gen_match_case(env, expr, &case, next_block);
+            let case_val = self.gen_match_case(env, expr, expr_adt_inst, &case, next_block);
             // The block jumped from to `final_block` on successful match.
             // I.e., the one to use in the phi node
             let case_last_block = self.current_block.borrow().unwrap();
@@ -1578,7 +1632,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate llvm code for an expression and return its llvm Value.
     fn gen_expr(
-        &self,
+        &mut self,
         env: &mut Env<'src, 'ctx>,
         expr: &'ast Expr<'src>,
         name: Option<&str>,
@@ -1629,7 +1683,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///     (main')))
     /// ```
     /// where `main'` is the user defined `main`, and `main` is a simple, C-abi compatible function.
-    pub fn gen_executable(&mut self, ast: &ast::Ast) {
+    pub fn gen_executable(&mut self, ast: &ast::Ast<'src>) {
         // Assert that `main` exists and is monomorphic of type `(-> Nil Nil)`
         {
             let main = ast.globals

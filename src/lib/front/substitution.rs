@@ -89,9 +89,12 @@ pub fn subst_expr<'src>(e: &mut Expr<'src>, s: &mut BTreeMap<TVar<'src>, Type<'s
             c.typ = subst(&c.typ, s);
             subst_expr(&mut c.expr, s);
         }
-        Expr::New(ref mut n) => for member in &mut n.members {
-            subst_expr(member, s);
-        },
+        Expr::New(ref mut n) => {
+            n.typ = subst(&n.typ, s);
+            for member in &mut n.members {
+                subst_expr(member, s);
+            }
+        }
         Expr::Match(ref mut m) => {
             subst_expr(&mut m.expr, s);
             m.typ = subst(&m.typ, s);

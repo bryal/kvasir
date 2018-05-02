@@ -64,6 +64,12 @@ enum PErr<'s> {
         pos: SrcPos<'s>,
         name: &'s str,
     },
+    InvalidDataBind(SrcPos<'s>),
+    DataDuplParam {
+        pos: SrcPos<'s>,
+        name: &'s str,
+        prev_pos: SrcPos<'s>,
+    },
 }
 
 impl<'s> PErr<'s> {
@@ -94,6 +100,8 @@ impl<'s> PErr<'s> {
             VarDuplDef { .. } => e(17),
             DataConstrDuplDef { .. } => e(18),
             UndefDataConstr { .. } => e(19),
+            InvalidDataBind(_) => e(20),
+            DataDuplParam { .. } => e(21),
         }
     }
 
@@ -195,6 +203,24 @@ impl<'s> PErr<'s> {
             }
             UndefDataConstr { ref pos, name } => {
                 pos.write_error(w, code, format!("Undefined data constructor `{}`", name));
+            }
+            InvalidDataBind(ref pos) => {
+                pos.write_error(w, code, "Invalid binding in data declaration");
+            }
+            DataDuplParam {
+                ref pos,
+                name,
+                ref prev_pos,
+            } => {
+                pos.write_error(
+                    w,
+                    code,
+                    format!(
+                        "Data type parameter `{}` has already been declared in this binding",
+                        name
+                    ),
+                );
+                prev_pos.write_note(w, "The previous declaration of the type parameter is here:")
             }
         }
     }
@@ -473,6 +499,19 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(Type::new_cons(car, cdr))
     }
 
+    fn parse_type_app(
+        &mut self,
+        name: &'s str,
+        args_csts: &[Cst<'s>],
+        pos: &SrcPos<'s>,
+    ) -> PRes<'s, Type<'s>> {
+        let args = args_csts
+            .iter()
+            .map(|c| self.parse_type(c))
+            .collect::<Result<_, _>>()?;
+        Ok(Type::App(box TypeFunc::Const(name), args))
+    }
+
     fn parse_ptr_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         self.parse_type(one(csts, pos)?).map(Type::new_ptr)
     }
@@ -485,7 +524,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             "->" => self.parse_func_type(rest, pos),
             "Cons" => self.parse_cons_type(rest, pos),
             "Ptr" => self.parse_ptr_type(rest, pos),
-            _ => Err(UndefTypeCon(p.clone(), s)),
+            _ => self.parse_type_app(s, rest, pos),
         }
     }
 
@@ -951,7 +990,6 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             })),
             Cst::Str(ref s, ref pos) => Ok(Pattern::StrLit(StrLit {
                 lit: s.clone(),
-                typ: self.gen_type_var(),
                 pos: pos.clone(),
             })),
         }
@@ -1061,9 +1099,40 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             })),
             Cst::Str(ref s, ref pos) => Ok(Expr::StrLit(StrLit {
                 lit: s.clone(),
-                typ: self.gen_type_var(),
                 pos: pos.clone(),
             })),
+        }
+    }
+
+    fn parse_data_binding(&mut self, cst: &Cst<'s>) -> PRes<'s, (Ident<'s>, Vec<&'s str>)> {
+        match *cst {
+            Cst::Ident(s, ref pos) => Ok((
+                Ident {
+                    s,
+                    pos: pos.clone(),
+                },
+                Vec::new(),
+            )),
+            Cst::Sexpr(ref app, ref pos) => {
+                let (name_c, params_c) = split_first(app, pos)?;
+                let name = ident(name_c)?;
+                let mut params = BTreeMap::new();
+                let mut unique_params_v = Vec::new();
+                for param_c in params_c {
+                    let param = self.parse_type_var_ident(param_c)?;
+                    if let Some(prev_pos) = params.insert(param.s, param.pos.clone()) {
+                        return Err(DataDuplParam {
+                            pos: param.pos.clone(),
+                            name: param.s,
+                            prev_pos,
+                        });
+                    } else {
+                        unique_params_v.push(param.s);
+                    }
+                }
+                Ok((name, unique_params_v))
+            }
+            _ => Err(InvalidDataBind(cst.pos().clone())),
         }
     }
 
@@ -1112,13 +1181,14 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     /// Parse a data type definition
     fn parse_data_type_def(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, AdtDef<'s>> {
-        let (name_c, variants_c) = split_first(csts, pos)?;
-        let name = ident(name_c)?;
+        let (bnd_c, variants_c) = split_first(csts, pos)?;
+        let (name, params) = self.parse_data_binding(bnd_c)?;
         if !name.s.starts_with(char::is_uppercase) {
             return Err(InvalidAdtIdent(name.pos.clone(), name.s));
         }
         Ok(AdtDef {
             name,
+            params,
             variants: self.parse_data_type_variants(variants_c)?,
             pos: pos.clone(),
         })

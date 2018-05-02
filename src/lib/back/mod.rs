@@ -26,12 +26,12 @@ pub fn compile(
 
     codegenerator.gen_executable(&ast);
 
-    codegenerator.module.verify().unwrap_or_else(|e| {
-        panic!(
-            "Verifying module failed\nmodule: {:?}\nerror: {}",
-            codegenerator.module, e
-        )
-    });
+    // codegenerator.module.verify().unwrap_or_else(|e| {
+    //     panic!(
+    //         "Verifying module failed\nmodule: {:?}\nerror: {}",
+    //         codegenerator.module, e
+    //     )
+    // });
 
     let with_ext_unless_explicit = |ext| {
         if explicit_filename {
