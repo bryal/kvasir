@@ -56,13 +56,20 @@ pub fn exit() -> ! {
 /// Print an error and exit the compilation
 pub fn error_exit<E: Display>(msg: E) -> ! {
     let mut t = term::stdout().expect("Could not acquire access to stdout");
-
     t.fg(color::BRIGHT_RED).ok();
     print!("Error: ");
     t.reset().ok();
     println!("{}", msg);
-
     exit()
+}
+
+/// Print an error and exit the compilation
+pub fn note<E: Display>(msg: E) {
+    let mut t = term::stdout().expect("Could not acquire access to stdout");
+    t.fg(color::BRIGHT_GREEN).ok();
+    print!("Note: ");
+    t.reset().ok();
+    println!("{}", msg);
 }
 
 /// A position or interval in a string of source code
@@ -247,8 +254,13 @@ impl<'src> SrcPos<'src> {
     }
 
     /// Like `SrcPos::error`, but exits after message has been printed
-    pub fn error_exit<E: Display>(&self, msg: E) -> ! {
+    pub fn error<E: Display>(&self, msg: E) {
         self.print_error(ErrCode::undefined(), msg);
+    }
+
+    /// Like `SrcPos::error`, but exits after message has been printed
+    pub fn error_exit<E: Display>(&self, msg: E) -> ! {
+        self.error(msg);
         exit()
     }
 

@@ -759,9 +759,9 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                 self.extend_type_var_env(binding.sig.params.clone());
                 self.infer_expr(&mut binding.val, &binding.sig.body);
                 let generalized_params = self.generalize(&binding.sig.body, &old_tv_env);
-                self.type_var_env = old_tv_env;
                 binding.sig.params = generalized_params;
                 self.push_var(id, binding.get_type());
+                self.type_var_env = old_tv_env;
             }
             Group::Circular(ref mut bindings) => {
                 let old_tv_env = self.type_var_env.clone();
@@ -804,6 +804,7 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                 for (id, binding) in bindings.iter() {
                     self.push_var(*id, Type::Poly(box binding.sig.clone()))
                 }
+                self.type_var_env = old_tv_env;
             }
         }
     }

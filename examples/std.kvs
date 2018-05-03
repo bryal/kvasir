@@ -14,6 +14,12 @@
 (define (< x y) (lt (cons x y)))
 (define (<= x y) (lteq (cons x y)))
 
+(define inc (+ 1))
+(define (dec x) (- x 1))
+
+(define (min a b) (if (< a b) a b))
+(define (max a b) (if (> a b) a b))
+
 (define (neg x) (- 0 x))
 
 (define (abs x)
@@ -34,6 +40,47 @@
 
 (define (divisible-by n d)
   (= (remainder n d) 0))
+
+;;; Section Lists
+
+(data (List t)
+  Empty
+  (List t (List t)))
+
+(define empty (new Empty))
+(define (single e) (new List e empty))
+
+(define (head l)
+  (match l
+    [Empty       (panic "head of empty list")]
+    [(List e _) e]))
+
+(define (tail l)
+  (match l
+    [Empty       (panic "Tail of empty list")]
+    [(List _ l') l']))
+
+(define (pre e l)
+  (new List e l))
+
+(define (post l e)
+  (concat l (single e)))
+
+(define (concat l1 l2)
+  (match l1
+    [Empty        l2]
+    [(List e l1') (pre e (concat l1' l2))]))
+
+(define (empty? l)
+  (match l
+    [Empty true]
+    [_     false]))
+
+(define: (map f l)
+    (-> (-> a b) (List a) (List b))
+  (match l
+    [Empty       empty]
+    [(List e l') (pre (f e) (map f l'))]))
 
 ;;; Section Strings
 ;;;
@@ -92,13 +139,14 @@
 (define (dec-to-s x)
   (dec-to-s' 0.000001 (abs x)))
 
-(define (num-to-s x)
+(define: (num-to-s x)
+    (constrain [(Num t)] (-> t String))
   (let [[intx (floor x)]
         [decx (- x intx)]
         [ints (int-to-s (int intx))]]
     (if (= decx 0)
         ints
-      (let [[decs (dec-to-s decx)]]
+      (let [[decs (dec-to-s (cast decx Float64))]]
         (strconcat ints (strconcat "." decs))))))
 
 ;;; Section Input/output

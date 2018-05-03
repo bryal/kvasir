@@ -246,7 +246,6 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
 struct NamedTypes<'ctx, 'src> {
     nil: &'ctx Type,
     real_world: &'ctx Type,
-    rc_generic_inner: &'ctx Type,
     rc_generic: &'ctx Type,
     adts: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
     adts_inner: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
@@ -280,7 +279,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let named_types = NamedTypes {
             real_world: StructType::new_named(ctx, "RealWorld", &[], false),
             nil: StructType::new_named(ctx, "Nil", &[], false),
-            rc_generic_inner,
             rc_generic: PointerType::new(rc_generic_inner),
             adts: BTreeMap::new(),
             adts_inner: BTreeMap::new(),
@@ -340,7 +338,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_type(&mut self, typ: &'ast ast::Type<'src>) -> &'ctx Type {
-        match *typ {
+        match typ.canonicalize() {
             ast::Type::Const("Int8", _) => Type::get::<i8>(self.ctx),
             ast::Type::Const("Int16", _) => Type::get::<i16>(self.ctx),
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
@@ -1056,13 +1054,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_load(carptr)
     }
 
-    /// Given a pointer to a pair, load the second value of the pair
-    pub fn build_load_cdr(&self, consptr: &Value) -> &'ctx Value {
-        let cdrptr = self.builder
-            .build_gep(consptr, &[0usize.compile(self.ctx), 1u32.compile(self.ctx)]);
-        self.builder.build_load(cdrptr)
-    }
-
     pub fn build_extract_car(&self, cons: &Value) -> &'ctx Value {
         self.builder.build_extract_value(cons, 0)
     }
@@ -1507,11 +1498,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 *self.current_block.borrow_mut() = Some(then_br);
             }
             Pattern::StrLit(_) => unimplemented!(),
-            Pattern::Variable(ref var) => if let Some((prev_pos, _)) =
-                bindings.insert(var.ident.s, (&var.ident.pos, matchee))
-            {
-                unimplemented!()
-            },
+            Pattern::Variable(ref var) => {
+                if let Some((_, _)) = bindings.insert(var.ident.s, (&var.ident.pos, matchee)) {
+                    unimplemented!()
+                }
+            }
             Pattern::Deconstr(ref deconst) => {
                 let variant = deconst.constr.s;
                 let variant_member_types = self.adts

@@ -46,8 +46,6 @@ enum PErr<'s> {
         name: &'s str,
         prev_pos: SrcPos<'s>,
     },
-    /// Undefined type constructor
-    UndefTypeCon(SrcPos<'s>, &'s str),
     /// Duplicate definition of a nnnnnvariable
     VarDuplDef {
         pos: SrcPos<'s>,
@@ -96,7 +94,6 @@ impl<'s> PErr<'s> {
             InvalidAdtVariant(..) => e(12),
             NotASpecForm(..) => e(13),
             DataTypeDuplDef { .. } => e(15),
-            UndefTypeCon(..) => e(16),
             VarDuplDef { .. } => e(17),
             DataConstrDuplDef { .. } => e(18),
             UndefDataConstr { .. } => e(19),
@@ -169,9 +166,6 @@ impl<'s> PErr<'s> {
                     ),
                 );
                 prev_pos.write_note(w, "The first definition of the data type is here:")
-            }
-            UndefTypeCon(ref pos, c) => {
-                pos.write_error(w, code, format!("Undefined type constructor `{}`", c))
             }
             VarDuplDef {
                 ref pos,
@@ -499,12 +493,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(Type::new_cons(car, cdr))
     }
 
-    fn parse_type_app(
-        &mut self,
-        name: &'s str,
-        args_csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, Type<'s>> {
+    fn parse_type_app(&mut self, name: &'s str, args_csts: &[Cst<'s>]) -> PRes<'s, Type<'s>> {
         let args = args_csts
             .iter()
             .map(|c| self.parse_type(c))
@@ -518,13 +507,12 @@ impl<'tvg, 's> Parser<'tvg, 's> {
 
     fn parse_type_sexpr(&mut self, app: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
         let (first, rest) = split_first(app, pos)?;
-        let id = ident(first)?;
-        let (s, p) = (id.s, id.pos);
-        match s {
+        let id = ident_s(first)?;
+        match id {
             "->" => self.parse_func_type(rest, pos),
             "Cons" => self.parse_cons_type(rest, pos),
             "Ptr" => self.parse_ptr_type(rest, pos),
-            _ => self.parse_type_app(s, rest, pos),
+            _ => self.parse_type_app(id, rest),
         }
     }
 

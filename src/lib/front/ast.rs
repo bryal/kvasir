@@ -119,13 +119,6 @@ impl<'s> Type<'s> {
         Type::App(Box::new(TypeFunc::Const("->")), vec![arg, ret])
     }
 
-    pub fn new_currying_func(args: &[Type<'s>], ret: Type<'s>) -> Self {
-        args.iter()
-            .rev()
-            .cloned()
-            .fold(ret, |acc, t| Type::new_func(t, acc))
-    }
-
     pub fn new_io(ret: Type<'s>) -> Self {
         Type::new_func(
             TYPE_REALWORLD.clone(),
@@ -1238,6 +1231,12 @@ impl<'s> Expr<'s> {
             Expr::New(ref new) => new.to_string_indent(n),
             Expr::Match(ref m) => m.to_string_indent(n),
         }
+    }
+}
+
+impl<'s> Display for Expr<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string_indent(0))
     }
 }
 

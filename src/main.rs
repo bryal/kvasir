@@ -189,7 +189,7 @@ fn main() {
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
     let sources = AddMap::new();
     let mut ast = parse_program(inp_filename, &sources, &mut type_var_generator);
-
+    //println!("parsed:\n\n{}", ast);
     infer_types(&mut ast, &mut type_var_generator);
     //println!("inferred:\n\n{}", ast);
     compile(

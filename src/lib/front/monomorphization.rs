@@ -68,12 +68,16 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
     e: &mut Expr<'src>,
     env: &mut ScopeStack<&'src str, Binding<'src>>,
 ) {
+    let canon = e.get_type().canonicalize();
+    if !canon.is_monomorphic() {
+        e.pos().error(&format!(
+            "Could not deduce {} from use of expression. Type was not monomorphic at compile time.",
+            canon
+        ));
+        note("Try adding a type annotation to choose which specific instance of the type to use.");
+        exit()
+    }
     match *e {
-        Expr::NumLit(ref mut l) => {
-            if !l.typ.is_monomorphic() {
-                l.typ = Type::Const("Int64", None);
-            }
-        }
         Expr::Variable(ref mut var) => {
             if let Some((arg_ts, mut def_mono)) = monomorphize_def_of_inst(var, env) {
                 // Insert dummy monomorphization as a tag to show that monomorphization
@@ -131,7 +135,7 @@ fn monomorphize_defs_of_insts_in_expr<'src>(
             monomorphize_defs_of_insts_in_expr(member, env)
         },
         Expr::Match(ref mut m) => monomorphize_defs_of_insts_in_match(m, env),
-        Expr::Nil(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
+        Expr::Nil(_) | Expr::NumLit(_) | Expr::StrLit(_) | Expr::Bool(_) => (),
     }
 }
 
