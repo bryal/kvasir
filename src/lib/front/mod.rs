@@ -22,6 +22,7 @@ pub mod parse;
 pub mod inference;
 pub mod monomorphization;
 pub mod substitution;
+mod macros;
 
 /// A generator of unique type variables
 pub struct TypeVarGen(u64);

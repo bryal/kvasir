@@ -1,3 +1,16 @@
+;;; Section Macros
+
+(macro list
+  [()           empty]
+  [(x (... xs)) (pre x (list (... xs)))])
+
+(macro do-io
+  [(io) io]
+  [(('<- x io) (... ios))
+   (bind-io io (lambda (x) (do-io (... ios))))]
+  [(io (... ios))
+   (seq-io io (do-io (... ios)))])
+
 ;;; Section Logic and Math
 
 (define (not b) (if b false true))
@@ -64,12 +77,15 @@
   (new List e l))
 
 (define (post l e)
-  (concat l (single e)))
+  (append l (single e)))
 
-(define (concat l1 l2)
+(define (append l1 l2)
   (match l1
     [Empty        l2]
-    [(List e l1') (pre e (concat l1' l2))]))
+    [(List e l1') (pre e (append l1' l2))]))
+
+(define (concat xs)
+  (fold append empty xs))
 
 (define (empty? l)
   (match l
@@ -81,6 +97,18 @@
   (match l
     [Empty       empty]
     [(List e l') (pre (f e) (map f l'))]))
+
+(define: (fold f acc xs)
+    (-> (-> a b a) a (List b) a)
+  (match xs
+    [Empty        acc]
+    [(List x xs') (fold f (f acc x) xs')]))
+
+(define: (intersperse y xs)
+    (-> a (List a) (List a))
+  (match xs
+    [(List a (List b xs')) (pre a (pre y (intersperse y (pre b xs'))))]
+    [_                     xs]))
 
 ;;; Section Strings
 ;;;
@@ -94,20 +122,23 @@
   (StrCons UInt32 String))
 
 (define (c-to-s c)
-  (prepend c (new StrEmpty)))
+  (pre-s c (new StrEmpty)))
 
-(define (prepend c s)
+(define (pre-s c s)
   (new StrCons c s))
 
-(define (append s c)
+(define (post-s s c)
   (match s
-    [StrEmpty        (prepend c "")]
-    [(StrCons c' s') (prepend c' (append s' c))]))
+    [StrEmpty        (pre-s c "")]
+    [(StrCons c' s') (pre-s c' (post-s s' c))]))
 
-(define (strconcat s1 s2)
+(define (append-s s1 s2)
   (match s1
     [StrEmpty        s2]
-    [(StrCons c s1') (new StrCons c (strconcat s1' s2))]))
+    [(StrCons c s1') (new StrCons c (append-s s1' s2))]))
+
+(define (concat-s ss)
+  (fold append-s (new StrEmpty) ss))
 
 (define (to-digit n)
   (cast (+ 48 n) UInt32))
@@ -133,8 +164,8 @@
         [c     (to-digit inty)]]
     (if (< x' e')
         (c-to-s c)
-      (prepend c
-               (dec-to-s' (* e 10) x')))))
+      (pre-s c
+             (dec-to-s' (* e 10) x')))))
 
 (define (dec-to-s x)
   (dec-to-s' 0.000001 (abs x)))
@@ -147,7 +178,12 @@
     (if (= decx 0)
         ints
       (let [[decs (dec-to-s (cast decx Float64))]]
-        (strconcat ints (strconcat "." decs))))))
+        (append-s ints (append-s "." decs))))))
+
+(define: (nums-to-s xs)
+    (constrain [(Num t)]
+               (-> (List t) String))
+  (fold append-s "" (intersperse " " (map num-to-s xs))))
 
 ;;; Section Input/output
 
@@ -177,22 +213,22 @@
   (lambda (real-world)
     (print_float64 (cons x real-world))))
 
-(define (>> io1 io2)
+(define (seq-io io1 io2)
   (lambda (real-world)
     (io2 (cdr (io1 real-world)))))
 
-(define (>>= io f)
+(define (bind-io io f)
   (lambda (real-world)
     (let [[r           (io real-world)]
           [v           (car r)]
           [real-world2 (cdr r)]]
       (f v real-world2))))
 
-(define (return x)
+(define (return-io x)
   (lambda (real-world)
     (cons x real-world)))
 
-(define (iomap f io)
+(define (map-io f io)
   (lambda (real-world)
     (let [[r           (io real-world)]
           [v           (car r)]
@@ -282,10 +318,10 @@
       (cons nil real-world2))))
 
 (define (continue-while-io io)
-  (iomap right io))
+  (map-io right io))
 
 (define (break-while-io io)
-  (iomap left io))
+  (map-io left io))
 
 ;;; Section Misc / Builtin / Core / Intrinsics
 

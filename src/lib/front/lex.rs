@@ -258,7 +258,7 @@ fn token_to_tree<'s>((token, mut pos): (Token<'s>, SrcPos<'s>), nexts: &mut Toke
         Token::Str(s) => Cst::Str(s, pos),
         Token::Quote => Cst::Sexpr(
             vec![
-                Cst::Ident("quote", pos.clone()),
+                Cst::Ident("'", pos.clone()),
                 token_to_tree(
                     nexts
                         .next()

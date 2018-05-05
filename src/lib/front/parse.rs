@@ -3,6 +3,7 @@ use super::*;
 use super::ast::*;
 use super::cst::Cst;
 use super::dependency_graph::*;
+use super::macros;
 use lib::CanonPathBuf;
 use lib::collections::AddMap;
 use lib::front::lex::lex_file;
@@ -171,15 +172,14 @@ impl<'s> PErr<'s> {
                 ref pos,
                 name,
                 ref prev_pos,
-            } => pos.write_error(
-                w,
-                code,
-                format!(
-                    "Conflicting definition of variable `{}`\n\
-                     Previous definition here `{:?}`",
-                    name, prev_pos,
-                ),
-            ),
+            } => {
+                pos.write_error(
+                    w,
+                    code,
+                    format!("Conflicting definition of variable `{}`", name),
+                );
+                prev_pos.write_note(w, "Previous definition here");
+            }
             DataConstrDuplDef {
                 ref pos,
                 name,
@@ -332,6 +332,7 @@ struct Parser<'tvg, 's> {
     type_var_gen: &'tvg mut TypeVarGen,
     /// Algebraic data type definitions
     adts: Adts<'s>,
+    macros: BTreeMap<&'s str, macros::Macro<'s>>,
 }
 
 impl<'tvg, 's> Parser<'tvg, 's> {
@@ -340,6 +341,7 @@ impl<'tvg, 's> Parser<'tvg, 's> {
             sources,
             type_var_gen,
             adts: Adts::new(),
+            macros: BTreeMap::new(),
         }
     }
 
@@ -352,32 +354,8 @@ impl<'tvg, 's> Parser<'tvg, 's> {
     }
 
     /// Parse a list of `Cst`s as a module import
-    fn parse_import(
-        &mut self,
-        csts: &[Cst<'s>],
-        pos: &SrcPos<'s>,
-    ) -> PRes<'s, (&'s str, SrcPos<'s>)> {
-        let Ident { s, pos } = ident(one(csts, pos)?)?;
-        Ok((s, pos.clone()))
-    }
-
-    /// Parses a set of import statements
-    ///
-    /// Returns a map from (modules to import) to
-    /// (position of import statement, position of module name)
-    fn parse_imports(
-        &mut self,
-        imports_csts: &[(Vec<Cst<'s>>, &SrcPos<'s>)],
-    ) -> PRes<'s, BTreeMap<&'s str, (SrcPos<'s>, SrcPos<'s>)>> {
-        let mut imports = BTreeMap::new();
-        for &(ref import_csts, pos) in imports_csts {
-            let (module_name, name_pos) = self.parse_import(import_csts, pos)?;
-            if let Some((prev_pos, _)) = imports.insert(module_name, (pos.clone(), name_pos)) {
-                pos.print_warn(format!("Duplicate import of module `{}`", module_name));
-                prev_pos.print_note(format!("Previous import of module `{}` here", module_name));
-            }
-        }
-        Ok(imports)
+    fn parse_import(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, &'s str> {
+        ident_s(one(csts, pos)?)
     }
 
     /// Parse a list of `Cst`s as an external variable declaration
@@ -1211,6 +1189,48 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         Ok(())
     }
 
+    fn parse_macro_pattern(&mut self, cst: &Cst<'s>) -> PRes<'s, macros::Pattern<'s>> {
+        match *cst {
+            Cst::Ident(id, _) => Ok(macros::Pattern::Ident(id)),
+            Cst::Sexpr(ref cs, ref pos) if !cs.is_empty() => match cs[0] {
+                Cst::Ident("...", _) => {
+                    let inner_patterns = cs[1..]
+                        .iter()
+                        .map(|p| self.parse_macro_pattern(p))
+                        .collect::<PRes<Vec<_>>>()?;
+                    Ok(macros::Pattern::Multi(inner_patterns))
+                }
+                Cst::Ident("'", _) => {
+                    let (_, lit_cst) = two(cs, pos)?;
+                    let lit = ident_s(lit_cst)?;
+                    Ok(macros::Pattern::Lit(lit))
+                }
+                _ => Ok(macros::Pattern::Sexpr(cs.iter()
+                    .map(|c| self.parse_macro_pattern(c))
+                    .collect::<PRes<Vec<_>>>()?)),
+            },
+            Cst::Sexpr(..) => Ok(macros::Pattern::Sexpr(vec![])),
+            _ => cst.pos().error_exit("Invalid macro pattern"),
+        }
+    }
+
+    fn parse_add_macro(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, ()> {
+        let (first, rest) = split_first(csts, pos)?;
+        let name = ident_s(first)?;
+        let cases = rest.iter()
+            .map(|c| {
+                let (pattern_cst, bodies) = split_first(sexpr(c)?, c.pos())?;
+                let pattern = self.parse_macro_pattern(pattern_cst)?;
+                Ok(macros::Case {
+                    pattern,
+                    bodies: bodies.to_vec(),
+                })
+            })
+            .collect::<PRes<Vec<_>>>()?;
+        self.macros.insert(name, macros::Macro { name, cases });
+        Ok(())
+    }
+
     fn _get_top_level_csts<'c>(
         &mut self,
         csts: &'c [Cst<'s>],
@@ -1218,28 +1238,29 @@ impl<'tvg, 's> Parser<'tvg, 's> {
         globals: &mut Vec<(bool, Vec<Cst<'s>>, SrcPos<'s>)>,
         adts: &mut Vec<(Vec<Cst<'s>>, SrcPos<'s>)>,
     ) -> PRes<'s, ()> {
-        let mut imports_csts = Vec::new();
         for cst in csts {
-            let pos = cst.pos();
-            let (first, rest) = split_first(sexpr(cst)?, cst.pos())?;
-            let first_s = ident_s(first)?;
-            match first_s {
-                "import" => imports_csts.push((rest.to_vec(), pos)),
-                "extern" => externs.push((rest.to_vec(), pos.clone())),
-                "define" => globals.push((false, rest.to_vec(), pos.clone())),
-                "define:" => globals.push((true, rest.to_vec(), pos.clone())),
-                "data" => adts.push((rest.to_vec(), pos.clone())),
-                _ => return Err(InvalidTopLevelItem(pos.clone())),
-            }
-        }
-        let imports = self.parse_imports(&imports_csts)?;
-        // Recursively get top level csts of imported modules as well
-        for (module_name, (_, _)) in imports {
-            let module_path = CanonPathBuf::new(&format!("{}.kvs", module_name))
-                .expect("ICE: Failed to canonicalize module path");
-            if !self.sources.contains_key(&module_path) {
-                let import_csts = lex_file(module_path, &self.sources);
-                self._get_top_level_csts(&import_csts, externs, globals, adts)?
+            let csts_ = macros::expand_macros(cst, &self.macros);
+            for cst_ in csts_ {
+                let pos = cst_.pos().clone();
+                let (first, rest) = split_first(sexpr(&cst_)?, &pos)?;
+                let first_s = ident_s(first)?;
+                match first_s {
+                    "import" => {
+                        let module_name = self.parse_import(rest, &pos)?;
+                        let module_path = CanonPathBuf::new(&format!("{}.kvs", module_name))
+                            .expect("ICE: Failed to canonicalize module path");
+                        if !self.sources.contains_key(&module_path) {
+                            let import_csts = lex_file(module_path, &self.sources);
+                            self._get_top_level_csts(&import_csts, externs, globals, adts)?
+                        }
+                    }
+                    "extern" => externs.push((rest.to_vec(), pos)),
+                    "define" => globals.push((false, rest.to_vec(), pos)),
+                    "define:" => globals.push((true, rest.to_vec(), pos)),
+                    "data" => adts.push((rest.to_vec(), pos.clone())),
+                    "macro" => self.parse_add_macro(rest, &pos)?,
+                    _ => return Err(InvalidTopLevelItem(pos)),
+                }
             }
         }
         Ok(())
