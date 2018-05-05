@@ -95,7 +95,7 @@
     [(List e l1') (pre e (append l1' l2))]))
 
 (define (concat xs)
-  (fold append empty xs))
+  (foldl append empty xs))
 
 (define (empty? l)
   (match l
@@ -108,17 +108,70 @@
     [Empty       empty]
     [(List e l') (pre (f e) (map f l'))]))
 
-(define: (fold f acc xs)
+(define: (foldl f acc xs)
     (-> (-> a b a) a (List b) a)
   (match xs
     [Empty        acc]
-    [(List x xs') (fold f (f acc x) xs')]))
+    [(List x xs') (foldl f (f acc x) xs')]))
 
 (define: (intersperse y xs)
     (-> a (List a) (List a))
   (match xs
     [(List a (List b xs')) (pre a (pre y (intersperse y (pre b xs'))))]
     [_                     xs]))
+
+;;; Section Maps
+
+;; Naive, non-balancing
+;; TODO: Make gooder
+(data (TreeMap k v)
+  TreeEmpty
+  (TreeNode k v (TreeMap k v) (TreeMap k v)))
+(define TreeEmpty (new TreeEmpty))
+(define (TreeNode k v l r) (new TreeNode k v l r))
+
+(data Cmp
+  Lt
+  Eq
+  Gt)
+
+(define Lt (new Lt))
+(define Eq (new Eq))
+(define Gt (new Gt))
+
+(define (lt? cmp)
+  (match cmp
+    [Lt true]
+    [_  false]))
+(define (eq? cmp)
+  (match cmp
+    [Eq true]
+    [_  false]))
+(define (gt? cmp)
+  (match cmp
+    [Gt true]
+    [_  false]))
+
+(define (insert-tree cmp-f tree k v)
+  (match tree
+    [TreeEmpty            (TreeNode k v TreeEmpty TreeEmpty)]
+    [(TreeNode k' v' l r) (match (cmp-f k k')
+                            [Lt (TreeNode k' v' (insert-tree cmp-f l k v) r)]
+                            [Gt (TreeNode k' v' l (insert-tree cmp-f r k v))]
+                            [Eq (TreeNode k' v l r)])]))
+
+(define (lookup-tree cmp-f tree k)
+  (match tree
+    [TreeEmpty           None]
+    [(TreeNode k' v l r) (match (cmp-f k k')
+                           [Lt (lookup-tree cmp-f l k)]
+                           [Gt (lookup-tree cmp-f r k)]
+                           [Eq (Some v)])]))
+
+(define (tree-from-list cmp-f kvs)
+  (foldl (lambda (acc kv) (insert-tree cmp-f acc (car kv) (cdr kv)))
+         TreeEmpty
+         kvs))
 
 ;;; Section Strings
 ;;;
@@ -130,6 +183,11 @@
 (data String
   StrEmpty
   (StrCons UInt32 String))
+
+(define (empty-s? s)
+  (match s
+    [StrEmpty true]
+    [_        false]))
 
 (define (c-to-s c)
   (pre-s c (new StrEmpty)))
@@ -148,7 +206,7 @@
     [(StrCons c s1') (new StrCons c (append-s s1' s2))]))
 
 (define (concat-s ss)
-  (fold append-s (new StrEmpty) ss))
+  (foldl append-s (new StrEmpty) ss))
 
 (define (to-digit n)
   (cast (+ 48 n) UInt32))
@@ -193,7 +251,7 @@
 (define: (nums-to-s xs)
     (constrain [(Num t)]
                (-> (List t) String))
-  (fold append-s "" (intersperse " " (map num-to-s xs))))
+  (foldl append-s "" (intersperse " " (map num-to-s xs))))
 
 ;;; Section Input/output
 
@@ -275,6 +333,18 @@
 (define (flip f a b) (f b a))
 
 ;;; Section Option and Either
+
+(data (Maybe a)
+  None
+  (Some a))
+
+(define None (new None))
+(define (Some a) (new Some a))
+
+(define (maybe-num-to-s m)
+  (match m
+    [None     "None"]
+    [(Some x) (concat-s (list "(Some " (num-to-s x) ")"))]))
 
 ;; ;;; Section Iteration
 
