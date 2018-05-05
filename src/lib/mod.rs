@@ -1,9 +1,7 @@
 pub use self::collections::ScopeStack;
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::once;
-use std::fmt;
-use std::io;
-use std::cmp;
+use std::{cmp, fmt, io, time};
 use std::path::{Path, PathBuf};
 
 #[macro_use]
@@ -65,4 +63,17 @@ impl fmt::Display for ErrCode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}.{}", self.module, self.number)
     }
+}
+
+/// Time an action and print out the result. Use for profiling/benchmarking purposes
+pub fn time_action<A, P, R>(action: A, print_f: P) -> R
+where
+    A: FnOnce() -> R,
+    P: FnOnce(String),
+{
+    let t0 = time::Instant::now();
+    let r = action();
+    let t = t0.elapsed();
+    print_f(format!("{}.{:04}", t.as_secs(), t.subsec_millis()));
+    r
 }

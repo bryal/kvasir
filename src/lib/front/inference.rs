@@ -928,10 +928,13 @@ impl<'a, 's: 'a> Inferrer<'a, 's> {
                 var.typ.clone()
             }
             Pattern::Deconstr(ref mut dec) => {
-                let adt_type = self.parent_type_of_variant(dec.constr.s).expect(&format!(
-                    "ICE: No parent type of variant `{}` in infer_pattern",
-                    dec.constr.s,
-                ));
+                let adt_type = self.parent_type_of_variant(dec.constr.s)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "ICE: No parent type of variant `{}` in infer_pattern",
+                            dec.constr.s,
+                        )
+                    });
                 let adt_inst = adt_type.get_adt_inst_args().unwrap_or(&[]);
                 let typ = self.unify(expected_type, &adt_type).unwrap_or_else(|_| {
                     dec.pos

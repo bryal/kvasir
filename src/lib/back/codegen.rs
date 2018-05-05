@@ -438,10 +438,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             let adt = self.adts
                 .defs
                 .get(name)
-                .expect(&format!(
-                    "ICE: No adt of name `{}` in get_or_gen_adt_by_name_and_inst",
-                    name
-                ))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ICE: No adt of name `{}` in get_or_gen_adt_by_name_and_inst",
+                        name
+                    )
+                })
                 .clone();
             if self.adts.adt_is_recursive(&adt) {
                 let inner = StructType::new_opaque(self.ctx, &format!("{}_in", name));
@@ -472,7 +474,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     fn gen_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         let (arg, ret) = typ.get_func()
-            .expect(&format!("ICE: Invalid function type `{}`", typ));
+            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
         let func_typ = self.gen_func_type(arg, ret);
         self.module.add_function(&id, func_typ)
     }
@@ -484,7 +486,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             "ICE: External function declarations may only be generated first"
         );
         let (at, rt) = typ.get_func()
-            .expect(&format!("ICE: Invalid function type `{}`", typ));
+            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let func_type = FunctionType::new(ret_type, &[arg_type]);
         self.module.add_function(&id, func_type)
@@ -499,11 +501,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ) -> &'ctx Function {
         let (at, rt) = func_type
             .get_func()
-            .expect(&format!("ICE: Invalid function type `{}`", func_type));
+            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", func_type));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
         let closure = self.module
-            .add_function(&format!("{}_closure", id), &clos_typ);
+            .add_function(&format!("closure_{}", id), &clos_typ);
         let entry = closure.append("entry");
         self.builder.position_at_end(entry);
         closure[0].set_name("DUMMY-CAPTURES");
@@ -861,10 +863,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let canon = typ.canonicalize();
         let rt = canon
             .get_func()
-            .expect(&format!(
-                "ICE: Invalid function type `{}`",
-                app.func.get_type(),
-            ))
+            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", app.func.get_type(),))
             .1;
         let ret_type = self.gen_type(rt);
         let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
@@ -1103,12 +1102,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let mut captures_vals = Vec::new();
         for (&fv, insts) in free_vars {
             for &(ref inst, _) in insts {
-                captures_vals.push(env.get_var(fv, inst).expect(&format!(
-                    "ICE: Free var not found in env\n\
-                     var: {}, inst: {:?}\n\
-                     env: {:?}",
-                    fv, inst, env
-                )))
+                captures_vals.push(env.get_var(fv, inst).unwrap_or_else(|| {
+                    panic!(
+                        "ICE: Free var not found in env\n\
+                         var: {}, inst: {:?}\n\
+                         env: {:?}",
+                        fv, inst, env
+                    )
+                }));
             }
         }
         let r = self.build_struct(&captures_vals);
@@ -1198,7 +1199,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         // are left as allocated, but undefined space. Second, fill in
         // captures with all closures with pointers available to refer
         // to.
-
         let empty_vec = vec![];
         // Flatten with regards to mono insts
         let mut bindings_insts: Vec<(_, &Vec<ast::Type>, _)> = Vec::new();
@@ -1212,7 +1212,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 }
             }
         }
-
         let mut lambdas_free_vars = VecDeque::new();
         for &(name, inst, val) in &bindings_insts {
             match *val {
@@ -1224,7 +1223,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 _ => (),
             }
         }
-
         for &(name, inst, val) in &bindings_insts {
             match val {
                 &ast::Expr::Lambda(ref lam) => {
@@ -1452,10 +1450,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             let adt_inner_type = self.named_types
                 .adts_inner
                 .get(&(adt.name.s, adt_inst.to_vec()))
-                .expect(&format!("ICE: No adts_inner type in gen_new\nadt {} of inst {:?} not in adts_inner: {:?}",
+                .unwrap_or_else(|| {
+                    panic!("ICE: No adts_inner type in gen_new\nadt {} of inst {:?} not in adts_inner: {:?}",
                                  adt.name.s,
                                  adt_inst,
-                                 self.named_types.adts_inner));
+                                 self.named_types.adts_inner)
+                });
             let wrapped_largest =
                 self.build_struct_of_type(&[tag, unwrapped_largest], adt_inner_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
@@ -1466,10 +1466,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             let adt_type = self.named_types
                 .adts
                 .get(&(adt.name.s, adt_inst.to_vec()))
-                .expect(&format!(
-                    "ICE: No adts type in gen_new\nadt {} of inst {:?} not in adts: {:?}",
-                    adt.name.s, adt_inst, self.named_types.adts
-                ));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ICE: No adts type in gen_new\nadt {} of inst {:?} not in adts: {:?}",
+                        adt.name.s, adt_inst, self.named_types.adts
+                    )
+                });
             let wrapped_largest = self.build_struct_of_type(&[tag, unwrapped_largest], adt_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
             wrapped_largest
@@ -1703,10 +1705,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
         let mut env = Env::new();
 
-        // Generate core functions
         self.gen_core_funcs(&mut env);
-
-        // Generate extern declarations
         self.gen_extern_decls(&mut env, &ast.externs);
 
         // Create wrapping, entry-point `main` function

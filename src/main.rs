@@ -78,10 +78,11 @@
 // TODO: Base macro system on pure functions that has syntax trees as input and output.
 //       This would require some kind of interpretation in order to execute code at compile time
 
-#![feature(non_ascii_idents, box_syntax, box_patterns)]
+#![feature(non_ascii_idents, box_syntax, box_patterns, duration_extras)]
 
 extern crate bitflags;
 extern crate cbox;
+extern crate cpuprofiler;
 extern crate getopts;
 extern crate itertools;
 #[macro_use]
@@ -93,7 +94,7 @@ extern crate maplit;
 extern crate term;
 
 use getopts::Options;
-use lib::CanonPathBuf;
+use lib::{time_action, CanonPathBuf};
 use lib::collections::AddMap;
 use lib::back::compile;
 use lib::front::inference::infer_types;
@@ -136,7 +137,10 @@ fn print_usage(program: &str, opts: Options) {
 }
 
 fn main() {
-    let start_time = time::Instant::now();
+    //use cpuprofiler::PROFILER;
+    //PROFILER.lock().unwrap().start("./prof.profile").unwrap();
+
+    let t_start = time::Instant::now();
     let args: Vec<_> = env::args().collect();
     let bin_name = args[0].clone();
     let mut opts = Options::new();
@@ -188,10 +192,19 @@ fn main() {
 
     let mut type_var_generator = lib::front::TypeVarGen::new(0);
     let sources = AddMap::new();
-    let mut ast = parse_program(inp_filename, &sources, &mut type_var_generator);
+
+    let mut ast = time_action(
+        || parse_program(inp_filename, &sources, &mut type_var_generator),
+        |t| println!("    Parsed source in {} secs", t),
+    );
     //println!("parsed:\n\n{}", ast);
-    infer_types(&mut ast, &mut type_var_generator);
+
+    time_action(
+        || infer_types(&mut ast, &mut type_var_generator),
+        |t| println!("    Infered types and monomorphization in {} secs", t),
+    );
     //println!("inferred:\n\n{}", ast);
+
     compile(
         &ast,
         out_filename,
@@ -201,8 +214,12 @@ fn main() {
         &lib_paths,
     );
 
+    let t = t_start.elapsed();
     println!(
-        "    Finished building target in {} secs",
-        start_time.elapsed().as_secs()
-    )
+        "    Finished building target in {}.{:04} secs",
+        t.as_secs(),
+        t.subsec_millis()
+    );
+
+    //PROFILER.lock().unwrap().stop().unwrap();
 }

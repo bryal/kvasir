@@ -1,7 +1,7 @@
 use self::llvm::{Builder, Context, Module};
 use self::codegen::*;
 use Emission;
-use lib::CanonPathBuf;
+use lib::{time_action, CanonPathBuf};
 use lib::front::ast;
 use std::fs;
 use std::io::Write;
@@ -22,16 +22,24 @@ pub fn compile(
     let context = Context::new();
     let builder = Builder::new(&context);
     let module = Module::new("main", &context);
+
     let mut codegenerator = CodeGenerator::new(&context, &builder, &module, ast.adts.clone());
+    time_action(
+        || codegenerator.gen_executable(&ast),
+        |t| println!("    Generated LLVM code in {} secs", t),
+    );
 
-    codegenerator.gen_executable(&ast);
-
-    // codegenerator.module.verify().unwrap_or_else(|e| {
-    //     panic!(
-    //         "Verifying module failed\nmodule: {:?}\nerror: {}",
-    //         codegenerator.module, e
-    //     )
-    // });
+    time_action(
+        || {
+            codegenerator.module.verify().unwrap_or_else(|e| {
+                panic!(
+                    "Verifying module failed\nmodule: {:?}\nerror: {}",
+                    codegenerator.module, e
+                )
+            })
+        },
+        |t| println!("    Verified LLVM module in {} secs", t),
+    );
 
     let with_ext_unless_explicit = |ext| {
         if explicit_filename {
@@ -51,46 +59,64 @@ pub fn compile(
                     e
                 )
             });
-
-            write!(ir_file, "{:?}", codegenerator.module).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to write IR to `{}`, {}",
-                    ll_filename.path().display(),
-                    e
-                )
-            })
+            time_action(
+                || {
+                    write!(ir_file, "{:?}", codegenerator.module).unwrap_or_else(|e| {
+                        panic!(
+                            "Failed to write IR to `{}`, {}",
+                            ll_filename.path().display(),
+                            e
+                        )
+                    })
+                },
+                |t| println!("    Wrote LLVM IR to file in {} secs", t),
+            );
         }
         Emission::LlvmBc => {
             let bc_filename = with_ext_unless_explicit("bc");
-            codegenerator
-                .module
-                .write_bitcode(&bc_filename.path().to_string_lossy())
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to write bitcode to `{}`, {}",
-                        bc_filename.path().display(),
-                        e
-                    )
-                })
+            time_action(
+                || {
+                    codegenerator
+                        .module
+                        .write_bitcode(&bc_filename.path().to_string_lossy())
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "Failed to write bitcode to `{}`, {}",
+                                bc_filename.path().display(),
+                                e
+                            )
+                        })
+                },
+                |t| println!("    Wrote LLVM bitcode in {} secs", t),
+            );
         }
         Emission::Obj => {
             let obj_filename = with_ext_unless_explicit("o");
-            codegenerator
-                .module
-                .compile(obj_filename.path(), 0)
-                .expect("Failed to compile module")
-                .wait()
-                .expect("Failed to wait on compilation child");
+            time_action(
+                || {
+                    codegenerator
+                        .module
+                        .compile(obj_filename.path(), 0)
+                        .expect("Failed to compile module")
+                        .wait()
+                        .expect("Failed to wait on compilation child")
+                },
+                |t| println!("    Compiled LLVM module to object in {} secs", t),
+            );
         }
         Emission::Exe => {
             let obj_path = out_filename.path().with_extension("o");
-
-            codegenerator
-                .module
-                .compile(&obj_path, 0)
-                .expect("Failed to compile module")
-                .wait()
-                .expect("Failed to wait on compilation child");
+            time_action(
+                || {
+                    codegenerator
+                        .module
+                        .compile(&obj_path, 0)
+                        .expect("Failed to compile module")
+                        .wait()
+                        .expect("Failed to wait on compilation child")
+                },
+                |t| println!("    Compiled LLVM module to object in {} secs", t),
+            );
 
             let mut clang = Command::new("clang");
             clang
@@ -119,9 +145,20 @@ pub fn compile(
                 clang.args(&["-l", lib]);
             }
 
-            let output = clang.output().unwrap_or_else(|e| {
-                panic!("Failed to execute linking process: `{:?}`\n{}", clang, e)
-            });
+            let output = time_action(
+                || {
+                    clang.output().unwrap_or_else(|e| {
+                        panic!("Failed to execute linking process: `{:?}`\n{}", clang, e)
+                    })
+                },
+                |t| {
+                    println!(
+                        "    Compiled and linked object to executable with clang in {} secs",
+                        t
+                    )
+                },
+            );
+
             fs::remove_file(obj_path).expect("Failed to remove intermediate obj file");
             if !output.status.success() {
                 panic!(

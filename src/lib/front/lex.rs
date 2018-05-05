@@ -317,15 +317,15 @@ pub fn lex_file<'s>(
 ) -> Vec<Cst<'s>> {
     let mut src_code = String::new();
     File::open(filename.path())
-        .expect(&format!(
-            "Failed to open file `{}`",
-            filename.path().display()
-        ))
+        .unwrap_or_else(|e| panic!("Failed to open file `{}`. {}", filename.path().display(), e))
         .read_to_string(&mut src_code)
-        .expect(&format!(
-            "Reading contents of `{}` failed",
-            filename.path().display()
-        ));
+        .unwrap_or_else(|e| {
+            panic!(
+                "Reading contents of `{}` failed. {}",
+                filename.path().display(),
+                e
+            )
+        });
     let (filename_ref, src_ref) = sources.add(filename, src_code);
     lex_src(filename_ref.path(), src_ref)
 }
