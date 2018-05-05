@@ -5,7 +5,7 @@ The project may be difficult to build and buggy to use./
 
 ** About
    Kvasir is a toy programming language, much inspired by Haskell, LISP/Scheme/Racket, and Rust.
-   Kvasir is intended to in the future maybe be used for interactive and type-safe game programming.
+   Kvasir is intended to in the future maybe be used for interactive and type-safe game programming. Who knows.
 
 *** Example
 
@@ -23,16 +23,27 @@ The project may be difficult to build and buggy to use./
                (else
                 (iter (* acc b) b (- i 1))))]]
     (iter 1 b n)))
+
+;; The algebraic data type of a singly linked list
+(data (List a)
+  Empty              ; Either the list is empty
+  (Node a (List a))) ; or it's an element followed by the rest of the list
+  
+;; Mapping a function over each element of a list
+(define (map f xs)
+  (match xs
+    [Empty        (new Empty)]
+    [(Node x xs') (new Node (f x) (map f xs'))]))
 #+END_SRC
 
 *** Features
-    - LISP style, parenthesis based syntax.
-    - Strong, static typing
-    - Parametric polymorphism (will be upgraded with traits/interfaces/type classes some day)
+    - Lisp style, parenthesis based syntax. Looks quite Scheme-y.
+    - Static typing
+    - (TODO: Bounded) parametric polymorphism
     - Global type inference
-    - Reference count garbage collection (lacking and broken at the moment)
+    - Reference count garbage collection (unimplemented)
     - Efficient C bindings/ffi
-    - LLVM backend (should imply simple cross-compilation, but has not been tried yet)
+    - LLVM backend
 
 ** Building from source
    The following tools and packages are required to build:
@@ -117,17 +128,22 @@ $ ./examples/test.bin
    #+END_EXAMPLE
 
 ** Roadmap
-   - Comprehensive standard library
-   - Modules
-   - Ad hoc polymorphism a la ={(traits, Rust), (type classes, Haskell)}=
-   - Build system / package manager
+   - [_] Comprehensive standard library (Ongoing WIP)
+   - [_] Modules (Basic import system exists, but does not solve name collisions)
+   - [x] Algebraic data types
+   - [x] Pattern matching
+   - [x] Unbounded parametric polymorphism (I.e. Hindley-Milner)
+   - [_] Bounded parametric polymorphism (à la typeclasses/traits/interfaces)
+   - [_] Higher kinded types (to allow for stuff like Functor, Applicative, Monad)
+   - [x] Macros
+   - [_] Build system / package manager
 
 ** Contributing
    As this is a project for education and fun, I'm not much interested in outside help with implementation.
-   However, please do open issues for bugs and feature suggestions. I would certainly appreciate that!
+   However, bug reports, feature suggestions, and comments in general are welcome!
 
 ** License
-   Copyright (C) 2017 Johan Johansson
+   Copyright (C) 2018 Johan Johansson
 
    GPLv3
 
