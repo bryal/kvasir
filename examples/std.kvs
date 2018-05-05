@@ -13,6 +13,14 @@
 
 ;;; Section Logic and Math
 
+(extern exp (-> Float64 Float64))
+(extern log (-> Float64 Float64))
+(extern sin (-> Float64 Float64))
+(extern cos (-> Float64 Float64))
+
+(define (pow b e)
+  (exp (* e (log b))))
+
 (define (not b) (if b false true))
 
 (define (+ x y) (add (cons x y)))
@@ -32,6 +40,8 @@
 
 (define (min a b) (if (< a b) a b))
 (define (max a b) (if (> a b) a b))
+
+(define (square x) (* x x))
 
 (define (neg x) (- 0 x))
 
@@ -266,64 +276,63 @@
 
 ;;; Section Option and Either
 
-(define (right x) (cons true x))
-(define (left x) (cons false x))
-(define (is-right option) (car option))
-(define (is-left option) (not (is-right option)))
-(define (unwrap option) (cdr option))
+;; ;;; Section Iteration
 
-;;; Section Iteration
+;; (define (next iterator)
+;;   (let [[f      (car iterator)]
+;;         [state  (cdr iterator)]
+;;         [r      (f state)]
+;;         [item   (car r)]
+;;         [state2 (cdr r)]]
+;;     (cons item (cons f state2))))
 
-(define (next iterator)
-  (let [[f      (car iterator)]
-        [state  (cdr iterator)]
-        [r      (f state)]
-        [item   (car r)]
-        [state2 (cdr r)]]
-    (cons item (cons f state2))))
+;; ;;? Returns an iterator of the numbers from `n` to `m`
+;; (define (range n m)
+;;   (cons (lambda (i)
+;;           (if (< i m)
+;;               (cons (right i) (+ i 1))
+;;             (cons (left i) i)))
+;;         n))
 
-;;? Returns an iterator of the numbers from `n` to `m`
-(define (range n m)
-  (cons (lambda (i)
-          (if (< i m)
-              (cons (right i) (+ i 1))
-            (cons (left i) i)))
-        n))
+;; (define (for iterator f state)
+;;   (let [[r          (next iterator)]
+;;         [maybe-item (car r)]
+;;         [iterator2  (cdr r)]]
+;;     (if (is-right maybe-item)
+;;         (for iterator2 f (f (unwrap maybe-item) state))
+;;       state)))
 
-(define (for iterator f state)
-  (let [[r          (next iterator)]
-        [maybe-item (car r)]
-        [iterator2  (cdr r)]]
-    (if (is-right maybe-item)
-        (for iterator2 f (f (unwrap maybe-item) state))
-      state)))
+(define (for-io xs io real-world)
+  (if (empty? xs)
+      (cons nil real-world)
+    (for-io (tail xs) io (cdr (io (head xs) real-world)))))
 
-(define (for-io iterator f real-world)
-  (let [[r          (next iterator)]
-        [maybe-item (car r)]
-        [iterator2  (cdr r)]]
-    (if (is-right maybe-item)
-        (for-io iterator2 f (cdr (f (unwrap maybe-item) real-world)))
-      (cons nil real-world))))
+;; (define (loop-n-times-io n f)
+;;   (for-io (range 0 n)
+;;           (lambda (_) f)))
 
-(define (loop-n-times-io n f)
-  (for-io (range 0 n)
-          (lambda (_) f)))
+;; (define (do-while-io f real-world)
+;;   (let [[r           (f real-world)]
+;;         [real-world2 (cdr r)]]
+;;     (if (is-right (car r))
+;;         (do-while-io f real-world2)
+;;       (cons nil real-world2))))
 
-(define (do-while-io f real-world)
-  (let [[r           (f real-world)]
-        [real-world2 (cdr r)]]
-    (if (is-right (car r))
-        (do-while-io f real-world2)
-      (cons nil real-world2))))
+;; (define (continue-while-io io)
+;;   (map-io right io))
 
-(define (continue-while-io io)
-  (map-io right io))
-
-(define (break-while-io io)
-  (map-io left io))
+;; (define (break-while-io io)
+;;   (map-io left io))
 
 ;;; Section Misc / Builtin / Core / Intrinsics
+
+(define: (id x)
+    (-> t t)
+  x)
+
+(define: (const c x)
+    (-> a b a)
+  c)
 
 (define: (undef _)
     (-> Nil t)

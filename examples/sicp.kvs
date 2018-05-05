@@ -1,15 +1,8 @@
-;;; Solving the exercises of SICP in Kvasir
+;;; Solving the exercises of SICP in Kvasir (note: Many are added to std)
 
 (import std)
 
 ;;; 1.3
-(define (max x y)
-  (if (> x y)
-      x
-    y))
-
-(define (square x) (* x x))
-
 (define (sum-squares x y)
   (+ (square x) (square y)))
 
@@ -80,5 +73,113 @@
 (define (divides? a b)
   (= (remainder b a) 0))
 
+;; Section 2.3.2 - Symbolic Differentiation
+
+;; We create a data type `FunExpr` that will represent symbolic
+;; expressions of functions in our language.
+(data FunExpr
+  ;; First of all, there are the elementary functions. We can't have them
+  ;; all, that would get too repetitive to implement, but we'll put in all
+  ;; the fun ones.
+  Exp Log Sin Cos
+  
+  ;; Then, there are the arithmetic operators
+  (Add FunExpr FunExpr)
+  (Sub FunExpr FunExpr)
+  (Mul FunExpr FunExpr)
+  (Div FunExpr FunExpr)
+  (Pow FunExpr FunExpr)
+  
+  ;; And then there's the single variable. As everything is a function
+  ;; expression, the function that best represents "just a variable" would
+  ;; be $x \mapsto x$, which is the same as the $id$ function.
+  Id
+  
+  ;; In a similar vein, the constant function. $const(c) = x \mapsto c$
+  (Const Float64)
+  
+  ;; Lastly, there's function composition
+  (Comp FunExpr FunExpr))
+
+(define Id (new Id))
+(define (Const c) (new Const c))
+(define Exp (new Exp))
+(define Log (new Log))
+(define Sin (new Sin))
+(define Cos (new Cos))
+(define (Add f g) (new Add f g))
+(define (Sub f g) (new Sub f g))
+(define (Mul f g) (new Mul f g))
+(define (Div f g) (new Div f g))
+(define (Pow f g) (new Pow f g))
+(define (Comp f g) (new Comp f g))
+
+;; We define a function to symbolically derive a function
+;; expression. `derive` takes a function expression, and returns the
+;; differentiated function expression.
+(define: (derive e)
+    (-> FunExpr FunExpr)
+  (match e
+    [Exp        Exp]    
+    [Log        (Div (Const 1) Id)]
+    [Sin        Cos]
+    [Cos        (Sub (Const 0) Sin)]
+    [(Add f g)  (Add (derive f) (derive g))]
+    [(Sub f g)  (Sub (derive f) (derive g))]
+    [(Mul f g)  (Add (Mul (derive f) g)
+                     (Mul f (derive g)))]
+    [(Div f g)  (Div (Sub (Mul (derive f) g)
+                          (Mul f (derive g)))
+                     (Pow g (Const 2)))]
+    [(Pow f g)  (Mul (Pow f (Sub g (Const 1)))
+                     (Add (Mul g (derive f))
+                          (Mul (Mul f (Comp Log f)) (derive g))))]
+    [Id         (Const 1)]
+    [(Const _)  (Const 0)]
+    [(Comp f g) (Mul (Comp (derive f) g) (derive g))]))
+
+;; One way of using a function expression is to evaluate it, and use it
+;; just as you would a normal Kvasir function. To do this, we need to
+;; write an evaluator.
+;;
+;; An evaluator simply takes a syntactic representation and returns the
+;; semantic value, i.e. `eval :: SYNTAX -> SEMANTICS`.
+
+(define: (eval e)
+    (-> FunExpr (-> Float64 Float64))
+  (match e  
+    ;; To then evaluate a `FunExpr` is not very complicated. The elementary
+    ;; functions and the `Id` function are simply substituted for their
+    ;; Kvasir counterparts.
+    [Exp          exp]
+    [Log          log]
+    [Sin          sin]
+    [Cos          cos]
+    [Id           id]
+    [(Const c)    (const c)]
+
+    ;; How to evaluate arithmetic operations on functions may not be as
+    ;; obvious, but we just implement them as they were defined earlier in
+    ;; the section.
+    [(Add f g)    (lambda (x) (+ (eval f x) (eval g x)))]
+    [(Sub f g)    (lambda (x) (- (eval f x) (eval g x)))]
+    [(Mul f g)    (lambda (x) (* (eval f x) (eval g x)))]
+    [(Div f g)    (lambda (x) (/ (eval f x) (eval g x)))]
+    [(Pow f g)    (lambda (x) (pow (eval f x) (eval g x)))]
+
+    ;; Function composition is similarly evaluated according to the earlier definition
+    [(Comp f g)   (lambda (x) (eval f (eval g x)))]))
+
 (define main
-  (display (num-to-s 123.456)))
+  (let [;; fe = sin(x)*x + e^cos(x)
+        [fe (Add (Mul Sin Id) (Comp Exp Cos))]
+        [de (derive fe)]
+        [d  (eval de)]
+        ;; d = D(sin(x)*x + e^cos(x)) = sin(x) + x*cos(x) - sin(x)*e^cos(x)
+        [d' (lambda (x) (- (+ (sin x) (* x (cos x))) (* (sin x) (exp (cos x)))))]]
+    (for-io (list 0 0.5 1 1.5 2)
+            (lambda (x)
+              (let [[x-s  (num-to-s x)]
+                    [d-s  (num-to-s (d x))]
+                    [d'-s (num-to-s (d' x))]]
+                (display (concat-s (list "x = " x-s ":  \td(x)=" d-s ",         \td'(x)=" d'-s))))))))
