@@ -137,6 +137,7 @@ $ ./examples/test.bin
    - [_] Higher kinded types (to allow for stuff like Functor, Applicative, Monad)
    - [x] Macros
    - [_] Build system / package manager
+   - [_] Working refcount garbage collection (broken/partly unimplemented atm)
 
 ** Contributing
    As this is a project for education and fun, I'm not much interested in outside help with implementation.

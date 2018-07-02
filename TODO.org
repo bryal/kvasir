@@ -1,0 +1,244 @@
+* Kvasir
+  :FILES: [[file:./Cargo.toml][Cargo.toml]]
+  A compiler for a statically compiled language similar to
+  Rust/Haskell, but with lisp-syntax.
+
+
+** Big ideas
+*** Everything is immutable
+    Implies simple memory management with RC, simple concurrency,
+    simpler type system, etc.
+    Basically make it Haskell with parens :p
+
+*** Represent impure actions with type like haskells ~IO a~
+    using a faux-real-world type, like ~(-> RealWorld (Cons a RealWorld))~
+    Make RealWorld a linear type to prevent violation of referential
+    transparency.
+    [[https://wiki.haskell.org/IO_inside#Welcome_to_the_RealWorld.2C_baby][Haskell IO: RealWorld]]
+
+
+** Syntax
+*** DONE Treat square brackets same as parens
+    Many lisps do this. Some people feel it helps readability to be
+    able to write stuff like
+    : (let [(a 3)
+    :       (b a)]
+    :   (+ a b))
+**** Closed
+     Was easily added. Just a couple of changes in the lexer along the lines of
+     : '(' => (Token::LParen, 1),
+     to
+     : '(' | '[' => (Token::LParen, 1),
+     . I think it's a good change. Sometimes square brackets just feel
+     more appropriate, or helps with distinguishability / visual
+     unambiguity. If I ever find a better use for brackets; like
+     struct literals, some kind of special form, macros, or whatever;
+     this may change.
+
+*** DONE Syntax for polytypes
+    I'm not sure what I meant with this. Syntax for type parameter
+    declaration in signatures? I've already added this syntax
+    : (define: (int x)
+    :     (constrain [(Num t)] (-> t Int64))
+    :   (cast x Int64))
+    So I'll mark this as done for now, but there may be more syntax
+    that need adding/freshening up that I've forgotten about.
+**** Closed
+     The typed variant of definition statements, ~define:~, may have
+     constraints on the type, using the syntax shown in the problem
+     definition above. These constraints are gathered in the parsing
+     phase, and delivered on to the inference phase through the
+     ~params~ field of the ~Poly~ that represents the definition type
+     signature.
+
+*** INACTIVE Define and document syntax formally
+    Preferably as part of a book or a (single-page) reference with
+    both syntax definition, examples, and description. The Rust
+    reference does this well, see [[https://doc.rust-lang.org/reference/items/modules.html][the page on Modules]].
+
+*** INACTIVE Consider rewriting parser with parser generators
+    I don't hate the current implementation. I rewrote it recently to
+    be a bit more combinator-ish, but it's still not really. The current implementation is for the most part quite readable, e.g.
+    : fn parse_cons_type(&mut self, csts: &[Cst<'s>], pos: &SrcPos<'s>) -> PRes<'s, Type<'s>> {
+    :     let (a, b) = two(csts, pos)?;
+    :     let car = self.parse_type(a)?;
+    :     let cdr = self.parse_type(b)?;
+    :     Ok(Type::new_cons(car, cdr))
+    : }
+    The only problem is really the repetition of type signatures
+    and just the overall length of ~parser.rs~, over 1370 lines!
+    Parser combinators are really nice to work with in general, but
+    parsers may just be inherently more complex in Rust than in
+    Haskell, which I'm comparing to. Also, my current error handling
+    in the parser is all right, while error handling of parser
+    combinators is often lacking.
+
+
+** Module system
+   :FILES: [[file:./src/lib/front/parse.rs::"import"%20=>][parse_module]]
+*** INACTIVE Parse modules
+    The system in place is not very good. Basically, it does a
+    CST-level import of all referenced modules to the same, global
+    scope. No namespacing, no collision handling. Basically, just as
+    usefull/useless as C's ~include~. I quite like how Rust does
+    modules, and feel that Kvasir should emulate.
+
+*** INACTIVE Use modules when infering types and generating code
+    Not sure what I meant when I wrote this, but it sounds cool!
+    Investigate!
+
+
+** Type system
+   :FILES: [[file:./src/lib/front/inference.rs][inference]]
+*** INACTIVE Make core types; like ints, string, etc; discrete enum variants?
+    I think this is in reference to the current, somehow messy,
+    implementation of core types using ~TypeFunc::Const(&str)~,
+    ~Type::Const(&str, ..)~, ~TypeDef~, and constants like ~pub static
+    ref TYPE_FLOAT64: Type<'static> = Type::Const("Float64",
+    None);~. Indeed, having all core types as variants of some enum
+    would probably help in some ways, but may also cause trouble in
+    others. I need to ponder this.
+
+*** DONE Polymorphic and recursive type inference
+    ~(: id (forall (t) (-> t t)))~, ~(define (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))~, etc
+**** Inference
+     The cool part in ~inference.rs~.
+***** Closed
+      I remember this taking quite some time to get right! In the end,
+      Hindley Milner and DAGs/Dependency graphs did the job!
+**** Code generation
+     Fix code generation for lambdas and monomorphic instantiations mostly.
+***** Get free vars in lambda
+***** Generate function for the lambda that takes lambda param and captures as args
+***** Generate code for capturing env and store in Rc together with function pointer
+***** Closed
+      Yeah, I did that. The code for all this is a little bit
+      messy. May revisit at some point.
+
+*** NEXT Abstract Data Types
+    Interfaces and implementations like traits in Rust, or like typeclasses in Haskell?
+    Would be especially useful for numbers
+
+*** INACTIVE Encode state of inferencing in ast type, like `Ast<Option<Type>>` and `Ast<Type>`?
+    Just an idea I had. Not sure it would actually be useful. May just
+    result in verbose type signatures everywhere.
+
+*** INACTIVE Linear and affine types
+    Linear types would allow predictable performance and behaviour
+    of e.g. IO tasks. Force a single manual file-close
+    or buffer-flush. Force a single free for malloc.
+    Affine types would allow better performance.
+    E.g. pure, in-place modification of array.
+    If noone else points to it, value can be consumed and modified
+    rather than cloned. Something like:
+    ~fn push(mut v: Vec<i32>, x: i32) -> Vec<i32> { v.push(x); v }~
+    Implemented as maybe a wrapper, or an interface?
+    Maybe like in haskell with lolly operator?
+    [[http://docs.idris-lang.org/en/latest/reference/uniqueness-types.html][Check out idris Uniqueness Types]]
+
+
+** Syntax extensions (macros)
+   Synonymous to compile-time execution of code.
+   [[http://docs.julialang.org/en/stable/manual/metaprogramming/][Julia metaprogramming]], [[http://docs.racket-lang.org/guide/stx-obj.html][Racket syntax objects]].
+   Allow execution of any pure functions.
+   Pure function that has syntax as both input and output is a macro.
+   ~(macro (foo bar))~ == ~(attr [pure] (fn (foo bar)))~
+*** DONE Simple, CST-level macros
+    Much like the macros in Scheme and the like. Relatively simple to
+    implement, mostly simple to use, but bad error messages and not
+    very safe/sanitary.
+*** INACTIVE Advanced, AST-level syntax extensions
+    Could be implemented using compile-time execution of functions
+    tagged as macros or something.
+
+
+** Pattern matching and Algebraic data types
+*** DONE The heart of it
+**** Closed
+     We've got the ~data~ form to define ADTs, the ~new~ form to
+     construct a new value of a variant, the ~match~ form to match on
+     ADTs and unpack.
+
+*** INACTIVE Improve UX by generating functions instead of ~new~ etc.
+    Currently the ADTs are not great to work with. You need to use the
+    ~new~ form to create new values, and that can get a bit
+    wordy. E.g. having to write ~(new None)~ instead of just
+    ~None~. I'm not sure generation is the way to go, but maybe.
+
+*** `if` should be made redundant by pattern matching
+    and defining bool as `(data Bool True False)`
+    (macro if
+       [(condition consequent alternative)
+        (match condition
+          [True consequent]
+          [False alternative])])
+**** Closed
+     Ended up not doing this, mostly due to bad UX with macros based
+     impl. May change in the future
+
+*** DONE `let` could be made redundant by pattern matching
+    (macro let
+       [([(... [patterns p-bodies])] let-body)
+        (match (Tuple (... p-bodies))
+          [(Tuple (... patterns)) let-body])])
+**** Closed
+     No, not really. I can't remember the details atm, but
+     polymorphism works differently
+
+*** INACTIVE Cons, cons, car, and cdr should be made redundant by algebraic data types and pattern matching
+    Maybe, but not before I've added Abstract Data Types I think.
+
+
+** INACTIVE Language server protocol					:IDE:
+  [[https://github.com/Microsoft/language-server-protocol]]
+  [[https://internals.rust-lang.org/t/introducing-rust-language-server-source-release/4209]]
+
+
+** INACTIVE Alternative llvm library
+   https://dylanmckay.io/hllvm/hllvm/ or just plain LLVM C-api.
+   The current llvm wrapper by TomBebbington is not great.
+
+
+** INACTIVE On-demand compilation :on_demand:incremental:compilation:red_green:
+   Instead of performing typecheck and codegen in discrete steps for the whole program,
+   [[https://youtu.be/COrl851gMTY?t%3D1253][RustConf 2017, Niko on On-demand and Incremental compilation]]
+   Would allow for dependent types. When a value function is referenced in a type expression,
+   compile exactly that function and the minimum amount of dependencies, evaluate it, and
+   keep on compiling. Might also fit well with incremental compilation
+
+
+** NEXT Comprehensive testing
+   Both unit tests and property based testing with quickcheck
+
+
+** INACTIVE Implement `match` as a macro
+   of `if`s / `cond`s and `let`s, using generated
+   variant-{test,unwrap} functions.  Update: I'm not sure this is the
+   way to go. Also, the current match works well enough.
+
+
+** TODO Variable shadowing
+   It seems to be broken atm. Check out ScopeStack::push
+
+
+** Misc. features and TODOs
+*** NEXT make keywords in error messages bold
+
+*** INACTIVE Default, opt-out derives
+    Automatically implement interface like rusts ~Debug~
+    for all types by default. Similar to how ~Sync~ and ~Send~
+    is automatically implemented for all appropriate types.
+    ~Debug~ by default would prevent annoying scenarios
+    where you need to do some printf debugging, but some type
+    from a library does not implement it!
+
+*** INACTIVE Cycle breaker for reference count GC?
+    May be necessary if we want guarantees of not running out of
+    memory due to bad GC for "badly" written programs.
+
+*** NEXT Why is ~self~ passed as immut borrow in methods to ~CodeGenerator~ in [[file:~/Dropbox/Program/kvasir-lang/src/lib/back/llvm.rs][llvm]]?
+
+*** TODO Fix refcount GC
+    Currently, very broken. References aren't properly
+    incremented/decremented in generated code, and refs of count=0
+    aren't deallocated!
