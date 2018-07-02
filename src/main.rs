@@ -195,13 +195,13 @@ fn main() {
 
     let mut ast = time_action(
         || parse_program(inp_filename, &sources, &mut type_var_generator),
-        |t| println!("    Parsed source in {} secs", t),
+        |t| println!("    Parsed source in {}s", t),
     );
     //println!("parsed:\n\n{}", ast);
 
     time_action(
         || infer_types(&mut ast, &mut type_var_generator),
-        |t| println!("    Infered types and monomorphization in {} secs", t),
+        |t| println!("    Infered types and monomorphization in {}s", t),
     );
     //println!("inferred:\n\n{}", ast);
 
@@ -216,7 +216,7 @@ fn main() {
 
     let t = t_start.elapsed();
     println!(
-        "    Finished building target in {}.{:04} secs",
+        "    Finished building target in {}.{:04}s",
         t.as_secs(),
         t.subsec_millis()
     );

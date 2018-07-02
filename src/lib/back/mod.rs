@@ -26,7 +26,7 @@ pub fn compile(
     let mut codegenerator = CodeGenerator::new(&context, &builder, &module, ast.adts.clone());
     time_action(
         || codegenerator.gen_executable(&ast),
-        |t| println!("    Generated LLVM code in {} secs", t),
+        |t| println!("    Generated LLVM code in {}s", t),
     );
 
     time_action(
@@ -38,7 +38,7 @@ pub fn compile(
                 )
             })
         },
-        |t| println!("    Verified LLVM module in {} secs", t),
+        |t| println!("    Verified LLVM module in {}s", t),
     );
 
     let with_ext_unless_explicit = |ext| {
@@ -69,7 +69,7 @@ pub fn compile(
                         )
                     })
                 },
-                |t| println!("    Wrote LLVM IR to file in {} secs", t),
+                |t| println!("    Wrote LLVM IR to file in {}s", t),
             );
         }
         Emission::LlvmBc => {
@@ -87,7 +87,7 @@ pub fn compile(
                             )
                         })
                 },
-                |t| println!("    Wrote LLVM bitcode in {} secs", t),
+                |t| println!("    Wrote LLVM bitcode in {}s", t),
             );
         }
         Emission::Obj => {
@@ -101,7 +101,7 @@ pub fn compile(
                         .wait()
                         .expect("Failed to wait on compilation child")
                 },
-                |t| println!("    Compiled LLVM module to object in {} secs", t),
+                |t| println!("    Compiled LLVM module to object in {}s", t),
             );
         }
         Emission::Exe => {
@@ -115,7 +115,7 @@ pub fn compile(
                         .wait()
                         .expect("Failed to wait on compilation child")
                 },
-                |t| println!("    Compiled LLVM module to object in {} secs", t),
+                |t| println!("    Compiled LLVM module to object in {}s", t),
             );
 
             let mut clang = Command::new("clang");
@@ -153,7 +153,7 @@ pub fn compile(
                 },
                 |t| {
                     println!(
-                        "    Compiled and linked object to executable with clang in {} secs",
+                        "    Compiled and linked object to executable with clang in {}s",
                         t
                     )
                 },
