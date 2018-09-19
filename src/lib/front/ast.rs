@@ -1333,39 +1333,54 @@ impl<'s> Adts<'s> {
         }
     }
 
-    fn is_rec_const(&self, name: &str, origin: &str) -> bool {
+    /// History keeps track of the definitions we've entered, so we
+    /// don't get stuck in loops for cases like
+    ///
+    /// ```
+    /// (data String
+    ///   StrEmpty
+    ///   (StrCons UInt32 String))
+    /// (data (Show a)
+    ///   (Show (-> a String)))
+    /// ```
+    fn is_rec_const(&self, name: &str, origin: &str, history: &mut BTreeSet<String>) -> bool {
         if name == origin {
             true
+        } else if history.contains(name) {
+            false
         } else if let Some(def) = self.defs.get(name) {
-            self.is_rec_adt(def, origin)
+            history.insert(name.to_string());
+            self.is_rec_adt(def, origin, history)
         } else {
             false
         }
     }
 
-    fn is_rec_typefunc(&self, tf: &TypeFunc, origin: &str) -> bool {
+    fn is_rec_typefunc(&self, tf: &TypeFunc, origin: &str, history: &mut BTreeSet<String>) -> bool {
         match *tf {
-            TypeFunc::Const(s) => self.is_rec_const(s, origin),
-            TypeFunc::Poly(ref p) => self.is_rec_type(&p.body, origin),
+            TypeFunc::Const(s) => self.is_rec_const(s, origin, history),
+            TypeFunc::Poly(ref p) => self.is_rec_type(&p.body, origin, history),
         }
     }
 
-    fn is_rec_type(&self, t: &Type, origin: &str) -> bool {
+    fn is_rec_type(&self, t: &Type, origin: &str, history: &mut BTreeSet<String>) -> bool {
         match *t {
-            Type::Const(s, _) => self.is_rec_const(s, origin),
+            Type::Const(s, _) => self.is_rec_const(s, origin, history),
             Type::App(ref tf, ref targs) => {
-                self.is_rec_typefunc(tf, origin)
-                    || targs.iter().any(|t| self.is_rec_type(t, origin))
+                self.is_rec_typefunc(tf, origin, history)
+                    || targs.iter().any(|t| self.is_rec_type(t, origin, history))
             }
-            Type::Poly(ref p) => self.is_rec_type(&p.body, origin),
+            Type::Poly(ref p) => self.is_rec_type(&p.body, origin, history),
             _ => false,
         }
     }
 
-    fn is_rec_adt(&self, adt: &AdtDef, origin: &str) -> bool {
-        adt.variants
-            .iter()
-            .any(|v| v.members.iter().any(|t| self.is_rec_type(t, origin)))
+    fn is_rec_adt(&self, adt: &AdtDef, origin: &str, history: &mut BTreeSet<String>) -> bool {
+        adt.variants.iter().any(|v| {
+            v.members
+                .iter()
+                .any(|t| self.is_rec_type(t, origin, history))
+        })
     }
 
     // pub fn variant_is_recursive(&self, v: &str) -> bool {
@@ -1379,7 +1394,7 @@ impl<'s> Adts<'s> {
     // }
 
     pub fn adt_is_recursive(&self, adt: &AdtDef) -> bool {
-        self.is_rec_adt(adt, adt.name.s)
+        self.is_rec_adt(adt, adt.name.s, &mut BTreeSet::new())
     }
 
     pub fn adt_of_variant_is_recursive(&self, v: &str) -> bool {
