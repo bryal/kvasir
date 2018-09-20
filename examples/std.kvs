@@ -22,6 +22,8 @@
   (exp (* e (log b))))
 
 (define (not b) (if b false true))
+(define (and a b) (if a b false))
+(define (or a b) (if a true b))
 
 (define (+ x y) (add (cons x y)))
 (define (- x y) (sub (cons x y)))

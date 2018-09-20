@@ -362,15 +362,6 @@ impl<'s> Type<'s> {
         }
     }
 
-    /// Returns whether type is binary logic operation: `and`, `or`, etc
-    pub fn is_cons_logic_binop(&self) -> bool {
-        if let Some((a, b, r)) = self.get_cons_binary_func() {
-            a == b && b == r && r.get_const() == Some("Bool")
-        } else {
-            false
-        }
-    }
-
     pub fn get_cons(&self) -> Option<(&Type<'s>, &Type<'s>)> {
         self.get_bin("Cons")
     }

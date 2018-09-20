@@ -705,7 +705,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn gen_variable(&mut self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
         let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
         let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
-        let logic_binops = hashset!{ "and", "or", "xor" };
 
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
         let type_canon = var.typ.canonicalize();
@@ -741,19 +740,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 );
                 let typ = ast::Type::new_relational_binop(op_typ.clone());
                 let f = format!("{}-{}", var.ident.s, op_typ.get_const().unwrap());
-                let mut var2 = var.clone();
-                var2.typ = typ;
-                var2.ident.s = &f;
-                self.gen_variable(env, &var2)
-            }
-            _ if logic_binops.contains(var.ident.s) => {
-                assert!(
-                    type_canon.is_cons_logic_binop(),
-                    "ICE: relational binop has bad type {}",
-                    type_canon
-                );
-                let typ = ast::Type::new_logic_binop();
-                let f = format!("{}", var.ident.s);
                 let mut var2 = var.clone();
                 var2.typ = typ;
                 var2.ident.s = &f;
