@@ -1,5 +1,5 @@
 use libc::{c_char, c_uint};
-use llvm_sys::prelude::{LLVMValueRef, LLVMModuleRef};
+use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use llvm_sys::analysis::LLVMVerifierFailureAction;
 use llvm_sys::{analysis, core, linker, LLVMModule};
 use llvm_sys::transforms::pass_manager_builder as builder;
@@ -9,13 +9,13 @@ use llvm_sys::bit_reader as reader;
 use llvm_sys::ir_reader;
 use cbox::{CBox, CSemiBox};
 use std::ffi::CString;
-use std::iter::{Iterator, IntoIterator};
+use std::iter::{IntoIterator, Iterator};
 use std::io::{Error, ErrorKind};
 use std::io::Result as IoResult;
 use std::{env, fmt, mem, ptr};
 use std::marker::PhantomData;
 use std::path::Path;
-use std::process::{Command, Child};
+use std::process::{Child, Command};
 use super::buffer::MemoryBuffer;
 use super::context::{Context, GetContext};
 use super::value::{Alias, Function, GlobalValue, GlobalVariable, Value};
@@ -72,6 +72,17 @@ impl Module {
         global.set_initializer(val);
         global
     }
+    /// Add a global constant variable to the module with the given type, name and initial value.
+    pub fn add_global_const_variable<'a>(
+        &'a self,
+        name: &str,
+        val: &'a Value,
+    ) -> &'a GlobalVariable {
+        let global = self.add_global(name, val.get_type());
+        global.set_initializer(val);
+        global.set_constant(true);
+        global
+    }
     /// Add a global to the module with the given type and name.
     pub fn add_global_alias<'a>(&'a self, name: &str, val: &'a GlobalValue) -> &'a Alias {
         util::with_cstr(name, |ptr| unsafe {
@@ -124,12 +135,8 @@ impl Module {
             let mut out = mem::uninitialized();
             let mut err = mem::uninitialized();
             let buf = try!(MemoryBuffer::new_from_str(s, None));
-            if ir_reader::LLVMParseIRInContext(
-                context.into(),
-                buf.as_ptr(),
-                &mut out,
-                &mut err,
-            ) == 1
+            if ir_reader::LLVMParseIRInContext(context.into(), buf.as_ptr(), &mut out, &mut err)
+                == 1
             {
                 Err(CBox::new(err))
             } else {

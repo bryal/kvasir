@@ -183,7 +183,7 @@ fn opt_set_name<'ctx>(v: &'ctx Value, name: Option<&str>) -> &'ctx Value {
 #[derive(Debug, Clone, Copy)]
 struct Extern<'ctx> {
     func: &'ctx Function,
-    closure: &'ctx Function,
+    closure: &'ctx Value,
 }
 
 /// A variable in the environment. Either an extern, or not
@@ -498,20 +498,27 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         func: &'ctx Function,
         id: String,
         func_type: &ast::Type<'src>,
-    ) -> &'ctx Function {
+    ) -> &'ctx Value {
         let (at, rt) = func_type
             .get_func()
             .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", func_type));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let clos_typ = FunctionType::new(ret_type, &[type_generic_ptr(self.ctx), arg_type]);
-        let closure = self.module
-            .add_function(&format!("closure_{}", id), &clos_typ);
-        let entry = closure.append("entry");
+        let closure_func = self.module
+            .add_function(&format!("closure_func_{}", id), &clos_typ);
+        let entry = closure_func.append("entry");
         self.builder.position_at_end(entry);
-        closure[0].set_name("DUMMY-CAPTURES");
-        let param = &*closure[1];
+        closure_func[0].set_name("DUMMY-CAPTURES");
+        let param = &*closure_func[1];
         let r = self.builder.build_call(func, &[param]);
         self.builder.build_ret(r);
+        let closure_val = Value::new_struct(
+            self.ctx,
+            &[closure_func, Value::new_undef(self.named_types.rc_generic)],
+            false,
+        );
+        let closure = self.module
+            .add_global_const_variable(&format!("closure_{}", id), closure_val);
         closure
     }
 
@@ -745,11 +752,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            Some(Var::Extern(e)) => Value::new_struct(
-                self.ctx,
-                &[e.closure, Value::new_undef(self.named_types.rc_generic)],
-                false,
-            ),
+            Some(Var::Extern(e)) => self.builder.build_load(e.closure),
             Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
             None => panic!(
