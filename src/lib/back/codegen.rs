@@ -1449,15 +1449,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             wrapped_largest_rc.set_name("gen-new_wrapped-larg-rc");
             wrapped_largest_rc
         } else {
-            let adt_type = self.named_types
-                .adts
-                .get(&(adt.name.s, adt_inst.to_vec()))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "ICE: No adts type in gen_new\nadt {} of inst {:?} not in adts: {:?}",
-                        adt.name.s, adt_inst, self.named_types.adts
-                    )
-                });
+            let adt_type = self.get_or_gen_adt_by_name_and_inst(adt.name.s, adt_inst);
             let wrapped_largest = self.build_struct_of_type(&[tag, unwrapped_largest], adt_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
             wrapped_largest
