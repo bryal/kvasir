@@ -133,7 +133,7 @@ fn free_vars_in_lambda_filter_externs<'src, 'ctx>(
 ) -> FreeVarInsts<'src> {
     free_vars_in_lambda(&lam)
         .into_iter()
-        .filter(|&(k, _)| !env.externs.contains_key(k))
+        .filter(|&(k, _)| !env.glob_funcs.contains_key(k))
         .collect::<FreeVarInsts>()
 }
 
@@ -176,32 +176,35 @@ fn opt_set_name<'ctx>(v: &'ctx Value, name: Option<&str>) -> &'ctx Value {
     v
 }
 
-/// Naked function version of extern is used for external linkage and to call if direct call
-/// to extern. If function is used as a value, e.g. put in a list together with arbitrary
-/// functions, we have to wrap it in a closure so that it can be called in the same way as
-/// any other function.
+/// A global / extern function
+///
+/// Naked function version is used for direct calls, and for externs
+/// it's also used for external linkage. If function is used as a
+/// value, e.g. put in a list together with arbitrary functions, we
+/// have to wrap it in a closure so that it can be called in the same
+/// way as any other function.
 #[derive(Debug, Clone, Copy)]
-struct Extern<'ctx> {
+struct GlobFunc<'ctx> {
     func: &'ctx Function,
     closure: &'ctx Value,
 }
 
 /// A variable in the environment. Either an extern, or not
 enum Var<'ctx> {
-    Extern(Extern<'ctx>),
+    GlobFunc(GlobFunc<'ctx>),
     Val(&'ctx Value),
 }
 
 #[derive(Debug)]
 struct Env<'src, 'ctx> {
-    externs: BTreeMap<String, Extern<'ctx>>,
+    glob_funcs: BTreeMap<String, GlobFunc<'ctx>>,
     vars: BTreeMap<&'src str, Vec<BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>>>,
 }
 
 impl<'src, 'ctx> Env<'src, 'ctx> {
     fn new() -> Self {
         Env {
-            externs: BTreeMap::new(),
+            glob_funcs: BTreeMap::new(),
             vars: BTreeMap::new(),
         }
     }
@@ -216,8 +219,8 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
 
     fn get(&self, s: &str, ts: &[ast::Type]) -> Option<Var<'ctx>> {
         let val = self.get_var(s, ts).map(Var::Val);
-        let ext = self.externs.get(s).map(|&x| Var::Extern(x));
-        val.or(ext)
+        let f = self.glob_funcs.get(s).map(|&x| Var::GlobFunc(x));
+        val.or(f)
     }
 
     fn push_var(&mut self, id: &'src str, var: BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>) {
@@ -523,14 +526,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func(&mut self, id: String, typ: &ast::Type<'src>) -> Extern<'ctx> {
+    fn gen_extern_func(&mut self, id: String, typ: &ast::Type<'src>) -> GlobFunc<'ctx> {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
         );
         let func = self.gen_extern_func_decl(id.clone(), typ);
         let closure = self.gen_wrapping_closure(func, id, typ);
-        Extern { func, closure }
+        GlobFunc { func, closure }
     }
 
     /// Generates a simple binop function of the instruction built by `build_instr`
@@ -539,7 +542,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         func_name: String,
         typ: &ast::Type<'src>,
         build_instr: fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value,
-    ) -> Extern<'ctx> {
+    ) -> GlobFunc<'ctx> {
         let func = self.gen_extern_func_decl(func_name.clone(), typ);
         let entry = func.append("entry");
         self.builder.position_at_end(entry);
@@ -549,7 +552,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_ret(r);
 
         let closure = self.gen_wrapping_closure(func, func_name, typ);
-        Extern { func, closure }
+        GlobFunc { func, closure }
     }
 
     fn gen_core_funcs(&mut self, env: &mut Env<'src, 'ctx>) {
@@ -616,7 +619,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 for &(ops, ref op_type) in &ops_with_type {
                     for &(op_name, build_op) in ops {
                         let func_name = format!("{}-{}", op_name, type_name);
-                        env.externs.insert(
+                        env.glob_funcs.insert(
                             func_name.clone(),
                             self.gen_binop_func(func_name, op_type, build_op),
                         );
@@ -637,7 +640,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 decl.pos
                     .error_exit("Non-function externs not yet implemented!")
             }
-            env.externs.insert(
+            env.glob_funcs.insert(
                 id.to_string(),
                 self.gen_extern_func(id.to_string(), &decl.typ),
             );
@@ -649,7 +652,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 ast::Type::Const("UIntPtr", None),
                 ast::Type::new_ptr(ast::Type::Const("UInt8", None)),
             );
-            env.externs.insert(
+            env.glob_funcs.insert(
                 "malloc".to_string(),
                 self.gen_extern_func("malloc".to_string(), &malloc_type),
             );
@@ -697,8 +700,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let s = self.build_struct(&[s.len().compile(self.ctx), str_ptr]);
         s.set_name("str-lit");
         let r = match env.get("str_lit_to_string", &[]) {
-            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[s]),
-            _ => panic!("ICE: No extern str_lit_to_string declared"),
+            Some(Var::GlobFunc(glob)) => self.builder.build_call(glob.func, &[s]),
+            _ => panic!("ICE: No function str_lit_to_string declared"),
         };
         r.set_name("str");
         r
@@ -752,7 +755,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            Some(Var::Extern(e)) => self.builder.build_load(e.closure),
+            Some(Var::GlobFunc(g)) => self.builder.build_load(g.closure),
             Some(Var::Val(v)) => v,
             // Undefined variables are caught during type check/inference
             None => panic!(
@@ -859,8 +862,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
         // If it's a direct application of an extern, call it as a function,
         // otherwise call it as a closure
-        if let Some(Var::Extern(ext)) = app.func.as_var().and_then(|v| env.get(v.ident.s, inst)) {
-            self.builder.build_call(ext.func, &[arg])
+        if let Some(Var::GlobFunc(g)) = app.func.as_var().and_then(|v| env.get(v.ident.s, inst)) {
+            self.builder.build_call(g.func, &[arg])
         } else {
             let func = self.gen_expr(env, &app.func, Some("app-func"));
             self.build_app(func, arg, ret_type)
@@ -945,7 +948,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Will call whatever function is bound to `malloc`.
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: usize) -> &'ctx Value {
         let r = match env.get("malloc", &[]) {
-            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[n.compile(self.ctx)]),
+            Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[n.compile(self.ctx)]),
             Some(Var::Val(v)) => self.build_app(
                 v,
                 n.compile(self.ctx),
@@ -1073,7 +1076,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn build_panic(&self, env: &mut Env<'src, 'ctx>, s: &str) {
         let s = self.gen_str_(env, s);
         match env.get("_panic", &[]) {
-            Some(Var::Extern(ext)) => self.builder.build_call(ext.func, &[s]),
+            Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[s]),
             Some(Var::Val(v)) => self.build_app(v, s, self.named_types.nil),
             None => panic!("ICE: No _panic defined or declared"),
         };
