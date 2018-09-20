@@ -1479,8 +1479,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             }
             Pattern::StrLit(_) => unimplemented!(),
             Pattern::Variable(ref var) => {
-                if let Some((_, _)) = bindings.insert(var.ident.s, (&var.ident.pos, matchee)) {
-                    unimplemented!()
+                if var.ident.s != "_" {
+                    if let Some((_, _)) = bindings.insert(var.ident.s, (&var.ident.pos, matchee)) {
+                        unimplemented!("multiple occurences of identifier")
+                    }
                 }
             }
             Pattern::Deconstr(ref deconst) => {
