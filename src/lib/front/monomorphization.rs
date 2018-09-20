@@ -55,6 +55,7 @@ fn monomorphize_defs_of_insts_in_match<'src>(
     m: &mut Match<'src>,
     env: &mut ScopeStack<&'src str, Binding<'src>>,
 ) {
+    monomorphize_defs_of_insts_in_expr(&mut m.expr, env);
     // TODO: This is probably wrong. I have no idea what to put here.
     // I kinda forgot how exactly this whole process worked, and I'm
     // tired and confused.
