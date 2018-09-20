@@ -1,0 +1,99 @@
+(import std)
+
+;; Equality type class
+(data (Eq a)
+  (Eq (-> a a Bool)))
+(define (Eq f) (new Eq f))
+
+;; Less-than type class
+(data (Lt a)
+  (Lt (-> a a Bool)))
+(define (Lt f) (new Lt f))
+
+;; Order type class
+(data (Ord a)
+  (Ord (Lt a) (Eq a)))
+(define (Ord lt' eq') (new Ord lt' eq'))
+
+(define (eq-ord ord)
+  (match ord
+    [(Ord _ (Eq f)) f]))
+
+(define (lt' ord)
+  (match ord
+    [(Ord (Lt f) _) f]))
+
+(define (lteq' ord)
+  (match ord
+    [(Ord (Lt f) _) f]))
+
+(define (gt' ord a b)
+  (not (or (lt' ord a b) (eq-ord ord a b))))
+
+(define (gteq' ord a b)
+  (not (lt' ord a b)))
+
+(data Cmp
+  CmpLt
+  CmpEq
+  CmpGt)
+(define CmpLt (new CmpLt))
+(define CmpEq (new CmpEq))
+(define CmpGt (new CmpGt))
+
+(define: (cmp ord-a a0 a1)
+    (-> (Ord a) a a Cmp)
+  (if (lt' ord-a a0 a1)
+      CmpLt
+    (if (eq-ord ord-a a0 a1)
+        CmpEq
+      CmpGt)))
+
+(define: EqInt64 (Eq Int64) (Eq =))
+(define: EqFloat64 (Eq Float64) (Eq =))
+(define: EqString (Eq String) (Eq =s))
+
+(define: LtInt64 (Lt Int64) (Lt <))
+(define: LtFloat64 (Lt Float64) (Lt <))
+(define: LtString (Lt String) (Lt <s))
+
+(define OrdInt64 (Ord LtInt64 EqInt64))
+(define OrdFloat64 (Ord LtFloat64 EqFloat64))
+(define OrdString (Ord LtString EqString))
+
+(data (TreeMap k v)
+  TreeEmpty
+  (TreeNode k v (TreeMap k v) (TreeMap k v)))
+(define TreeEmpty (new TreeEmpty))
+(define (TreeNode k v l r) (new TreeNode k v l r))
+
+(define: (insert-tree ord-k k v tree)
+    (-> (Ord k) k v (TreeMap k v) (TreeMap k v))
+  (match tree
+    [TreeEmpty            (TreeNode k v TreeEmpty TreeEmpty)]
+    [(TreeNode k' v' l r) (match (cmp ord-k k k')
+                            [CmpLt (TreeNode k' v' (insert-tree ord-k k v l) r)]
+                            [CmpGt (TreeNode k' v' l (insert-tree ord-k k v r))]
+                            [CmpEq (TreeNode k' v l r)])]))
+
+(define (lookup-tree ord-k k tree)
+  (match tree
+    [TreeEmpty           None]
+    [(TreeNode k' v l r) (match (cmp ord-k k k')
+                           [CmpLt (lookup-tree ord-k k l)]
+                           [CmpGt (lookup-tree ord-k k r)]
+                           [CmpEq (Some v)])]))
+
+(define (tree-from-list ord-k kvs)
+  (foldl (lambda (acc kv) (insert-tree ord-k (car kv) (cdr kv) acc))
+         TreeEmpty
+         kvs))
+
+(define main
+  (let [[kvs (list (cons "foo" (: 3 Int64))
+                   (cons "bar" 7)
+                   (cons "baz" 1335))]
+        [tree (tree-from-list OrdString kvs)]]
+    (for-io (list "baz" "foo" "bar" "hej")
+            (lambda (k)
+              (display (maybe-num-to-s (lookup-tree OrdString k tree)))))))

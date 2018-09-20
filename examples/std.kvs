@@ -122,59 +122,6 @@
     [(List a (List b xs')) (pre a (pre y (intersperse y (pre b xs'))))]
     [_                     xs]))
 
-;;; Section Maps
-
-;; Naive, non-balancing
-;; TODO: Make gooder
-(data (TreeMap k v)
-  TreeEmpty
-  (TreeNode k v (TreeMap k v) (TreeMap k v)))
-(define TreeEmpty (new TreeEmpty))
-(define (TreeNode k v l r) (new TreeNode k v l r))
-
-(data Cmp
-  Lt
-  Eq
-  Gt)
-
-(define Lt (new Lt))
-(define Eq (new Eq))
-(define Gt (new Gt))
-
-(define (lt? cmp)
-  (match cmp
-    [Lt true]
-    [_  false]))
-(define (eq? cmp)
-  (match cmp
-    [Eq true]
-    [_  false]))
-(define (gt? cmp)
-  (match cmp
-    [Gt true]
-    [_  false]))
-
-(define (insert-tree cmp-f tree k v)
-  (match tree
-    [TreeEmpty            (TreeNode k v TreeEmpty TreeEmpty)]
-    [(TreeNode k' v' l r) (match (cmp-f k k')
-                            [Lt (TreeNode k' v' (insert-tree cmp-f l k v) r)]
-                            [Gt (TreeNode k' v' l (insert-tree cmp-f r k v))]
-                            [Eq (TreeNode k' v l r)])]))
-
-(define (lookup-tree cmp-f tree k)
-  (match tree
-    [TreeEmpty           None]
-    [(TreeNode k' v l r) (match (cmp-f k k')
-                           [Lt (lookup-tree cmp-f l k)]
-                           [Gt (lookup-tree cmp-f r k)]
-                           [Eq (Some v)])]))
-
-(define (tree-from-list cmp-f kvs)
-  (foldl (lambda (acc kv) (insert-tree cmp-f acc (car kv) (cdr kv)))
-         TreeEmpty
-         kvs))
-
 ;;; Section Strings
 ;;;
 ;;; Represent strings as a pair of (pointer to string data) and length
@@ -190,6 +137,31 @@
   (match s
     [StrEmpty true]
     [_        false]))
+
+(data (Pair a b)
+  (Pair a b))
+
+(define (=s s0 s1)
+  (match (new Pair s0 s1)
+    [(Pair StrEmpty StrEmpty)
+     true]
+    [(Pair StrEmpty (StrCons _ _))
+     false]
+    [(Pair (StrCons _ _) StrEmpty)
+     false]
+    [(Pair (StrCons c0 s0') (StrCons c1 s1'))
+     (and (= c0 c1) (=s s0' s1'))]))
+
+(define (<s s0 s1)
+  (match (new Pair s0 s1)
+    [(Pair StrEmpty StrEmpty)
+     false]
+    [(Pair StrEmpty (StrCons _ _))
+     true]
+    [(Pair (StrCons _ _) StrEmpty)
+     false]
+    [(Pair (StrCons c0 s0') (StrCons c1 s1'))
+     (or (< c0 c1) (and (= c0 c1) (<s s0' s1')))]))
 
 (define (c-to-s c)
   (pre-s c (new StrEmpty)))
