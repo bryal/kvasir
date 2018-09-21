@@ -405,6 +405,33 @@ impl<'s> PartialEq for Type<'s> {
 
 impl<'s> Eq for Type<'s> {}
 
+// Ignore `SrcPos` when ordering `Type`s, to not interfere with
+// lookups etc.
+impl<'s> Ord for Type<'s> {
+    fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        use self::Type::*;
+        match (self, other) {
+            (&Var(ref a), &Var(ref b)) => a.cmp(b),
+            (&Var(_), _) => Less,
+            (&Const(..), &Var(..)) => Greater,
+            (&Const(a, _), &Const(b, _)) => a.cmp(b),
+            (&Const(..), _) => Less,
+            (&App(..), &Var(..)) | (&App(..), &Const(..)) => Greater,
+            (&App(ref f, ref v), &App(ref g, ref w)) => f.cmp(g).then_with(|| v.cmp(w)),
+            (&App(..), _) => Less,
+            (&Poly(ref a), &Poly(ref b)) => a.cmp(b),
+            (&Poly(..), _) => Greater,
+        }
+    }
+}
+
+impl<'s> PartialOrd for Type<'s> {
+    fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl<'s> Display for Type<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
