@@ -96,7 +96,7 @@ impl<'s> Display for TVar<'s> {
 //       type variables should be a discinct variant?
 
 /// A type
-#[derive(Clone, Debug, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Hash)]
 pub enum Type<'s> {
     /// A type variable uniquely identified by an integer id
     /// and constrained by a set of type classes

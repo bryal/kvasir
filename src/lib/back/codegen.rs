@@ -301,6 +301,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         Value::new_undef(self.named_types.nil)
     }
 
+    fn new_real_world_val(&self) -> &'ctx Value {
+        Value::new_undef(self.named_types.real_world)
+    }
+
     fn target_data(&self) -> &'ctx TargetData {
         unsafe {
             let module_ref = mem::transmute::<&Module, LLVMModuleRef>(self.module);
@@ -821,29 +825,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Build the application of a function to an argument
-    fn build_app(
-        &self,
-        closure: &'ctx Value,
-        arg: &'ctx Value,
-        ret_type: &'ctx Type,
-    ) -> &'ctx Value {
-        let func_ptr = self.builder.build_extract_value(closure, 0);
-        func_ptr.set_name("func-ptr");
+    fn build_app(&self, closure: &'ctx Value, arg: &'ctx Value) -> &'ctx Value {
+        let func_val = self.builder.build_extract_value(closure, 0);
+        func_val.set_name("func");
         let captures_rc = self.builder.build_extract_value(closure, 1);
         captures_rc.set_name("capts-rc");
         let captures_ptr = self.build_gep_rc_contents_generic(captures_rc);
         captures_ptr.set_name("capts-ptr");
-        let func = self.builder.build_bit_cast(
-            func_ptr,
-            PointerType::new(FunctionType::new(
-                ret_type,
-                &[type_generic_ptr(self.ctx), arg.get_type()],
-            )),
-        );
-        if func.get_name().is_none() {
-            func.set_name("func")
-        }
-        let func = Function::from_super(func).expect("ICE: Failed to cast func to &Function");
+        let func = Function::from_super(func_val).expect("ICE: Failed to cast func to &Function");
         self.builder.build_call(func, &[captures_ptr, arg])
     }
 
@@ -852,12 +841,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn gen_app(&mut self, env: &mut Env<'src, 'ctx>, app: &'ast ast::App<'src>) -> &'ctx Value {
         let typ = app.func.get_type();
         let inst = typ.get_inst_args().unwrap_or(&[]);
-        let canon = typ.canonicalize();
-        let rt = canon
-            .get_func()
-            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", app.func.get_type(),))
-            .1;
-        let ret_type = self.gen_type(rt);
         let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
 
         // If it's a direct application of an extern, call it as a function,
@@ -866,7 +849,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             self.builder.build_call(g.func, &[arg])
         } else {
             let func = self.gen_expr(env, &app.func, Some("app-func"));
-            self.build_app(func, arg, ret_type)
+            self.build_app(func, arg)
         }
     }
 
@@ -949,11 +932,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: usize) -> &'ctx Value {
         let r = match env.get("malloc", &[]) {
             Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[n.compile(self.ctx)]),
-            Some(Var::Val(v)) => self.build_app(
-                v,
-                n.compile(self.ctx),
-                PointerType::new(Type::get::<u8>(self.ctx)),
-            ),
+            Some(Var::Val(v)) => self.build_app(v, n.compile(self.ctx)),
             None => panic!("ICE: No allocator defined or declared"),
         };
         r.set_name("malloc-ptr");
@@ -1077,7 +1056,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let s = self.gen_str_(env, s);
         match env.get("_panic", &[]) {
             Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[s]),
-            Some(Var::Val(v)) => self.build_app(v, s, self.named_types.nil),
+            Some(Var::Val(v)) => self.build_app(v, s),
             None => panic!("ICE: No _panic defined or declared"),
         };
     }
@@ -1695,8 +1674,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.gen_extern_decls(&mut env, &ast.externs);
 
         // Create wrapping, entry-point `main` function
-        let main_type = FunctionType::new(Type::get::<i32>(self.ctx), &[self.named_types.nil]);
-        let main_wrapper = self.module.add_function("main", &main_type);
+        let outer_main_type =
+            FunctionType::new(Type::get::<i32>(self.ctx), &[self.named_types.nil]);
+        let main_wrapper = self.module.add_function("main", &outer_main_type);
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
         *self.current_func.borrow_mut() = Some(main_wrapper);
@@ -1709,7 +1689,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         // Call user defined `main`
         let user_main = env.get_var("main", &[])
             .expect("ICE: No monomorphic user defined `main`");
-        self.build_app(user_main, self.new_nil_val(), self.named_types.nil);
+        self.build_app(user_main, self.new_real_world_val());
         self.builder.build_ret(0i32.compile(self.ctx));
     }
 }
