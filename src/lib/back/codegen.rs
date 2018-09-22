@@ -326,6 +326,16 @@ fn separate_func_bindings_mono<'src, 'ast>(
     (func_binding_insts, var_binding_insts)
 }
 
+fn is_arithm_binop(op_name: &str) -> bool {
+    let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
+    arithm_binops.contains(op_name)
+}
+
+fn is_relational_binop(op_name: &str) -> bool {
+    let relational_binops = hashset!{ "eq", "lt" };
+    relational_binops.contains(op_name)
+}
+
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
 pub struct CodeGenerator<'ctx, 'src> {
     ctx: &'ctx Context,
@@ -647,24 +657,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ("sub", Builder::build_sub),
             ("mul", Builder::build_mul),
         ];
-        let int_arithm_binops = [
-            ("div", Builder::build_sdiv as BinopBuilder<'ctx>),
-            ("shl", Builder::build_shl),
-            ("shr", Builder::build_shl),
-        ];
-        let uint_arithm_binops = [
-            ("div", Builder::build_udiv as BinopBuilder<'ctx>),
-            ("shl", Builder::build_shl),
-            ("shr", Builder::build_shl),
-        ];
+        let int_arithm_binops = [("div", Builder::build_sdiv as BinopBuilder<'ctx>)];
+        let uint_arithm_binops = [("div", Builder::build_udiv as BinopBuilder<'ctx>)];
         let float_arithm_binops = [("div", Builder::build_fdiv as BinopBuilder<'ctx>)];
         let relational_binops = [
             ("eq", Builder::build_eq as BinopBuilder<'ctx>),
-            ("neq", Builder::build_neq),
-            ("gt", Builder::build_gt),
-            ("gteq", Builder::build_gteq),
             ("lt", Builder::build_lt),
-            ("lteq", Builder::build_lteq),
         ];
         let num_classes_with_extras = [
             (&int_types[..], &int_arithm_binops[..]),
@@ -775,14 +773,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate IR for a variable used as an r-value
     fn gen_variable(&mut self, env: &mut Env<'src, 'ctx>, var: &'ast ast::Variable) -> &'ctx Value {
-        let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
-        let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
-
         let inst = var.typ.get_inst_args().unwrap_or(&[]);
         let type_canon = var.typ.canonicalize();
         match env.get(var.ident.s, inst) {
             // NOTE: Ugly hack to fix generic codegen for some binops
-            _ if arithm_binops.contains(var.ident.s) => {
+            Some(Var::Global(_)) if is_arithm_binop(var.ident.s) => {
                 let maybe_op_typ = type_canon.get_cons_binop().map(|t| t.var_to_int64());
                 let op_typ = maybe_op_typ
                     .unwrap_or_else(|| panic!("ICE: binop has bad type {}", type_canon));
@@ -798,7 +793,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            _ if relational_binops.contains(var.ident.s) => {
+            Some(Var::Global(_)) if is_relational_binop(var.ident.s) => {
                 let maybe_op_typ = type_canon
                     .get_cons_relational_binop()
                     .map(|t| t.var_to_int64());
@@ -898,16 +893,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let typ = app.func.get_type();
         let inst = typ.get_inst_args().unwrap_or(&[]);
         let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
-
         // If it's a direct application of an global function: call it
         // as a function, otherwise treat it normally (call it as a closure)
-        let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
-        let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
-        if let Some((name, Var::Global(Global::Func(g)))) = app.func
+        let maybe_glob = app.func
             .as_var()
-            .and_then(|v| env.get(v.ident.s, inst).map(|x| (v.ident.s, x)))
-        {
-            if !arithm_binops.contains(name) && !relational_binops.contains(name) {
+            .and_then(|v| env.get(v.ident.s, inst).map(|x| (v.ident.s, x)));
+        if let Some((name, Var::Global(Global::Func(g)))) = maybe_glob {
+            if !is_arithm_binop(name) && !is_relational_binop(name) {
                 return self.builder.build_call(g.func, &[arg]);
             }
         }
