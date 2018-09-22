@@ -127,13 +127,13 @@ fn free_vars_in_lambda<'src>(lam: &ast::Lambda<'src>) -> FreeVarInsts<'src> {
 }
 
 /// Get free variables of `lam`, but filter out externs
-fn free_vars_in_lambda_filter_externs<'src, 'ctx>(
+fn free_vars_in_lambda_filter_globals<'src, 'ctx>(
     env: &Env<'src, 'ctx>,
     lam: &ast::Lambda<'src>,
 ) -> FreeVarInsts<'src> {
     free_vars_in_lambda(&lam)
         .into_iter()
-        .filter(|&(k, _)| !env.glob_funcs.contains_key(k))
+        .filter(|&(k, _)| env.locals.contains_key(k))
         .collect::<FreeVarInsts>()
 }
 
@@ -189,46 +189,86 @@ struct GlobFunc<'ctx> {
     closure: &'ctx Value,
 }
 
-/// A variable in the environment. Either an extern, or not
+/// A global variable/function (includes externs)
+#[derive(Debug, Clone, Copy)]
+enum Global<'ctx> {
+    Func(GlobFunc<'ctx>),
+    Var(&'ctx GlobalVariable),
+}
+
+/// A variable in the environment
+///
+/// Either a global variable/function (includes externs), or
+/// a local variable (includes both functions/closures and other
+/// values).
 enum Var<'ctx> {
-    GlobFunc(GlobFunc<'ctx>),
-    Val(&'ctx Value),
+    Global(Global<'ctx>),
+    Local(&'ctx Value),
 }
 
 #[derive(Debug)]
 struct Env<'src, 'ctx> {
-    glob_funcs: BTreeMap<String, GlobFunc<'ctx>>,
-    vars: BTreeMap<&'src str, Vec<BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>>>,
+    globs: BTreeMap<String, BTreeMap<Vec<ast::Type<'src>>, Global<'ctx>>>,
+    locals: BTreeMap<String, Vec<BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>>>,
 }
 
 impl<'src, 'ctx> Env<'src, 'ctx> {
     fn new() -> Self {
         Env {
-            glob_funcs: BTreeMap::new(),
-            vars: BTreeMap::new(),
+            globs: BTreeMap::new(),
+            locals: BTreeMap::new(),
         }
     }
 
-    fn get_var_insts(&self, s: &str) -> Option<&BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>> {
-        self.vars.get(s).and_then(|l| l.last())
+    fn get_local(&self, s: &str, ts: &[ast::Type]) -> Option<&'ctx Value> {
+        let scopes = self.locals.get(s)?;
+        let insts = scopes.last()?;
+        insts.get(ts).map(|&x| x)
     }
 
-    fn get_var(&self, s: &str, ts: &[ast::Type]) -> Option<&'ctx Value> {
-        self.get_var_insts(s).and_then(|is| is.get(ts)).map(|&x| x)
+    fn get_global(&self, s: &str, ts: &[ast::Type]) -> Option<Global<'ctx>> {
+        let insts = self.globs.get(s)?;
+        insts.get(ts).cloned()
+    }
+
+    fn get_global_mono(&self, s: &str) -> Option<Global<'ctx>> {
+        self.get_global(s, &[])
     }
 
     fn get(&self, s: &str, ts: &[ast::Type]) -> Option<Var<'ctx>> {
-        let val = self.get_var(s, ts).map(Var::Val);
-        let f = self.glob_funcs.get(s).map(|&x| Var::GlobFunc(x));
-        val.or(f)
+        self.get_local(s, ts)
+            .map(|l| Var::Local(l))
+            .or_else(|| self.get_global(s, ts).map(|g| Var::Global(g)))
     }
 
-    fn push_var(&mut self, id: &'src str, var: BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>) {
-        self.vars.entry(id).or_insert(Vec::new()).push(var)
+    fn add_global(&mut self, id: &str, var: BTreeMap<Vec<ast::Type<'src>>, Global<'ctx>>) {
+        self.globs.insert(id.to_string(), var);
     }
 
-    fn add_inst(&mut self, id: &'src str, inst: Vec<ast::Type<'src>>, val: &'ctx Value) {
-        let v = self.vars.entry(id).or_insert(Vec::new());
+    fn add_global_mono(&mut self, id: &str, var: Global<'ctx>) {
+        self.add_global(id, map_of(vec![], var))
+    }
+
+    fn push_local(&mut self, id: &str, var: BTreeMap<Vec<ast::Type<'src>>, &'ctx Value>) {
+        self.locals
+            .entry(id.to_string())
+            .or_insert(Vec::new())
+            .push(var)
+    }
+
+    fn push_local_mono(&mut self, id: &str, var: &'ctx Value) {
+        self.push_local(id, map_of(vec![], var))
+    }
+
+    fn add_global_inst(&mut self, id: &str, inst: Vec<ast::Type<'src>>, val: Global<'ctx>) {
+        let insts = self.globs.entry(id.to_string()).or_insert(BTreeMap::new());
+        if insts.insert(inst, val).is_some() {
+            panic!("ICE: val already exists for inst")
+        }
+    }
+
+    fn add_local_inst(&mut self, id: &str, inst: Vec<ast::Type<'src>>, val: &'ctx Value) {
+        let v = self.locals.entry(id.to_string()).or_insert(Vec::new());
         if v.is_empty() {
             v.push(BTreeMap::new());
         }
@@ -237,8 +277,8 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
         }
     }
 
-    fn pop(&mut self, id: &str) -> BTreeMap<Vec<ast::Type<'src>>, &'ctx Value> {
-        self.vars
+    fn pop_local(&mut self, id: &str) -> BTreeMap<Vec<ast::Type<'src>>, &'ctx Value> {
+        self.locals
             .get_mut(id)
             .expect("ICE: Var not in env")
             .pop()
@@ -252,6 +292,38 @@ struct NamedTypes<'ctx, 'src> {
     rc_generic: &'ctx Type,
     adts: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
     adts_inner: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
+}
+
+type MonoFuncBinding<'src, 'ast> = (&'src str, &'ast [ast::Type<'src>], &'ast ast::Lambda<'src>);
+type MonoVarBinding<'src, 'ast> = (&'src str, &'ast [ast::Type<'src>], &'ast Expr<'src>);
+
+fn separate_func_bindings_mono<'src, 'ast>(
+    bindings: &[&'ast ast::Binding<'src>],
+) -> (
+    Vec<MonoFuncBinding<'src, 'ast>>,
+    Vec<MonoVarBinding<'src, 'ast>>,
+) {
+    // Flatten with regards to mono insts
+    let mut func_binding_insts = Vec::<MonoFuncBinding>::new();
+    let mut var_binding_insts = Vec::<MonoVarBinding>::new();
+    for binding in bindings {
+        let mono_insts = if binding.sig.is_monomorphic() {
+            vec![(binding.ident.s, &[][..], &binding.val)]
+        } else {
+            binding
+                .mono_insts
+                .iter()
+                .map(|(inst_ts, val_inst)| (binding.ident.s, inst_ts.as_slice(), val_inst))
+                .collect()
+        };
+        for (name, inst, val) in mono_insts {
+            match val {
+                ast::Expr::Lambda(ref lam) => func_binding_insts.push((name, inst, lam)),
+                ref e => var_binding_insts.push((name, inst, e)),
+            }
+        }
+    }
+    (func_binding_insts, var_binding_insts)
 }
 
 /// A codegenerator that visits all nodes in the AST, wherein it builds expressions
@@ -479,15 +551,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         StructType::new(self.ctx, &captures_types, false)
     }
 
-    fn gen_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
+    /// Generate a function declaration with closure environment argument included
+    fn gen_closure_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
         let (arg, ret) = typ.get_func()
             .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
         let func_typ = self.gen_func_type(arg, ret);
         self.module.add_function(&id, func_typ)
     }
 
-    /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
+    /// Generate an external function declaration
+    fn gen_func_decl(&mut self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
@@ -496,14 +569,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
         let (arg_type, ret_type) = (self.gen_type(at), self.gen_type(rt));
         let func_type = FunctionType::new(ret_type, &[arg_type]);
-        self.module.add_function(&id, func_type)
+        self.module.add_function(id, func_type)
     }
 
     /// Generate a dummy closure value that wraps a call to a plain function
     fn gen_wrapping_closure(
         &mut self,
         func: &'ctx Function,
-        id: String,
+        id: &str,
         func_type: &ast::Type<'src>,
     ) -> &'ctx Value {
         let (at, rt) = func_type
@@ -530,12 +603,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     /// Generate an external function declaration and matching closure-wrapping
-    fn gen_extern_func(&mut self, id: String, typ: &ast::Type<'src>) -> GlobFunc<'ctx> {
+    fn gen_extern_func(&mut self, id: &str, typ: &ast::Type<'src>) -> GlobFunc<'ctx> {
         assert!(
             self.current_block.borrow().is_none(),
             "ICE: External function declarations may only be generated first"
         );
-        let func = self.gen_extern_func_decl(id.clone(), typ);
+        let func = self.gen_func_decl(id, typ);
         let closure = self.gen_wrapping_closure(func, id, typ);
         GlobFunc { func, closure }
     }
@@ -543,18 +616,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Generates a simple binop function of the instruction built by `build_instr`
     fn gen_binop_func(
         &mut self,
-        func_name: String,
+        func_name: &str,
         typ: &ast::Type<'src>,
         build_instr: fn(&'ctx Builder, &'ctx Value, &'ctx Value) -> &'ctx Value,
     ) -> GlobFunc<'ctx> {
-        let func = self.gen_extern_func_decl(func_name.clone(), typ);
+        let func = self.gen_func_decl(func_name, typ);
         let entry = func.append("entry");
         self.builder.position_at_end(entry);
         let a = self.builder.build_extract_value(&*func[0], 0);
         let b = self.builder.build_extract_value(&*func[0], 1);
         let r = build_instr(self.builder, a, b);
         self.builder.build_ret(r);
-
         let closure = self.gen_wrapping_closure(func, func_name, typ);
         GlobFunc { func, closure }
     }
@@ -594,11 +666,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ("lt", Builder::build_lt),
             ("lteq", Builder::build_lteq),
         ];
-        let logic_binops = [
-            ("and", Builder::build_and as BinopBuilder<'ctx>),
-            ("or", Builder::build_or),
-            ("xor", Builder::build_xor),
-        ];
         let num_classes_with_extras = [
             (&int_types[..], &int_arithm_binops[..]),
             (&uint_types[..], &uint_arithm_binops[..]),
@@ -614,19 +681,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 let typ = ast::Type::Const(type_name, None);
                 let binop_type = ast::Type::new_binop(typ.clone());
                 let relational_binop_type = ast::Type::new_relational_binop(typ);
-                let logic_binop_type = ast::Type::new_logic_binop();
                 let ops_with_type = [
                     (&arithms_with_div[..], binop_type),
                     (&relational_binops[..], relational_binop_type),
-                    (&logic_binops[..], logic_binop_type),
                 ];
                 for &(ops, ref op_type) in &ops_with_type {
                     for &(op_name, build_op) in ops {
                         let func_name = format!("{}-{}", op_name, type_name);
-                        env.glob_funcs.insert(
-                            func_name.clone(),
-                            self.gen_binop_func(func_name, op_type, build_op),
-                        );
+                        let func = self.gen_binop_func(&func_name, op_type, build_op);
+                        env.add_global_mono(&func_name, Global::Func(func))
                     }
                 }
             }
@@ -644,10 +707,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 decl.pos
                     .error_exit("Non-function externs not yet implemented!")
             }
-            env.glob_funcs.insert(
-                id.to_string(),
-                self.gen_extern_func(id.to_string(), &decl.typ),
-            );
+            let func = self.gen_extern_func(id, &decl.typ);
+            env.add_global_mono(id, Global::Func(func))
         }
         // Heap allocation is required for core-functionality. Unless user has already
         // explicitly declared the allocator, add it.
@@ -656,10 +717,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 ast::Type::Const("UIntPtr", None),
                 ast::Type::new_ptr(ast::Type::Const("UInt8", None)),
             );
-            env.glob_funcs.insert(
-                "malloc".to_string(),
-                self.gen_extern_func("malloc".to_string(), &malloc_type),
-            );
+            let malloc_func = self.gen_extern_func("malloc", &malloc_type);
+            env.add_global_mono("malloc", Global::Func(malloc_func));
         }
     }
 
@@ -695,17 +754,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     fn gen_str_(&self, env: &mut Env<'src, 'ctx>, s: &str) -> &'ctx Value {
         let str_lit_ll = Value::new_string(self.ctx, s, true);
-        let str_const = self.module.add_global_variable("str_lit", str_lit_ll);
-        str_const.set_constant(true);
+        let str_const = self.module.add_global_const_variable("str_lit", str_lit_ll);
         let str_ptr = self.builder.build_gep(
             str_const,
             &[0usize.compile(self.ctx), 0usize.compile(self.ctx)],
         );
         let s = self.build_struct(&[s.len().compile(self.ctx), str_ptr]);
         s.set_name("str-lit");
-        let r = match env.get("str_lit_to_string", &[]) {
-            Some(Var::GlobFunc(glob)) => self.builder.build_call(glob.func, &[s]),
-            _ => panic!("ICE: No function str_lit_to_string declared"),
+        let r = match env.get_global_mono("str_lit_to_string") {
+            Some(Global::Func(glob)) => self.builder.build_call(glob.func, &[s]),
+            _ => panic!("ICE: No global function str_lit_to_string found"),
         };
         r.set_name("str");
         r
@@ -759,15 +817,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 var2.ident.s = &f;
                 self.gen_variable(env, &var2)
             }
-            Some(Var::GlobFunc(g)) => self.builder.build_load(g.closure),
-            Some(Var::Val(v)) => v,
+            Some(Var::Global(Global::Func(glob))) => self.builder.build_load(glob.closure),
+            Some(Var::Global(Global::Var(var))) => self.builder.build_load(var),
+            Some(Var::Local(val)) => val,
             // Undefined variables are caught during type check/inference
             None => panic!(
-                "ICE: Undefined variable at codegen: {} inst `{:?}`\ninsts of {}: {:#?}",
-                var.ident.s,
-                inst,
-                var.ident.s,
-                env.get_var_insts(var.ident.s)
+                "ICE: Undefined variable at codegen: `{}`, inst `{:?}`\nglobals: {:?}\nlocals: {:?}",
+                var.ident.s, inst, env.globs.get(var.ident.s), env.locals.get(var.ident.s).and_then(|l| l.last())
             ),
         }
     }
@@ -843,14 +899,20 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let inst = typ.get_inst_args().unwrap_or(&[]);
         let arg = self.gen_expr(env, &app.arg, Some("app-arg"));
 
-        // If it's a direct application of an extern, call it as a function,
-        // otherwise call it as a closure
-        if let Some(Var::GlobFunc(g)) = app.func.as_var().and_then(|v| env.get(v.ident.s, inst)) {
-            self.builder.build_call(g.func, &[arg])
-        } else {
-            let func = self.gen_expr(env, &app.func, Some("app-func"));
-            self.build_app(func, arg)
+        // If it's a direct application of an global function: call it
+        // as a function, otherwise treat it normally (call it as a closure)
+        let arithm_binops = hashset!{ "add", "sub", "mul", "div" };
+        let relational_binops = hashset!{ "eq", "neq", "gt", "gteq", "lt", "lteq" };
+        if let Some((name, Var::Global(Global::Func(g)))) = app.func
+            .as_var()
+            .and_then(|v| env.get(v.ident.s, inst).map(|x| (v.ident.s, x)))
+        {
+            if !arithm_binops.contains(name) && !relational_binops.contains(name) {
+                return self.builder.build_call(g.func, &[arg]);
+            }
         }
+        let func = self.gen_expr(env, &app.func, Some("app-func"));
+        self.build_app(func, arg)
     }
 
     /// Generate the anonymous function of a closure
@@ -866,7 +928,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         name: &str,
     ) -> &'ctx Function {
         let lambda_name = format!("_lambda_{}", name);
-        let func = self.gen_func_decl(lambda_name, &lam.typ);
+        let func = self.gen_closure_func_decl(lambda_name, &lam.typ);
         let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
         let entry = func.append("entry");
         let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
@@ -882,12 +944,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         param.set_name(lam.param_ident.s);
 
         // Create function local environment of only parameter + captures
-        let mut local_env = map_of(lam.param_ident.s, vec![map_of(vec![], param)]);
+        let mut local_env = map_of(lam.param_ident.s.to_string(), vec![map_of(vec![], param)]);
 
         // Extract individual free variable captures from captures pointer and add to local env
         let mut i: u32 = 0;
-        for (fv_id, fv_insts) in free_vars.iter() {
-            local_env.entry(fv_id).or_insert(vec![BTreeMap::new()]);
+        for (&fv_id, fv_insts) in free_vars.iter() {
+            local_env
+                .entry(fv_id.to_string())
+                .or_insert(vec![BTreeMap::new()]);
             for (fv_inst, _) in fv_insts.iter().cloned() {
                 let fv_ptr = self.builder.build_gep(
                     captures_ptr,
@@ -905,7 +969,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 i += 1;
             }
         }
-        let old_vars = mem::replace(&mut env.vars, local_env);
+        let old_locals = mem::replace(&mut env.locals, local_env);
 
         let e = self.gen_expr(env, &lam.body, None);
         if e.get_name().is_none() {
@@ -914,13 +978,40 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_ret(e);
 
         // Restore state of code generator
-        env.vars = old_vars;
+        env.locals = old_locals;
         *self.current_func.borrow_mut() = parent_func;
         *self.current_block.borrow_mut() = parent_block;
         self.builder
             .position_at_end(self.current_block.borrow().expect("ICE: no current_block"));
 
         func
+    }
+
+    /// Build a call for the function/closure of name `name`, given the argument as a compiled value
+    ///
+    /// Global/external functions are called without the closure overhead.
+    fn build_call_named(
+        &self,
+        env: &Env<'src, 'ctx>,
+        name: &str,
+        inst: &[ast::Type<'src>],
+        arg: &'ctx Value,
+    ) -> &'ctx Value {
+        match env.get(name, inst) {
+            Some(Var::Global(Global::Func(g))) => self.builder.build_call(g.func, &[arg]),
+            Some(Var::Global(Global::Var(g))) => self.build_app(self.builder.build_load(g), arg),
+            Some(Var::Local(v)) => self.build_app(v, arg),
+            None => panic!("ICE: No function `{}` defined or declared", name),
+        }
+    }
+
+    fn build_call_named_mono(
+        &self,
+        env: &Env<'src, 'ctx>,
+        name: &str,
+        arg: &'ctx Value,
+    ) -> &'ctx Value {
+        self.build_call_named(env, name, &[], arg)
     }
 
     /// Generate a call to the heap allocator to allocate `n` bytes of heap memory.
@@ -930,13 +1021,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// Will call whatever function is bound to `malloc`.
     fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: usize) -> &'ctx Value {
-        let r = match env.get("malloc", &[]) {
-            Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[n.compile(self.ctx)]),
-            Some(Var::Val(v)) => self.build_app(v, n.compile(self.ctx)),
-            None => panic!("ICE: No allocator defined or declared"),
-        };
-        r.set_name("malloc-ptr");
-        r
+        let ptr = self.build_call_named_mono(env, "malloc", n.compile(self.ctx));
+        ptr.set_name("malloc-ptr");
+        ptr
     }
 
     /// Generate a call to the heap allocator to allocate heap space for a value of type `typ`
@@ -1053,12 +1140,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn build_panic(&self, env: &mut Env<'src, 'ctx>, s: &str) {
-        let s = self.gen_str_(env, s);
-        match env.get("_panic", &[]) {
-            Some(Var::GlobFunc(g)) => self.builder.build_call(g.func, &[s]),
-            Some(Var::Val(v)) => self.build_app(v, s),
-            None => panic!("ICE: No _panic defined or declared"),
-        };
+        let sc = self.gen_str_(env, s);
+        self.build_call_named_mono(env, "_panic", sc);
     }
 
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
@@ -1073,7 +1156,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let mut captures_vals = Vec::new();
         for (&fv, insts) in free_vars {
             for &(ref inst, _) in insts {
-                captures_vals.push(env.get_var(fv, inst).unwrap_or_else(|| {
+                captures_vals.push(env.get_local(fv, inst).unwrap_or_else(|| {
                     panic!(
                         "ICE: Free var not found in env\n\
                          var: {}, inst: {:?}\n\
@@ -1098,7 +1181,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         lam: &'ast ast::Lambda<'src>,
         name: &str,
     ) -> (&'ctx Value, FreeVarInsts<'src>) {
-        let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
+        let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
         let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
@@ -1122,7 +1205,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         free_vars: Option<FreeVarInsts<'src>>,
         name: &str,
     ) {
-        let free_vars = free_vars.unwrap_or_else(|| free_vars_in_lambda_filter_externs(&env, &lam));
+        let free_vars = free_vars.unwrap_or_else(|| free_vars_in_lambda_filter_globals(&env, &lam));
         let captures = self.gen_lambda_env_capture(env, &free_vars, name);
         let closure_captures_rc_generic = self.builder.build_extract_value(closure, 1);
         closure_captures_rc_generic.set_name(&format!("{}-clos-capts-rc-gen", name));
@@ -1146,7 +1229,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         lam: &'ast ast::Lambda<'src>,
         name: &str,
     ) -> &'ctx Value {
-        let free_vars = free_vars_in_lambda_filter_externs(&env, &lam);
+        let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
         let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
         let captures = self.gen_lambda_env_capture(env, &free_vars, name);
         let captures_rc = self.build_rc(env, captures);
@@ -1174,7 +1257,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         // Flatten with regards to mono insts
         let mut bindings_insts: Vec<(_, &Vec<ast::Type>, _)> = Vec::new();
         for binding in bindings {
-            env.push_var(binding.ident.s, BTreeMap::new());
+            env.push_local(binding.ident.s, BTreeMap::new());
             if binding.sig.is_monomorphic() {
                 bindings_insts.push((binding.ident.s, &empty_vec, &binding.val));
             } else {
@@ -1188,7 +1271,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             match *val {
                 ast::Expr::Lambda(ref lam) => {
                     let (closure, free_vars) = self.gen_lambda_no_capture(env, lam, name);
-                    env.add_inst(name, inst.clone(), closure);
+                    env.add_local_inst(name, inst.clone(), closure);
                     lambdas_free_vars.push_back(free_vars);
                 }
                 _ => (),
@@ -1197,14 +1280,15 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         for &(name, inst, val) in &bindings_insts {
             match val {
                 &ast::Expr::Lambda(ref lam) => {
-                    let closure = env.get_var(name, &inst).expect("ICE: variable dissapeared");
+                    let closure = env.get_local(name, &inst)
+                        .expect("ICE: variable dissapeared");
                     let free_vars = lambdas_free_vars.pop_front();
                     self.closure_capture_env(env, closure, lam, free_vars, name);
                 }
                 expr => {
                     let var = self.gen_expr(env, expr, Some(name));
                     var.set_name(name);
-                    env.add_inst(name, inst.clone(), var);
+                    env.add_local_inst(name, inst.clone(), var);
                 }
             }
         }
@@ -1216,7 +1300,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.gen_bindings(env, &bindings);
         let v = self.gen_expr(env, &l.body, None);
         for b in bindings {
-            env.pop(b.ident.s);
+            env.pop_local(b.ident.s);
         }
         v
     }
@@ -1535,11 +1619,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             next_branch,
         );
         for (var, &(_, val)) in &patt_bindings {
-            env.push_var(var, map_of(vec![], val));
+            env.push_local_mono(var, val);
         }
         let r = self.gen_expr(env, &case.body, Some("case_body"));
         for (var, _) in patt_bindings {
-            env.pop(var);
+            env.pop_local(var);
         }
         r
     }
@@ -1617,6 +1701,94 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
+    fn gen_glob_var_decl(&mut self, name: &str, typ: &ast::Type<'src>) -> &'ctx GlobalVariable {
+        let undef = Value::new_undef(self.gen_type(typ));
+        self.module.add_global_variable(name, undef)
+    }
+
+    /// Generate uninitialized declarations for all global
+    /// variables.
+    ///
+    /// As they may be initialized by executing arbitrary
+    /// functions, they must (for now) be initialized at runtime. The
+    /// initialization happens in a wrapper around `main`.
+    fn gen_glob_var_decls(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        var_bindings: &[MonoVarBinding<'src, 'ast>],
+    ) {
+        for (name, inst, val) in var_bindings {
+            let var = self.gen_glob_var_decl(name, val.get_type());
+            env.add_global_inst(name, inst.to_vec(), Global::Var(var));
+        }
+    }
+
+    fn gen_glob_var_inits(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        var_bindings: &[MonoVarBinding<'src, 'ast>],
+    ) {
+        for (name, inst, expr) in var_bindings {
+            let glob = env.get_global(name, inst)
+                .expect("ICE: Global variable declaration dissapeared");
+            let glob_var = match glob {
+                Global::Var(v) => v,
+                _ => panic!("ICE: Global var to init was not a global var"),
+            };
+            let v = self.gen_expr(env, expr, None);
+            self.builder.build_store(v, glob_var);
+        }
+    }
+
+    fn gen_func_def(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        func: &'ctx Function,
+        lam: &ast::Lambda<'src>,
+    ) {
+        let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
+        let entry = func.append("entry");
+        let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
+        self.builder.position_at_end(entry);
+        let param = &*func[0];
+        param.set_name(lam.param_ident.s);
+        let local_env = map_of(lam.param_ident.s.to_string(), vec![map_of(vec![], param)]);
+        let old_locals = mem::replace(&mut env.locals, local_env);
+        let r = self.gen_expr(env, &lam.body, None);
+        self.builder.build_ret(r);
+        env.locals = old_locals;
+        *self.current_func.borrow_mut() = parent_func;
+        *self.current_block.borrow_mut() = parent_block;
+        if let Some(block) = *self.current_block.borrow() {
+            self.builder.position_at_end(block);
+        }
+    }
+
+    /// For global functions, generates plain function definitions and
+    /// matching closure-wrappers
+    ///
+    /// Where a "closure-wrapper" is a function wrapped around the
+    /// plain function with an additional param for dummy closure
+    /// environment. This is used so that global functions and local
+    /// closures can be represented the same way, size-wise and all.
+    fn gen_glob_funcs(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        bindings: &[MonoFuncBinding<'src, 'ast>],
+    ) {
+        let mut funcs = Vec::new();
+        for (name, inst, lam) in bindings {
+            let func = self.gen_func_decl(name, &lam.typ);
+            let closure = self.gen_wrapping_closure(func, name, &lam.typ);
+            let glob_func = GlobFunc { func, closure };
+            funcs.push(&*func);
+            env.add_global_inst(name, inst.to_vec(), Global::Func(glob_func));
+        }
+        for ((_, _, lam), func) in bindings.into_iter().zip(funcs) {
+            self.gen_func_def(env, func, lam);
+        }
+    }
+
     /// Generate LLVM IR for the executable application defined in `module`.
     ///
     /// Declare external functions, define global variabled and functions, and define
@@ -1668,28 +1840,34 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             }
         }
 
+        // Create wrapping, entry-point `main` function. Must be
+        // declared before the user-defined main so that it gets the
+        // correct name.
+        let outer_main_type =
+            FunctionType::new(Type::get::<i32>(self.ctx), &[self.named_types.nil]);
+        let main_wrapper = self.module.add_function("main", &outer_main_type);
+
         let mut env = Env::new();
 
         self.gen_core_funcs(&mut env);
         self.gen_extern_decls(&mut env, &ast.externs);
+        let glob_bindings = ast.globals.bindings().rev().collect::<Vec<_>>();
+        for binding in &glob_bindings {
+            env.globs
+                .insert(binding.ident.s.to_string(), BTreeMap::new());
+        }
+        let (glob_func_bindings, glob_var_bindings) = separate_func_bindings_mono(&glob_bindings);
+        self.gen_glob_var_decls(&mut env, &glob_var_bindings);
+        self.gen_glob_funcs(&mut env, &glob_func_bindings);
 
-        // Create wrapping, entry-point `main` function
-        let outer_main_type =
-            FunctionType::new(Type::get::<i32>(self.ctx), &[self.named_types.nil]);
-        let main_wrapper = self.module.add_function("main", &outer_main_type);
+        // Populate the outer, wrapping `main` with glob var
+        // initialization and calling of user-defined `main`.
         let entry = main_wrapper.append("entry");
         self.builder.position_at_end(entry);
         *self.current_func.borrow_mut() = Some(main_wrapper);
         *self.current_block.borrow_mut() = Some(entry);
-
-        // Generate global definitions
-        let global_bindings = ast.globals.bindings().rev().collect::<Vec<_>>();
-        self.gen_bindings(&mut env, &global_bindings);
-
-        // Call user defined `main`
-        let user_main = env.get_var("main", &[])
-            .expect("ICE: No monomorphic user defined `main`");
-        self.build_app(user_main, self.new_real_world_val());
+        self.gen_glob_var_inits(&mut env, &glob_var_bindings);
+        self.build_call_named_mono(&mut env, "main", self.new_real_world_val());
         self.builder.build_ret(0i32.compile(self.ctx));
     }
 }

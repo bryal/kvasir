@@ -153,13 +153,6 @@ impl<'s> Type<'s> {
         Type::new_func(Type::new_cons(typ.clone(), typ), Type::Const("Bool", None))
     }
 
-    pub fn new_logic_binop() -> Self {
-        Type::new_func(
-            Type::new_cons(Type::Const("Bool", None), Type::Const("Bool", None)),
-            Type::Const("Bool", None),
-        )
-    }
-
     /// If this type is an instantiated polytype, return the instantiation args
     pub fn get_inst_args(&self) -> Option<&[Type<'s>]> {
         match *self {
