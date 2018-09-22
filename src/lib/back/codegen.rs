@@ -919,7 +919,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         lam: &'ast ast::Lambda<'src>,
         name: &str,
     ) -> &'ctx Function {
-        let lambda_name = format!("_lambda_{}", name);
+        let parent_name = self.current_func
+            .borrow()
+            .deref()
+            .and_then(|f| f.get_name().map(str::to_string))
+            .unwrap_or("global".to_string());
+        let lambda_name = format!("lambda_{}_{}", parent_name, name);
         let func = self.gen_closure_func_decl(lambda_name, &lam.typ);
         let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
         let entry = func.append("entry");
@@ -1825,7 +1830,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                     main.pos.print_help(
                         "Try adding type annotations to enforce correct type \
                          during type-checking.\n\
-                         E.g. `(define main (: (lambda (_) ...) (-> Nil Nil)))`",
+                         E.g. `(define: main (-> RealWorld (Cons Nil RealWorld)) ...)`",
                     );
                     exit()
                 }
