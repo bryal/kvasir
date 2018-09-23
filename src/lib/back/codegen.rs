@@ -823,17 +823,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
-    fn gen_if_<'e, C, A>(
-        &mut self,
-        env: &'e mut Env<'src, 'ctx>,
-        pred: &'ctx Value,
-        conseq: C,
-        alt: A,
-    ) -> &'ctx Value
-    where
-        C: FnOnce(&mut Self, Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
-        A: FnOnce(&mut Self, Env<'src, 'ctx>) -> (Env<'src, 'ctx>, &'ctx Value),
-    {
+    fn gen_if(&mut self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
+        let pred = self.gen_expr(env, &cond.predicate, None);
         let parent_func = self.current_func.borrow().unwrap();
         let then_br = parent_func.append("cond_then");
         let else_br = parent_func.append("cond_else");
@@ -843,16 +834,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
         self.builder.position_at_end(then_br);
         *self.current_block.borrow_mut() = Some(then_br);
-        let (env_, then_val) = conseq(self, mem::replace(env, Env::new()));
-        mem::replace(env, env_);
+        let then_val = self.gen_expr(env, &cond.consequent, None);
         let then_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((then_val, then_last_block));
         self.builder.build_br(next_br);
 
         self.builder.position_at_end(else_br);
         *self.current_block.borrow_mut() = Some(else_br);
-        let (env_, else_val) = alt(self, mem::replace(env, Env::new()));
-        mem::replace(env, env_);
+        let else_val = self.gen_expr(env, &cond.alternative, None);
         let else_last_block = self.current_block.borrow().unwrap();
         phi_nodes.push((else_val, else_last_block));
         self.builder.build_br(next_br);
@@ -860,19 +849,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.position_at_end(next_br);
         *self.current_block.borrow_mut() = Some(next_br);
         self.builder.build_phi(then_val.get_type(), &phi_nodes)
-    }
-
-    fn gen_if(&mut self, env: &mut Env<'src, 'ctx>, cond: &'ast ast::If<'src>) -> &'ctx Value {
-        let pred = self.gen_expr(env, &cond.predicate, None);
-        let conseq = |self_: &mut Self, mut env| {
-            let v = self_.gen_expr(&mut env, &cond.consequent, None);
-            (env, v)
-        };
-        let alt = |self_: &mut Self, mut env| {
-            let v = self_.gen_expr(&mut env, &cond.alternative, None);
-            (env, v)
-        };
-        self.gen_if_(env, pred, conseq, alt)
     }
 
     /// Build the application of a function to an argument
