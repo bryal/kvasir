@@ -561,14 +561,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         StructType::new(self.ctx, &captures_types, false)
     }
 
-    /// Generate a function declaration with closure environment argument included
-    fn gen_closure_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
-        let (arg, ret) = typ.get_func()
-            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
-        let func_typ = self.gen_func_type(arg, ret);
-        self.module.add_function(&id, func_typ)
-    }
-
     /// Generate an external function declaration
     fn gen_func_decl(&mut self, id: &str, typ: &ast::Type<'src>) -> &'ctx mut Function {
         assert!(
@@ -883,83 +875,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.build_app(func, arg)
     }
 
-    /// Generate the anonymous function of a closure
-    ///
-    /// A closure is represented as a structure of the environment it captures, and
-    /// a function to pass this environment to, together with the argument, when the closure
-    /// is applied to an argument.
-    fn gen_closure_func(
-        &mut self,
-        env: &mut Env<'src, 'ctx>,
-        free_vars: &FreeVarInsts<'src>,
-        lam: &'ast ast::Lambda<'src>,
-        name: &str,
-    ) -> &'ctx Function {
-        let parent_name = self.current_func
-            .borrow()
-            .deref()
-            .and_then(|f| f.get_name().map(str::to_string))
-            .unwrap_or("global".to_string());
-        let lambda_name = format!("lambda_{}_{}", parent_name, name);
-        let func = self.gen_closure_func_decl(lambda_name, &lam.typ);
-        let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
-        let entry = func.append("entry");
-        let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
-        self.builder.position_at_end(entry);
-
-        let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
-        let captures_ptr_generic = &*func[0];
-        captures_ptr_generic.set_name("captures_generic");
-        let captures_ptr = self.builder
-            .build_bit_cast(captures_ptr_generic, captures_ptr_type);
-        captures_ptr.set_name("captures");
-        let param = &*func[1];
-        param.set_name(lam.param_ident.s);
-
-        // Create function local environment of only parameter + captures
-        let mut local_env = map_of(lam.param_ident.s.to_string(), vec![map_of(vec![], param)]);
-
-        // Extract individual free variable captures from captures pointer and add to local env
-        let mut i: u32 = 0;
-        for (&fv_id, fv_insts) in free_vars.iter() {
-            local_env
-                .entry(fv_id.to_string())
-                .or_insert(vec![BTreeMap::new()]);
-            for (fv_inst, _) in fv_insts.iter().cloned() {
-                let fv_ptr = self.builder.build_gep(
-                    captures_ptr,
-                    &[0usize.compile(self.ctx), i.compile(self.ctx)],
-                );
-                fv_ptr.set_name(&format!("capture_{}", fv_id));
-                let fv_loaded = self.builder.build_load(fv_ptr);
-                fv_loaded.set_name(fv_id);
-                local_env
-                    .get_mut(fv_id)
-                    .expect("ICE: fv_id not in local_env")
-                    .last_mut()
-                    .unwrap()
-                    .insert(fv_inst, fv_loaded);
-                i += 1;
-            }
-        }
-        let old_locals = mem::replace(&mut env.locals, local_env);
-
-        let e = self.gen_expr(env, &lam.body, None);
-        if e.get_name().is_none() {
-            e.set_name("return-val")
-        }
-        self.builder.build_ret(e);
-
-        // Restore state of code generator
-        env.locals = old_locals;
-        *self.current_func.borrow_mut() = parent_func;
-        *self.current_block.borrow_mut() = parent_block;
-        self.builder
-            .position_at_end(self.current_block.borrow().expect("ICE: no current_block"));
-
-        func
-    }
-
     /// Build a call for the function/closure of name `name`, given the argument as a compiled value
     ///
     /// Global/external functions are called without the closure overhead.
@@ -1115,6 +1030,83 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn build_panic(&self, env: &mut Env<'src, 'ctx>, s: &str) {
         let sc = self.gen_str_(env, s);
         self.build_call_named_mono(env, "_panic", sc);
+    }
+
+    /// Generate the anonymous function of a closure
+    ///
+    /// A closure is represented as a structure of the environment it captures, and
+    /// a function to pass this environment to, together with the argument, when the closure
+    /// is applied to an argument.
+    fn gen_closure_func(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        free_vars: &FreeVarInsts<'src>,
+        lam: &'ast ast::Lambda<'src>,
+        name: &str,
+    ) -> &'ctx Function {
+        let parent_name = self.current_func
+            .borrow()
+            .deref()
+            .and_then(|f| f.get_name().map(str::to_string))
+            .unwrap_or("global".to_string());
+        let lambda_name = format!("lambda_{}_{}", parent_name, name);
+        let func = self.gen_closure_func_decl(lambda_name, &lam.typ);
+        let parent_func = mem::replace(&mut *self.current_func.borrow_mut(), Some(func));
+        let entry = func.append("entry");
+        let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
+        self.builder.position_at_end(entry);
+
+        let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
+        let captures_ptr_generic = &*func[0];
+        captures_ptr_generic.set_name("captures_generic");
+        let captures_ptr = self.builder
+            .build_bit_cast(captures_ptr_generic, captures_ptr_type);
+        captures_ptr.set_name("captures");
+        let param = &*func[1];
+        param.set_name(lam.param_ident.s);
+
+        // Create function local environment of only parameter + captures
+        let mut local_env = map_of(lam.param_ident.s.to_string(), vec![map_of(vec![], param)]);
+
+        // Extract individual free variable captures from captures pointer and add to local env
+        let mut i: u32 = 0;
+        for (&fv_id, fv_insts) in free_vars.iter() {
+            local_env
+                .entry(fv_id.to_string())
+                .or_insert(vec![BTreeMap::new()]);
+            for (fv_inst, _) in fv_insts.iter().cloned() {
+                let fv_ptr = self.builder.build_gep(
+                    captures_ptr,
+                    &[0usize.compile(self.ctx), i.compile(self.ctx)],
+                );
+                fv_ptr.set_name(&format!("capture_{}", fv_id));
+                let fv_loaded = self.builder.build_load(fv_ptr);
+                fv_loaded.set_name(fv_id);
+                local_env
+                    .get_mut(fv_id)
+                    .expect("ICE: fv_id not in local_env")
+                    .last_mut()
+                    .unwrap()
+                    .insert(fv_inst, fv_loaded);
+                i += 1;
+            }
+        }
+        let old_locals = mem::replace(&mut env.locals, local_env);
+
+        let e = self.gen_expr(env, &lam.body, None);
+        if e.get_name().is_none() {
+            e.set_name("return-val")
+        }
+        self.builder.build_ret(e);
+
+        // Restore state of code generator
+        env.locals = old_locals;
+        *self.current_func.borrow_mut() = parent_func;
+        *self.current_block.borrow_mut() = parent_block;
+        self.builder
+            .position_at_end(self.current_block.borrow().expect("ICE: no current_block"));
+
+        func
     }
 
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
