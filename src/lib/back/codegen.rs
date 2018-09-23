@@ -1032,6 +1032,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.build_call_named_mono(env, "_panic", sc);
     }
 
+    /// Generate a function declaration with closure environment argument included
+    fn gen_closure_func_decl(&mut self, id: String, typ: &ast::Type<'src>) -> &'ctx mut Function {
+        let (arg, ret) = typ.get_func()
+            .unwrap_or_else(|| panic!("ICE: Invalid function type `{}`", typ));
+        let func_typ = self.gen_func_type(arg, ret);
+        self.module.add_function(&id, func_typ)
+    }
+
     /// Generate the anonymous function of a closure
     ///
     /// A closure is represented as a structure of the environment it captures, and
@@ -1109,10 +1117,31 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         func
     }
 
+    /// Generate the LLVM representation of a lambda expression, but with the contents
+    /// of the closure capture left as allocated, but undefined, space
+    ///
+    /// For use when generating bindings with recursive references
+    fn gen_closure_without_captures(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        lam: &'ast ast::Lambda<'src>,
+        name: &str,
+    ) -> (&'ctx Value, FreeVarInsts<'src>) {
+        let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
+        let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
+        let captures_type = self.captures_type_of_free_vars(&free_vars);
+        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
+        let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
+        undef_heap_captures_generic_rc.set_name(&format!("{}-undef-capts-gen", name));
+        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
+        closure.set_name(&format!("{}-clos", name));
+        (closure, free_vars)
+    }
+
     /// Capture the free variables `free_vars` of some lambda from the environment `env`
     ///
     /// Returns a LLVM structure of each captured variable
-    fn gen_lambda_env_capture(
+    fn gen_closure_env_capture(
         &mut self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
@@ -1136,27 +1165,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    /// Generate the LLVM representation of a lambda expression, but with the contents
-    /// of the closure capture left as allocated, but undefined, space
-    ///
-    /// For use when generating bindings with recursive references
-    fn gen_lambda_no_capture(
-        &mut self,
-        env: &mut Env<'src, 'ctx>,
-        lam: &'ast ast::Lambda<'src>,
-        name: &str,
-    ) -> (&'ctx Value, FreeVarInsts<'src>) {
-        let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
-        let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
-        let captures_type = self.captures_type_of_free_vars(&free_vars);
-        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
-        let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
-        undef_heap_captures_generic_rc.set_name(&format!("{}-undef-capts-gen", name));
-        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
-        closure.set_name(&format!("{}-clos", name));
-        (closure, free_vars)
-    }
-
     /// For a closure that was created without environment capture,
     /// capture free variables and insert into captures member of struct
     ///
@@ -1166,12 +1174,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         &mut self,
         env: &mut Env<'src, 'ctx>,
         closure: &Value,
-        lam: &'ast ast::Lambda<'src>,
-        free_vars: Option<FreeVarInsts<'src>>,
+        free_vars: FreeVarInsts<'src>,
         name: &str,
     ) {
-        let free_vars = free_vars.unwrap_or_else(|| free_vars_in_lambda_filter_globals(&env, &lam));
-        let captures = self.gen_lambda_env_capture(env, &free_vars, name);
+        let captures = self.gen_closure_env_capture(env, &free_vars, name);
         let closure_captures_rc_generic = self.builder.build_extract_value(closure, 1);
         closure_captures_rc_generic.set_name(&format!("{}-clos-capts-rc-gen", name));
         let closure_captures_rc = self.builder.build_bit_cast(
@@ -1196,7 +1202,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ) -> &'ctx Value {
         let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
         let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
-        let captures = self.gen_lambda_env_capture(env, &free_vars, name);
+        let captures = self.gen_closure_env_capture(env, &free_vars, name);
         let captures_rc = self.build_rc(env, captures);
         captures_rc.set_name(&format!("{}-capts-rc", name));
         let captures_rc_generic = self.builder
@@ -1235,7 +1241,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         for &(name, inst, val) in &bindings_insts {
             match *val {
                 ast::Expr::Lambda(ref lam) => {
-                    let (closure, free_vars) = self.gen_lambda_no_capture(env, lam, name);
+                    let (closure, free_vars) = self.gen_closure_without_captures(env, lam, name);
                     env.add_local_inst(name, inst.clone(), closure);
                     lambdas_free_vars.push_back(free_vars);
                 }
@@ -1244,11 +1250,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
         for &(name, inst, val) in &bindings_insts {
             match val {
-                &ast::Expr::Lambda(ref lam) => {
+                &ast::Expr::Lambda(_) => {
                     let closure = env.get_local(name, &inst)
                         .expect("ICE: variable dissapeared");
-                    let free_vars = lambdas_free_vars.pop_front();
-                    self.closure_capture_env(env, closure, lam, free_vars, name);
+                    let free_vars = lambdas_free_vars.pop_front().unwrap();
+                    self.closure_capture_env(env, closure, free_vars, name);
                 }
                 expr => {
                     let var = self.gen_expr(env, expr, Some(name));
