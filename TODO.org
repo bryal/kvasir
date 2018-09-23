@@ -16,7 +16,6 @@
     transparency.
     [[https://wiki.haskell.org/IO_inside#Welcome_to_the_RealWorld.2C_baby][Haskell IO: RealWorld]]
 
-
 ** Syntax
 *** DONE Treat square brackets same as parens
     Many lisps do this. Some people feel it helps readability to be
@@ -73,7 +72,6 @@
     in the parser is all right, while error handling of parser
     combinators is often lacking.
 
-
 ** Module system
    :FILES: [[file:./src/lib/front/parse.rs::"import"%20=>][parse_module]]
 *** INACTIVE Parse modules
@@ -86,7 +84,6 @@
 *** INACTIVE Use modules when infering types and generating code
     Not sure what I meant when I wrote this, but it sounds cool!
     Investigate!
-
 
 ** Type system
    :FILES: [[file:./src/lib/front/inference.rs][inference]]
@@ -136,7 +133,6 @@
     Maybe like in haskell with lolly operator?
     [[http://docs.idris-lang.org/en/latest/reference/uniqueness-types.html][Check out idris Uniqueness Types]]
 
-
 ** Syntax extensions (macros)
    Synonymous to compile-time execution of code.
    [[http://docs.julialang.org/en/stable/manual/metaprogramming/][Julia metaprogramming]], [[http://docs.racket-lang.org/guide/stx-obj.html][Racket syntax objects]].
@@ -150,7 +146,6 @@
 *** INACTIVE Advanced, AST-level syntax extensions
     Could be implemented using compile-time execution of functions
     tagged as macros or something.
-
 
 ** Pattern matching and Algebraic data types
 *** DONE The heart of it
@@ -188,16 +183,13 @@
 *** INACTIVE Cons, cons, car, and cdr should be made redundant by algebraic data types and pattern matching
     Maybe, but not before I've added Abstract Data Types I think.
 
-
 ** INACTIVE Language server protocol					:IDE:
   [[https://github.com/Microsoft/language-server-protocol]]
   [[https://internals.rust-lang.org/t/introducing-rust-language-server-source-release/4209]]
 
-
 ** INACTIVE Alternative llvm library
    https://dylanmckay.io/hllvm/hllvm/ or just plain LLVM C-api.
    The current llvm wrapper by TomBebbington is not great.
-
 
 ** INACTIVE On-demand compilation :on_demand:incremental:compilation:red_green:
    Instead of performing typecheck and codegen in discrete steps for the whole program,
@@ -206,21 +198,16 @@
    compile exactly that function and the minimum amount of dependencies, evaluate it, and
    keep on compiling. Might also fit well with incremental compilation
 
-
 ** NEXT Comprehensive testing
    Both unit tests and property based testing with quickcheck
-
 
 ** INACTIVE Implement `match` as a macro
    of `if`s / `cond`s and `let`s, using generated
    variant-{test,unwrap} functions.  Update: I'm not sure this is the
    way to go. Also, the current match works well enough.
 
-
 ** TODO Variable shadowing
    It seems to be broken atm. Check out ScopeStack::push
-
-
 
 ** INACTIVE Fix refcount GC
     Currently, very broken. References aren't properly
@@ -264,6 +251,7 @@
 *** TODO Mark recursive types for heap allocation early on in the pipeline
 *** TODO Impl GC
 
+** TODO Implement gen_lambda in terms of gen_lambda_no_capture, closure_capture_env?
 ** Misc. features and TODOs
 *** NEXT make keywords in error messages bold
 
