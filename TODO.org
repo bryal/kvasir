@@ -1,8 +1,8 @@
-* Kvasir
+* Kvasir TODO
   :FILES: [[file:./Cargo.toml][Cargo.toml]]
+
   A compiler for a statically compiled language similar to
   Rust/Haskell, but with lisp-syntax.
-
 
 ** Big ideas
 *** Everything is immutable
@@ -221,6 +221,49 @@
    It seems to be broken atm. Check out ScopeStack::push
 
 
+
+** INACTIVE Fix refcount GC
+    Currently, very broken. References aren't properly
+    incremented/decremented in generated code, and refs of count=0
+    aren't deallocated!
+
+** TODO Implement GC
+   There are many problems with refcounting: Generated llvm ir/asm
+   gets polluted; While performance is more predictable, it's
+   typically worse overall; Cycle breaking would either require using
+   weak refs where appropriate, which would in turn require user input
+   or an advanced implementation, or a periodic cycle breaker, which
+   would be costly performance wise.
+
+   A tracing GC would be quite separate from the rest of the
+   program. The only pollution would be calls to the allocator (not
+   much different from the current sitch w malloc) and
+   (de)registrations of local variables in Let forms (a total of two
+   function calls per heap allocated variable).
+
+   Implementing a tracing GC would also be a fun challenge, and I'm
+   sure it could be fun to try different algorithms etc.
+
+*** How it would work
+    Basically, instead of calling =malloc=, the alloc function of the
+    GC is called. This function keeps track of either the number of
+    calls, the time, or the current sum of allocated space, and
+    periodically performs a mark-and-sweep, walking through the object
+    graph and marking objects not directly or indirectly referenced by
+    a "root" node for sweeping.
+
+    Root nodes are global variables and all local variables visible in
+    the current scope. Global variables can be registered in the main
+    wrapper, while local variables could be registered right after
+    they've been created (in a Let, Match, ...). They would then be
+    unregistered right before the function returns (or in the case of
+    tail calls, right before the tail call). Registering could happen
+    directly in the GC alloc routine
+
+*** TODO Remove current (partial) impl of refcount
+*** TODO Mark recursive types for heap allocation early on in the pipeline
+*** TODO Impl GC
+
 ** Misc. features and TODOs
 *** NEXT make keywords in error messages bold
 
@@ -237,8 +280,3 @@
     memory due to bad GC for "badly" written programs.
 
 *** NEXT Why is ~self~ passed as immut borrow in methods to ~CodeGenerator~ in [[file:~/Dropbox/Program/kvasir-lang/src/lib/back/llvm.rs][llvm]]?
-
-*** TODO Fix refcount GC
-    Currently, very broken. References aren't properly
-    incremented/decremented in generated code, and refs of count=0
-    aren't deallocated!
