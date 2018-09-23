@@ -888,7 +888,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// A closure is represented as a structure of the environment it captures, and
     /// a function to pass this environment to, together with the argument, when the closure
     /// is applied to an argument.
-    fn gen_closure_anon_func(
+    fn gen_closure_func(
         &mut self,
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
@@ -1155,7 +1155,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         name: &str,
     ) -> (&'ctx Value, FreeVarInsts<'src>) {
         let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
-        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
+        let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
         let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
         let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
@@ -1203,7 +1203,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         name: &str,
     ) -> &'ctx Value {
         let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
-        let func_ptr = self.gen_closure_anon_func(env, &free_vars, lam, name);
+        let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
         let captures = self.gen_lambda_env_capture(env, &free_vars, name);
         let captures_rc = self.build_rc(env, captures);
         captures_rc.set_name(&format!("{}-capts-rc", name));
