@@ -8,12 +8,10 @@ use string::*;
 
 pub mod string;
 
-type Rc<T> = *mut (u64, T);
-
-unsafe fn new_rc<T>(data: T) -> Rc<T> {
-    let rc = malloc(size_of::<(u64, T)>()) as *mut (u64, T);
-    *rc = (1, data);
-    rc
+unsafe fn on_heap<T>(data: T) -> *mut T {
+    let ptr = malloc(size_of::<T>()) as *mut T;
+    *ptr = data;
+    ptr
 }
 
 #[no_mangle]

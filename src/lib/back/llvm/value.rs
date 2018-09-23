@@ -1,4 +1,4 @@
-use libc::{c_char, c_uint, c_int};
+use libc::{c_char, c_int, c_uint};
 use llvm_sys::prelude::LLVMValueRef;
 use llvm_sys::{core, LLVMLinkage};
 use std::ffi::CString;
@@ -67,6 +67,10 @@ impl Value {
     /// Create a new constant undefined value of the given type.
     pub fn new_undef<'a>(ty: &'a Type) -> &'a Value {
         unsafe { core::LLVMGetUndef(ty.into()).into() }
+    }
+    /// Create a new constant null value of the given type.
+    pub fn new_null<'a>(ty: &'a Type) -> &'a Value {
+        unsafe { core::LLVMConstNull(ty.into()).into() }
     }
     /// Returns the name of this value, or `None` if it lacks a name
     pub fn get_name(&self) -> Option<&str> {

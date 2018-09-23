@@ -1,5 +1,5 @@
 use std::{char, slice, str};
-use new_rc;
+use on_heap;
 
 // Representation of a kvasir `String`
 //
@@ -13,9 +13,7 @@ use new_rc;
 //    equal to the size of the largest variant of the ADT,
 //    excluding the tag and optional wrapping pointer.
 // 6. `String` is a recursive type, and therefore will always be
-//    stored behind a reference counted pointer
-// 7. Refcount pointers are represented as a pointer to a pair of
-//    the 64-bit reference count, and the arbitrarily sized data.
+//    stored behind a heap pointer
 
 // Largest   = { i32, String }
 // String_in = { i16, LARGEST }
@@ -40,7 +38,7 @@ pub struct String_in {
     data: Variant,
 }
 
-pub type String_ = *mut (u64, String_in);
+pub type String_ = *mut String_in;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -52,7 +50,7 @@ impl KvsString {
             tag: Tag::Empty,
             data: Variant { empty: () },
         };
-        KvsString(new_rc(empty_in))
+        KvsString(on_heap(empty_in))
     }
 
     unsafe fn cons<T: Into<u32>>(c: T, rest: KvsString) -> KvsString {
@@ -62,15 +60,11 @@ impl KvsString {
                 cons: (c.into(), rest.0),
             },
         };
-        KvsString(new_rc(cons_in))
-    }
-
-    unsafe fn refcount(&self) -> u64 {
-        (*self.0).0
+        KvsString(on_heap(cons_in))
     }
 
     unsafe fn data(&self) -> &String_in {
-        &(*self.0).1
+        &*self.0
     }
 
     unsafe fn split_first(&self) -> Option<(u32, Self)> {

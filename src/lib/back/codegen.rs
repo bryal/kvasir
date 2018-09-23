@@ -48,17 +48,6 @@ fn type_generic_ptr(ctx: &Context) -> &Type {
     PointerType::new(Type::get::<u8>(ctx))
 }
 
-/// The type of a reference counted pointer to `contents`
-///
-/// `{i64, contents}*`
-fn type_rc<'ctx>(ctx: &'ctx Context, contents: &'ctx Type) -> &'ctx Type {
-    PointerType::new(StructType::new(
-        ctx,
-        &[Type::get::<u64>(ctx), contents],
-        false,
-    ))
-}
-
 fn free_vars_in_exprs<'a, 'src: 'a, T>(es: T) -> FreeVarInsts<'src>
 where
     T: IntoIterator<Item = &'a ast::Expr<'src>>,
@@ -289,7 +278,6 @@ impl<'src, 'ctx> Env<'src, 'ctx> {
 struct NamedTypes<'ctx, 'src> {
     nil: &'ctx Type,
     real_world: &'ctx Type,
-    rc_generic: &'ctx Type,
     adts: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
     adts_inner: BTreeMap<(&'src str, Vec<ast::Type<'src>>), &'ctx Type>,
 }
@@ -355,16 +343,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         module: &'ctx Module,
         adts: ast::Adts<'src>,
     ) -> Self {
-        let rc_generic_inner = StructType::new_named(
-            ctx,
-            "rc_gen_in",
-            &[Type::get::<u64>(ctx), Type::get::<u8>(ctx)],
-            false,
-        );
         let named_types = NamedTypes {
             real_world: StructType::new_named(ctx, "RealWorld", &[], false),
             nil: StructType::new_named(ctx, "Nil", &[], false),
-            rc_generic: PointerType::new(rc_generic_inner),
             adts: BTreeMap::new(),
             adts_inner: BTreeMap::new(),
         };
@@ -452,7 +433,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
                 "->" => {
                     let fp = PointerType::new(self.gen_func_type(&ts[0], &ts[1]));
-                    let captures = self.named_types.rc_generic;
+                    let captures = type_generic_ptr(self.ctx);
                     StructType::new(self.ctx, &[fp, captures], false)
                 }
                 "Cons" => StructType::new(
@@ -484,7 +465,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// ADTs are equivalent to tagged unions, and are represented as a pair of a 16 bit tag,
     /// and the type of the largest variant.
     fn gen_adt(&mut self, adt: &ast::AdtDef<'src>, inst: &[ast::Type<'src>]) -> &'ctx Type {
-        let tag_type = Type::get::<i16>(self.ctx);
+        let tag_type = Type::get::<u16>(self.ctx);
         let largest_type = self.gen_largest_adt_variant_type(adt, inst);
         StructType::new_named(self.ctx, adt.name.s, &[tag_type, largest_type], false)
     }
@@ -497,7 +478,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         inst: &[ast::Type<'src>],
         inner_struct_type: &'ctx StructType,
     ) {
-        let tag_type = Type::get::<i16>(self.ctx);
+        let tag_type = Type::get::<u16>(self.ctx);
         let variant_types = adt.variants
             .iter()
             .map(|v| {
@@ -539,8 +520,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 self.named_types
                     .adts_inner
                     .insert((name, inst.to_vec()), inner);
-                let rc = type_rc(self.ctx, inner);
-                self.named_types.adts.insert((name, inst.to_vec()), rc);
+                let ptr = PointerType::new(inner);
+                self.named_types.adts.insert((name, inst.to_vec()), ptr);
                 self.populate_recursive_adt(&adt, inst, inner);
             } else {
                 let t = self.gen_adt(&adt, inst);
@@ -596,7 +577,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_ret(r);
         let closure_val = Value::new_struct(
             self.ctx,
-            &[closure_func, Value::new_undef(self.named_types.rc_generic)],
+            &[closure_func, Value::new_null(type_generic_ptr(self.ctx))],
             false,
         );
         let closure = self.module
@@ -847,9 +828,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     fn build_app(&self, closure: &'ctx Value, arg: &'ctx Value) -> &'ctx Value {
         let func_val = self.builder.build_extract_value(closure, 0);
         func_val.set_name("func");
-        let captures_rc = self.builder.build_extract_value(closure, 1);
-        captures_rc.set_name("capts-rc");
-        let captures_ptr = self.build_gep_rc_contents_generic(captures_rc);
+        let captures_ptr = self.builder.build_extract_value(closure, 1);
         captures_ptr.set_name("capts-ptr");
         let func = Function::from_super(func_val).expect("ICE: Failed to cast func to &Function");
         self.builder.build_call(func, &[captures_ptr, arg])
@@ -954,42 +933,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             false,
         );
         self.build_struct_of_type(vals, typ)
-    }
-
-    /// Build a reference counting pointer with contents `val`
-    ///
-    /// Count starts at 1
-    fn build_rc(&self, env: &mut Env<'src, 'ctx>, val: &'ctx Value) -> &'ctx Value {
-        let s = self.build_struct(&[1u64.compile(self.ctx), val]);
-        self.build_val_on_heap(env, s)
-    }
-
-    /// Get a generic pointer to the contents of a rc pointer
-    fn build_gep_rc_contents_generic(&self, rc: &Value) -> &'ctx Value {
-        let rc_generic = self.builder.build_bit_cast(
-            rc,
-            PointerType::new(StructType::new(
-                self.ctx,
-                &[Type::get::<u64>(self.ctx), Type::get::<u8>(self.ctx)],
-                false,
-            )),
-        );
-        let name = rc.get_name().unwrap_or("rc");
-        rc_generic.set_name(&format!("{}-gen", name));
-        self.build_gep_rc_contents(rc_generic)
-    }
-
-    /// Get a pointer to the contents of a rc pointer
-    fn build_gep_rc_contents(&self, rc: &Value) -> &'ctx Value {
-        self.builder
-            .build_gep(rc, &[0usize.compile(self.ctx), 1u32.compile(self.ctx)])
-    }
-
-    /// Build instructions to cast a pointer value to a generic
-    /// reference counted pointer `{i64, i8}*`
-    pub fn build_as_generic_rc(&self, val: &Value) -> &'ctx Value {
-        self.builder
-            .build_bit_cast(val, self.named_types.rc_generic)
     }
 
     /// Given a pointer to a pair, load the first value of the pair
@@ -1120,7 +1063,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     /// Generate the LLVM representation of a lambda expression, but with the contents
     /// of the closure capture left as allocated, but undefined, space
     ///
-    /// For use when generating bindings with recursive references
+    /// Can be used when generating bindings with recursive references
     fn gen_closure_without_captures(
         &mut self,
         env: &mut Env<'src, 'ctx>,
@@ -1130,15 +1073,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
         let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
-        let undef_heap_captures = self.build_malloc(env, self.size_of(captures_type) as usize);
-        let undef_heap_captures_generic_rc = self.build_as_generic_rc(undef_heap_captures);
-        undef_heap_captures_generic_rc.set_name(&format!("{}-undef-capts-gen", name));
-        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic_rc]);
+        let undef_heap_captures_generic =
+            self.build_malloc(env, self.size_of(captures_type) as usize);
+        undef_heap_captures_generic.set_name(&format!("{}-undef-capts-generic", name));
+        let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic]);
         closure.set_name(&format!("{}-clos", name));
         (closure, free_vars)
     }
 
-    /// Capture the free variables `free_vars` of some lambda from the environment `env`
+    /// Generate a struct of the captured free variables `free_vars`
+    /// of some lambda from the environment `env`
     ///
     /// Returns a LLVM structure of each captured variable
     fn gen_closure_env_capture(
@@ -1165,32 +1109,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         r
     }
 
-    /// For a closure that was created without environment capture,
-    /// capture free variables and insert into captures member of struct
-    ///
-    /// May supply map of the free variables of the lambda, if saved from previously,
-    /// to avoid unecessary recalculations.
-    fn closure_capture_env(
-        &mut self,
-        env: &mut Env<'src, 'ctx>,
-        closure: &Value,
-        free_vars: FreeVarInsts<'src>,
-        name: &str,
-    ) {
-        let captures = self.gen_closure_env_capture(env, &free_vars, name);
-        let closure_captures_rc_generic = self.builder.build_extract_value(closure, 1);
-        closure_captures_rc_generic.set_name(&format!("{}-clos-capts-rc-gen", name));
-        let closure_captures_rc = self.builder.build_bit_cast(
-            closure_captures_rc_generic,
-            type_rc(self.ctx, captures.get_type()),
+    /// Insert the captured environment for a closure, into a closure
+    /// that was created without environment capture.
+    fn build_insert_closure_captures(&mut self, closure: &Value, captures: &Value, name: &str) {
+        let target_captures_generic_ptr = self.builder.build_extract_value(closure, 1);
+        target_captures_generic_ptr.set_name(&format!("{}-clos-capts-generic-ptr", name));
+        let target_captures_ptr = self.builder.build_bit_cast(
+            target_captures_generic_ptr,
+            PointerType::new(captures.get_type()),
         );
-        closure_captures_rc.set_name(&format!("{}-clos-capts-rc", name));
-        let closure_captures_ptr = self.builder.build_gep(
-            closure_captures_rc,
-            &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
-        );
-        closure_captures_ptr.set_name(&format!("{}-clos-capts-ptr", name));
-        self.builder.build_store(captures, closure_captures_ptr);
+        target_captures_ptr.set_name(&format!("{}-clos-capts-ptr", name));
+        self.builder.build_store(captures, target_captures_ptr);
     }
 
     /// Generate the LLVM representation of a lambda expression
@@ -1200,17 +1129,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         lam: &'ast ast::Lambda<'src>,
         name: &str,
     ) -> &'ctx Value {
-        let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
-        let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
+        let (closure, free_vars) = self.gen_closure_without_captures(env, lam, name);
         let captures = self.gen_closure_env_capture(env, &free_vars, name);
-        let captures_rc = self.build_rc(env, captures);
-        captures_rc.set_name(&format!("{}-capts-rc", name));
-        let captures_rc_generic = self.builder
-            .build_bit_cast(captures_rc, self.named_types.rc_generic);
-        captures_rc_generic.set_name(&format!("{}-capts-rc-gen", name));
-        let r = self.build_struct(&[func_ptr, captures_rc_generic]);
-        r.set_name(&format!("{}-clos", name));
-        r
+        self.build_insert_closure_captures(closure, captures, name);
+        closure
     }
 
     /// Generate LLVM definitions for the variable/function bindings `bs`
@@ -1254,7 +1176,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                     let closure = env.get_local(name, &inst)
                         .expect("ICE: variable dissapeared");
                     let free_vars = lambdas_free_vars.pop_front().unwrap();
-                    self.closure_capture_env(env, closure, free_vars, name);
+                    let captures = self.gen_closure_env_capture(env, &free_vars, name);
+                    self.build_insert_closure_captures(closure, captures, name);
                 }
                 expr => {
                     let var = self.gen_expr(env, expr, Some(name));
@@ -1373,10 +1296,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .expect("ICE: No variant_index in gen_of_variant");
         let expected_i = (e_i as u16).compile(self.ctx);
         let found_i = if self.adts.adt_of_variant_is_recursive(variant) {
-            // If ADT is recursive, it's also behind a refcount pointer
-            let val_ = self.build_gep_rc_contents(val);
-            val_.set_name("of-variant_inner-ptr");
-            self.build_load_car(val_)
+            // If ADT is recursive, it's also behind a pointer
+            self.build_load_car(val)
         } else {
             self.build_extract_car(val)
         };
@@ -1392,9 +1313,13 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         variant: &'src str,
         inst: &[ast::Type<'src>],
     ) -> &'ctx Value {
+        // TODO: I see the "if is recursive { // is behind pointer } else { is in register }" pattern frequently.
+        //       Abstract away some of that.
+        // TODO: I've seen the "if behind pointer, return pointer, else put on stack and return pointer" a few times.
+        //       Make a function for that.
         let wrapped_ptr = if self.adts.adt_of_variant_is_recursive(variant) {
-            // If ADT is recursive, it's also behind a refcount pointer
-            self.build_gep_rc_contents(wrapped)
+            // If ADT is recursive, it's also behind a pointer
+            wrapped
         } else {
             let wrapped_stack = self.builder.build_alloca(wrapped.get_type());
             self.builder.build_store(wrapped, wrapped_stack);
@@ -1485,9 +1410,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             let wrapped_largest =
                 self.build_struct_of_type(&[tag, unwrapped_largest], adt_inner_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
-            let wrapped_largest_rc = self.build_rc(env, wrapped_largest);
-            wrapped_largest_rc.set_name("gen-new_wrapped-larg-rc");
-            wrapped_largest_rc
+            let wrapped_largest_heap = self.build_val_on_heap(env, wrapped_largest);
+            wrapped_largest_heap.set_name("gen-new_wrapped-larg-heap");
+            wrapped_largest_heap
         } else {
             let adt_type = self.get_or_gen_adt_by_name_and_inst(adt.name.s, adt_inst);
             let wrapped_largest = self.build_struct_of_type(&[tag, unwrapped_largest], adt_type);
