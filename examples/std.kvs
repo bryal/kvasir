@@ -259,6 +259,10 @@
   (lambda (real-world)
     (io2 (cdr (io1 real-world)))))
 
+(define (seq-io' io1 io2)
+  (lambda (real-world)
+    (io2 nil (cdr (io1 real-world)))))
+
 (define (bind-io io f)
   (lambda (real-world)
     (let [[r           (io real-world)]
