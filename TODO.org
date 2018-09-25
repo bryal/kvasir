@@ -247,11 +247,16 @@
     tail calls, right before the tail call). Registering could happen
     directly in the GC alloc routine
 
-*** TODO Remove current (partial) impl of refcount
+*** DONE Remove current (partial) impl of refcount
 *** TODO Mark recursive types for heap allocation early on in the pipeline
 *** TODO Impl GC
+*** TODO Or, consider just using Boehm GC. It might serve me well enough.
 
 ** TODO Implement gen_lambda in terms of gen_lambda_no_capture, closure_capture_env?
+** NEXT Use switch when generating Match?
+   Would probably be cleaner than multiple `if`s, and has builtin
+   support for default clause.
+
 ** Misc. features and TODOs
 *** NEXT make keywords in error messages bold
 
