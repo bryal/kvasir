@@ -1,12 +1,17 @@
+#![feature(const_fn, optin_builtin_traits, const_vec_new)]
+
+#[macro_use]
+extern crate lazy_static;
 extern crate libc;
 extern crate rand;
+
+pub mod string;
+pub mod gc;
 
 use std::io::{self, BufRead};
 use std::mem::size_of;
 use libc::malloc;
 use string::*;
-
-pub mod string;
 
 unsafe fn on_heap<T>(data: T) -> *mut T {
     let ptr = malloc(size_of::<T>()) as *mut T;

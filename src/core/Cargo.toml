@@ -6,6 +6,7 @@ authors = ["Johan Johansson <96.bryal@gmail.com>"]
 [dependencies]
 rand = "0.4"
 libc = "0.2.39"
+lazy_static = "1.1"
 
 [lib]
 crate-type = ["staticlib"]
