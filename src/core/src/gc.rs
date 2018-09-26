@@ -61,6 +61,12 @@ pub extern "C" fn gc_pop_scope() {
     gc.pop_scope()
 }
 
+#[no_mangle]
+pub extern "C" fn gc_move_locals_to_parent_scope_as_temps_and_pop_scope() {
+    let mut gc = GC.lock().unwrap();
+    gc.move_locals_to_parent_scope_as_temps_and_pop_scope();
+}
+
 type UIntPtr = usize;
 
 struct Scope {
@@ -139,6 +145,19 @@ impl Gc {
             .pop()
             .expect("ICE: Popped GC scope when no scopes below");
         self.top_scope = new_top_scope;
+    }
+
+    fn move_locals_to_parent_scope_as_temps_and_pop_scope(&mut self) {
+        let new_top_scope = self.scopes
+            .pop()
+            .expect("ICE: Popped GC scope when no scopes below");
+        let prev_top_scope = mem::replace(&mut self.top_scope, new_top_scope);
+        self.top_scope.temps.extend(
+            prev_top_scope
+                .temps
+                .into_iter()
+                .chain(prev_top_scope.bounds),
+        )
     }
 
     fn gather_reachable_objects(&self) -> BTreeSet<UIntPtr> {
