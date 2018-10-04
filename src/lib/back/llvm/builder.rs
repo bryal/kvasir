@@ -266,7 +266,10 @@ impl Builder {
         pointer: &Value,
         struct_field_index: u32,
     ) -> &Value {
-        self.build_gep(pointer, &[struct_field_index.compile(context)])
+        self.build_gep(
+            pointer,
+            &[0usize.compile(context), struct_field_index.compile(context)],
+        )
     }
     /// Build an instruction that runs whichever block matches the value, or `default` if none of them matched it.
     pub fn build_switch(
