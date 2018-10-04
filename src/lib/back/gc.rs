@@ -33,7 +33,7 @@ impl<'ctx, 'src> Gc<'ctx, 'src> {
         let t_i8 = Type::get::<i8>(ctx);
         let t_ptr_i8 = PointerType::new(t_i8);
         let t_void = Type::get::<()>(ctx);
-        let t_obj_handler = FunctionType::new(t_void, &[t_ptr_i8]);
+        let t_obj_handler = PointerType::new(FunctionType::new(t_void, &[t_ptr_i8]));
         let t_obj_visitor = FunctionType::new(t_void, &[t_ptr_i8, t_obj_handler]);
         let obj_visitor_type = t_obj_visitor;
         let alloc_type = FunctionType::new(t_ptr_i8, &[t_usize, t_obj_visitor]);
@@ -88,16 +88,20 @@ impl<'ctx, 'src> Gc<'ctx, 'src> {
         let func = module.add_function("obj_visitor_closure", obj_visitor_type);
         let entry = func.append("entry");
         builder.position_at_end(entry);
-        let closure = &*func[0];
-        closure.set_name("closure");
-        let obj_handler = &*func[1];
+        let closure_generic_ptr = &*func[0];
+        let t_generic_ptr = PointerType::new(Type::get::<u8>(ctx));
+        let t_func_ptr = t_generic_ptr;
+        let t_captures = t_generic_ptr;
+        let t_closure = StructType::new(ctx, &[t_func_ptr, t_captures], false);
+        let t_closure_ptr = PointerType::new(t_closure);
+        let closure_ptr = builder.build_bit_cast(closure_generic_ptr, t_closure_ptr);
+        let captures_ptr = builder.build_gep_struct(ctx, closure_ptr, 1);
+        let captures = builder.build_load(captures_ptr);
+        captures.set_name("captures");
+        let obj_handler = Function::from_super(&*func[1])
+            .expect("ICE: obj_handler was not a function in gen_closure_obj_visitor");
         obj_handler.set_name("obj_handler");
-        let closure_captures = builder.build_gep_struct(ctx, closure, 1);
-        closure_captures.set_name("closure_captures");
-        builder.build_call(
-            Function::from_super(obj_handler).unwrap(),
-            &[closure_captures],
-        );
+        builder.build_call(obj_handler, &[captures]);
         func
     }
 

@@ -1066,10 +1066,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 // A core const type. None of those are/contain further object references in any way.
                 ast::Type::Const(..) => None,
                 ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
-                    // The object visitor of a function is stored as part
-                    // of the closure struct. `closure_obj_visitor` is a
-                    // simple function that calls the inner object
-                    // visitor of a closure.
+                    // `closure_obj_visitor` is a simple function that
+                    // calls the inner object visitor of a closure.
                     "->" => Some(self.gc.closure_obj_visitor),
                     "Cons" => self.gen_cons_obj_visitor(&ts[0], &ts[1]),
                     "Ptr" => self.gen_ptr_obj_visitor(&ts[0]),
