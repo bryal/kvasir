@@ -1,12 +1,13 @@
 use libc::{c_char, c_uint};
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
-use llvm_sys::{core, LLVMBuilder, LLVMRealPredicate, LLVMIntPredicate};
+use llvm_sys::{core, LLVMBuilder, LLVMIntPredicate, LLVMRealPredicate};
 use cbox::CSemiBox;
 use std::marker::PhantomData;
 use super::block::BasicBlock;
 use super::context::Context;
 use super::types::Type;
-use super::value::{Function, Value, Predicate};
+use super::value::{Function, Predicate, Value};
+use super::compile::Compile;
 
 static NULL_NAME: [c_char; 1] = [0];
 
@@ -43,9 +44,7 @@ macro_rules! un_op(
 impl Builder {
     /// Create a new builder in the context given.
     pub fn new(context: &Context) -> CSemiBox<Builder> {
-        CSemiBox::new(
-            unsafe { core::LLVMCreateBuilderInContext(context.into()) }.into(),
-        )
+        CSemiBox::new(unsafe { core::LLVMCreateBuilderInContext(context.into()) }.into())
     }
     /// Position the builder at the end of `block`.
     pub fn position_at_end(&self, block: &BasicBlock) {
@@ -259,6 +258,15 @@ impl Builder {
                 NULL_NAME.as_ptr(),
             ).into()
         }
+    }
+    /// Build a GEP instruction with index 0 through the pointer
+    pub fn build_gep_struct(
+        &self,
+        context: &Context,
+        pointer: &Value,
+        struct_field_index: u32,
+    ) -> &Value {
+        self.build_gep(pointer, &[struct_field_index.compile(context)])
     }
     /// Build an instruction that runs whichever block matches the value, or `default` if none of them matched it.
     pub fn build_switch(

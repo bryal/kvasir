@@ -10,6 +10,7 @@ use std::env::current_dir;
 
 mod llvm;
 mod codegen;
+mod gc;
 
 pub fn compile(
     ast: &ast::Ast,

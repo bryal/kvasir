@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
 use super::llvm::*;
+use super::gc::*;
 use self::CodegenErr::*;
+use itertools::Itertools;
 
 /// Runtime errors
 #[derive(PartialEq, Eq)]
@@ -334,6 +336,7 @@ pub struct CodeGenerator<'ctx, 'src> {
     current_block: RefCell<Option<&'ctx BasicBlock>>,
     named_types: NamedTypes<'ctx, 'src>,
     adts: ast::Adts<'src>,
+    gc: Gc<'ctx, 'src>,
 }
 
 impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
@@ -349,6 +352,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             adts: BTreeMap::new(),
             adts_inner: BTreeMap::new(),
         };
+        let gc = Gc::new(ctx, module, builder);
         CodeGenerator {
             ctx,
             module,
@@ -357,6 +361,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             current_block: RefCell::new(None),
             named_types,
             adts,
+            gc,
         }
     }
 
@@ -368,9 +373,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         Value::new_undef(self.named_types.real_world)
     }
 
-    fn target_data(&self) -> &'ctx TargetData {
+    fn target_data(module: &Module) -> &'ctx TargetData {
         unsafe {
-            let module_ref = mem::transmute::<&Module, LLVMModuleRef>(self.module);
+            let module_ref = mem::transmute::<&Module, LLVMModuleRef>(module);
             let target_data = mem::transmute::<LLVMTargetDataRef, &TargetData>(
                 llvm_sys::target::LLVMGetModuleDataLayout(module_ref),
             );
@@ -378,26 +383,38 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
     }
 
-    fn size_of(&self, t: &Type) -> u64 {
-        self.target_data().size_of(t)
+    fn size_of(module: &Module, t: &Type) -> u64 {
+        Self::target_data(module).size_of(t)
     }
 
-    fn ptr_size_bytes(&self) -> usize {
-        self.target_data().get_pointer_size()
+    fn size_of_(&self, t: &Type) -> u64 {
+        Self::size_of(self.module, t)
     }
 
-    fn ptr_size_bits(&self) -> usize {
-        self.ptr_size_bytes() * 8
+    fn ptr_size_bytes(module: &Module) -> usize {
+        Self::target_data(module).get_pointer_size()
     }
 
-    fn gen_int_ptr_type(&self) -> &'ctx Type {
-        match self.ptr_size_bits() {
-            8 => Type::get::<i8>(self.ctx),
-            16 => Type::get::<i16>(self.ctx),
-            32 => Type::get::<i32>(self.ctx),
-            64 => Type::get::<i64>(self.ctx),
+    fn ptr_size_bits(module: &Module) -> usize {
+        Self::ptr_size_bytes(module) * 8
+    }
+
+    fn ptr_size_bits_(&self) -> usize {
+        Self::ptr_size_bits(self.module)
+    }
+
+    pub fn gen_int_ptr_type(module: &'ctx Module, ctx: &'ctx Context) -> &'ctx Type {
+        match Self::ptr_size_bits(module) {
+            8 => Type::get::<i8>(ctx),
+            16 => Type::get::<i16>(ctx),
+            32 => Type::get::<i32>(ctx),
+            64 => Type::get::<i64>(ctx),
             e => panic!("ICE: Platform has unsupported pointer size of {} bit", e),
         }
+    }
+
+    fn gen_int_ptr_type_(&self) -> &'ctx Type {
+        Self::gen_int_ptr_type(self.module, self.ctx)
     }
 
     fn gen_func_type(&mut self, arg: &ast::Type<'src>, ret: &ast::Type<'src>) -> &'ctx Type {
@@ -414,7 +431,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             ast::Type::Const("Int32", _) => Type::get::<i32>(self.ctx),
             ast::Type::Const("Int64", _) => Type::get::<i64>(self.ctx),
             ast::Type::Const("IntPtr", _) | ast::Type::Const("UIntPtr", _) => {
-                self.gen_int_ptr_type()
+                self.gen_int_ptr_type_()
             }
             ast::Type::Const("UInt8", _) => Type::get::<u8>(self.ctx),
             ast::Type::Const("UInt16", _) => Type::get::<u16>(self.ctx),
@@ -490,7 +507,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .collect::<Vec<_>>();
         let largest_type = variant_types
             .into_iter()
-            .max_by_key(|t| self.size_of(t))
+            .max_by_key(|t| self.size_of_(t))
             .unwrap_or(self.named_types.nil);
         inner_struct_type
             .set_elements(&[tag_type, largest_type], false)
@@ -680,16 +697,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             }
             let func = self.gen_extern_func(id, &decl.typ);
             env.add_global_mono(id, Global::Func(func))
-        }
-        // Heap allocation is required for core-functionality. Unless user has already
-        // explicitly declared the allocator, add it.
-        if !externs.contains_key("malloc") {
-            let malloc_type = ast::Type::new_func(
-                ast::Type::Const("UIntPtr", None),
-                ast::Type::new_ptr(ast::Type::Const("UInt8", None)),
-            );
-            let malloc_func = self.gen_extern_func("malloc", &malloc_type);
-            env.add_global_mono("malloc", Global::Func(malloc_func));
         }
     }
 
@@ -881,37 +888,253 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.build_call_named(env, name, &[], arg)
     }
 
-    /// Generate a call to the heap allocator to allocate `n` bytes of heap memory.
+    fn gen_adt_obj_visitor(&mut self, name: &str, inst: &[ast::Type<'src>]) -> &'ctx Function {
+        if let Some(visitor) = self.gc.adt_obj_visitors.get(&(name, inst.to_vec())) {
+            return visitor;
+        }
+        let name = format!(
+            "obj_visitor_adt_{}_[{}]",
+            name,
+            inst.iter()
+                .map(|t| t.to_string())
+                .intersperse("_".to_string())
+                .collect::<String>()
+        );
+        let func = self.module.add_function(&name, self.gc.obj_visitor_type);
+        let entry = func.append("entry");
+        self.builder.position_at_end(entry);
+        let adt = &*func[0];
+        adt.set_name("adt");
+        let tag = self.build_load_car(adt);
+        tag.set_name("tag");
+        let inner = self.builder.build_gep_struct(self.ctx, adt, 1);
+        inner.set_name("inner");
+        let obj_handler = &*func[1];
+        obj_handler.set_name("obj_handler");
+        // Switch over variants.
+        let mut cases: Vec<(&Value, &BasicBlock)> = vec![];
+        let variants = self.adts.defs[name.as_str()]
+            .variants
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect::<Vec<_>>();
+        for (i, v) in variants {
+            let t = self.adts
+                .type_with_inst_of_variant(&v, inst)
+                .expect(&format!(
+                    "ICE: No type with inst `{:?}` of variant `{}`",
+                    inst, v.name
+                ));
+            if let Some(visitor) = self.gen_obj_visitor(&t) {
+                let block = func.append(&format!("variant_{}", i));
+                self.builder.position_at_end(block);
+                self.builder.build_call(visitor, &[inner, obj_handler]);
+                let i_ll = (i as u16).compile(self.ctx);
+                cases.push((i_ll, block))
+            }
+        }
+        if cases.len() > 0 {
+            let default = func.append("default");
+            self.builder.position_at_end(entry);
+            self.builder.build_switch(tag, default, &cases);
+        }
+        if let Some(block) = *self.current_block.borrow() {
+            self.builder.position_at_end(block);
+        }
+        func
+    }
+
+    fn gen_cons_obj_visitor(
+        &mut self,
+        car_typ: &ast::Type<'src>,
+        cdr_typ: &ast::Type<'src>,
+    ) -> Option<&'ctx Function> {
+        let car_vis = self.gen_obj_visitor(car_typ);
+        let cdr_vis = self.gen_obj_visitor(cdr_typ);
+        if car_vis.is_none() && cdr_vis.is_none() {
+            None
+        } else {
+            let name = format!("obj_visitor_cons_{}_{}", car_typ, cdr_typ);
+            let func = self.module.add_function(&name, self.gc.obj_visitor_type);
+            let entry = func.append("entry");
+            self.builder.position_at_end(entry);
+            let cons = &*func[0];
+            cons.set_name("cons");
+            let obj_handler = &*func[1];
+            obj_handler.set_name("obj_handler");
+            if let Some(car_vis) = car_vis {
+                let car = self.builder.build_gep_struct(self.ctx, cons, 0);
+                car.set_name("car");
+                self.builder.build_call(car_vis, &[car, obj_handler]);
+            }
+            if let Some(cdr_vis) = cdr_vis {
+                let cdr = self.builder.build_gep_struct(self.ctx, cons, 1);
+                cdr.set_name("cdr");
+                self.builder.build_call(cdr_vis, &[cdr, obj_handler]);
+            }
+            if let Some(block) = *self.current_block.borrow() {
+                self.builder.position_at_end(block);
+            }
+            Some(func)
+        }
+    }
+
+    fn gen_ptr_obj_visitor(&mut self, inner_typ: &ast::Type<'src>) -> Option<&'ctx Function> {
+        self.gen_obj_visitor(inner_typ).map(|inner_vis| {
+            let name = format!("obj_visitor_ptr_{}", inner_typ);
+            let func = self.module.add_function(&name, self.gc.obj_visitor_type);
+            let entry = func.append("entry");
+            self.builder.position_at_end(entry);
+            let ptr = &*func[0];
+            ptr.set_name("ptr");
+            let obj_handler = &*func[1];
+            obj_handler.set_name("obj_handler");
+            let inner = self.builder.build_load(ptr);
+            inner.set_name("inner");
+            self.builder.build_call(inner_vis, &[inner, obj_handler]);
+            if let Some(block) = *self.current_block.borrow() {
+                self.builder.position_at_end(block);
+            }
+            &*func
+        })
+    }
+
+    fn gen_captures_obj_visitor(&mut self, types: Vec<ast::Type<'src>>) -> Option<&'ctx Function> {
+        if let Some(visitor) = self.gc.captures_obj_visitors.get(&types) {
+            return visitor.clone();
+        }
+        let visitors = types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| self.gen_obj_visitor(t).map(|v| (i, v)))
+            .collect::<Vec<_>>();
+        let func = if visitors.is_empty() {
+            None
+        } else {
+            let types_s = types
+                .iter()
+                .map(|t| t.to_string())
+                .intersperse("_".to_string())
+                .collect::<String>();
+            let name = format!("obj_visitor_captures_{{{}}}", types_s);
+            let func = self.module.add_function(&name, self.gc.obj_visitor_type);
+            let entry = func.append("entry");
+            self.builder.position_at_end(entry);
+            let captures = &*func[0];
+            captures.set_name("captures");
+            let obj_handler = &*func[1];
+            obj_handler.set_name("obj_handler");
+            for (i, capture_visitor) in visitors {
+                let capture = self.builder.build_gep_struct(self.ctx, captures, i as u32);
+                capture.set_name(&format!("capture_{}", i));
+                self.builder
+                    .build_call(capture_visitor, &[capture, obj_handler]);
+            }
+            if let Some(block) = *self.current_block.borrow() {
+                self.builder.position_at_end(block);
+            }
+            Some(&*func)
+        };
+        self.gc.captures_obj_visitors.insert(types, func);
+        func
+    }
+
+    /// Generate a function which traverses a value of type `typ`,
+    /// calling a given handler for every object reference
+    /// encountered.
+    ///
+    /// Used by the garbage collector to find which objects are
+    /// directly or indirectly referenced by the root objects, and
+    /// which objects are "dead" and should be deallocated.
+    ///
+    /// For recursive algeabraic datatypes, just handles the self referenece.
+    ///
+    /// Returns `None` if a value of the type can't contain any further object references.
+    fn gen_obj_visitor(&mut self, typ: &ast::Type<'src>) -> Option<&'ctx Function> {
+        if self.gc.obj_visitors.contains_key(typ) {
+            self.gc.obj_visitors[typ]
+        } else {
+            let func = match *typ {
+                ast::Type::Const(name, _) if self.adts.defs.contains_key(name) => {
+                    Some(if self.adts.adt_of_name_is_recursive(name) {
+                        self.gc.handle_self_obj_visitor
+                    } else {
+                        self.gen_adt_obj_visitor(name, &[])
+                    })
+                }
+                // A core const type. None of those are/contain further object references in any way.
+                ast::Type::Const(..) => None,
+                ast::Type::App(box ast::TypeFunc::Const(s), ref ts) => match s {
+                    // The object visitor of a function is stored as part
+                    // of the closure struct. `closure_obj_visitor` is a
+                    // simple function that calls the inner object
+                    // visitor of a closure.
+                    "->" => Some(self.gc.closure_obj_visitor),
+                    "Cons" => self.gen_cons_obj_visitor(&ts[0], &ts[1]),
+                    "Ptr" => self.gen_ptr_obj_visitor(&ts[0]),
+                    name if self.adts.defs.contains_key(name) => {
+                        Some(if self.adts.adt_of_name_is_recursive(name) {
+                            self.gc.handle_self_obj_visitor
+                        } else {
+                            self.gen_adt_obj_visitor(name, ts)
+                        })
+                    }
+                    _ => panic!(
+                        "ICE: Can't generate object visitor for type function `{}`",
+                        s
+                    ),
+                },
+                ast::Type::App(..) | ast::Type::Poly { .. } | ast::Type::Var(..) => {
+                    panic!("ICE: Can't generate object visitor for type `{}`", typ)
+                }
+            };
+            self.gc.obj_visitors.insert(typ.clone(), func);
+            func
+        }
+    }
+
+    /// Generate a call to the heap allocator to allocate heap space
+    /// for a value of type `typ` as a generic pointer.
     ///
     /// Returns a heap pointer of generic type `i8*`, analogous to the way
     /// `malloc` in C returns a void pointer.
-    ///
-    /// Will call whatever function is bound to `malloc`.
-    fn build_malloc(&self, env: &mut Env<'src, 'ctx>, n: usize) -> &'ctx Value {
-        let ptr = self.build_call_named_mono(env, "malloc", n.compile(self.ctx));
-        ptr.set_name("malloc-ptr");
+    fn gen_gc_alloc_type_generic(&mut self, typ: &ast::Type<'src>) -> &'ctx Value {
+        let typ_c = self.gen_type(typ);
+        let type_size = self.size_of_(typ_c);
+        let obj_visitor = self.gen_obj_visitor(typ).unwrap_or(self.gc.nop_obj_visitor);
+        let ptr = self.gc.build_alloc_temp(type_size as usize, obj_visitor);
+        ptr.set_name("alloc-ptr");
         ptr
     }
 
-    /// Generate a call to the heap allocator to allocate heap space for a value of type `typ`
+    /// Generate a call to the heap allocator to allocate heap space
+    /// for a value of type `typ`.
     ///
     /// Returns a heap pointer of type pointer to `typ`.
-    fn build_malloc_of_type(&self, env: &mut Env<'src, 'ctx>, typ: &Type) -> &'ctx Value {
-        let type_size = self.size_of(typ);
-        let p = self.build_malloc(env, type_size as usize);
-        self.builder.build_bit_cast(p, PointerType::new(typ))
+    fn gen_gc_alloc_type(&mut self, typ: &ast::Type<'src>) -> &'ctx Value {
+        let generic = self.gen_gc_alloc_type_generic(typ);
+        let typ_c = self.gen_type(typ);
+        self.builder
+            .build_bit_cast(generic, PointerType::new(typ_c))
     }
 
-    /// Put a value on the heap
+    /// Allocate undefined space of size `n`, setting the GC object visitor to the NOP visitor.
     ///
-    /// Returns a pointer pointing to `val` on the heap
-    fn build_val_on_heap(&self, env: &mut Env<'src, 'ctx>, val: &Value) -> &'ctx Value {
-        let p = self.build_malloc_of_type(env, val.get_type());
-        if let Some(name) = val.get_name() {
-            p.set_name(&format!("{}-heap", name));
-        }
-        self.builder.build_store(val, p);
-        p
+    /// When storing a valid value later, don't forget to update the object visitor.
+    fn gen_gc_alloc_undef(&self, size: usize) -> &'ctx Value {
+        self.gc.build_alloc_temp(size, self.gc.nop_obj_visitor)
+    }
+
+    fn gen_gc_alloc_adt(
+        &mut self,
+        name: &str,
+        inst: &[ast::Type<'src>],
+        inner_type: &'ctx Type,
+    ) -> &'ctx Value {
+        let visitor = self.gen_adt_obj_visitor(name, inst);
+        self.gc
+            .build_alloc_temp(self.size_of_(inner_type) as usize, visitor)
     }
 
     /// Build a sequence of instructions that create a struct of type
@@ -937,8 +1160,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Given a pointer to a pair, load the first value of the pair
     pub fn build_load_car(&self, consptr: &Value) -> &'ctx Value {
-        let carptr = self.builder
-            .build_gep(consptr, &[0usize.compile(self.ctx), 0u32.compile(self.ctx)]);
+        let carptr = self.builder.build_gep_struct(self.ctx, consptr, 0);
         self.builder.build_load(carptr)
     }
 
@@ -954,10 +1176,10 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     pub fn build_cast(&self, val: &'ctx Value, typ: &'ctx Type) -> &'ctx Value {
         let val_type = val.get_type();
         assert!(
-            self.size_of(val_type) <= self.size_of(typ),
+            self.size_of_(val_type) <= self.size_of_(typ),
             "ICE: Tried to `build_cast` to smaller target type. from sizeof({:?})={} to sizeof({:?})={}",
-            val_type, self.size_of(val_type),
-            typ, self.size_of(typ)
+            val_type, self.size_of_(val_type),
+            typ, self.size_of_(typ)
         );
         let target_stack = self.builder.build_alloca(typ);
         target_stack.set_name("build-cast_target-stack");
@@ -968,6 +1190,17 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let r = self.builder.build_load(target_stack);
         r.set_name("build-cast_target");
         r
+    }
+
+    fn build_ptr_to_val(&self, val: &'ctx Value) -> &'ctx Value {
+        let t = val.get_type();
+        if t.is_pointer() {
+            val
+        } else {
+            let ptr = self.builder.build_alloca(t);
+            self.builder.build_store(val, ptr);
+            ptr
+        }
     }
 
     fn build_panic(&self, env: &mut Env<'src, 'ctx>, s: &str) {
@@ -997,7 +1230,6 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ) -> &'ctx Function {
         let parent_name = self.current_func
             .borrow()
-            .deref()
             .and_then(|f| f.get_name().map(str::to_string))
             .unwrap_or("global".to_string());
         let lambda_name = format!("lambda_{}_{}", parent_name, name);
@@ -1006,7 +1238,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let entry = func.append("entry");
         let parent_block = mem::replace(&mut *self.current_block.borrow_mut(), Some(entry));
         self.builder.position_at_end(entry);
-
+        self.gc.build_push_new_scope();
         let captures_ptr_type = PointerType::new(self.captures_type_of_free_vars(free_vars));
         let captures_ptr_generic = &*func[0];
         captures_ptr_generic.set_name("captures_generic");
@@ -1015,6 +1247,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         captures_ptr.set_name("captures");
         let param = &*func[1];
         param.set_name(lam.param_ident.s);
+        let param_ptr = self.build_ptr_to_val(param);
+        let param_typ = lam.typ.get_func().unwrap().0;
+        let param_obj_visitor = self.gen_obj_visitor(param_typ)
+            .unwrap_or(self.gc.nop_obj_visitor);
+        self.gc.build_mark_bound(param_ptr, param_obj_visitor);
 
         // Create function local environment of only parameter + captures
         let mut local_env = map_of(lam.param_ident.s.to_string(), vec![map_of(vec![], param)]);
@@ -1026,10 +1263,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 .entry(fv_id.to_string())
                 .or_insert(vec![BTreeMap::new()]);
             for (fv_inst, _) in fv_insts.iter().cloned() {
-                let fv_ptr = self.builder.build_gep(
-                    captures_ptr,
-                    &[0usize.compile(self.ctx), i.compile(self.ctx)],
-                );
+                let fv_ptr = self.builder.build_gep_struct(self.ctx, captures_ptr, i);
                 fv_ptr.set_name(&format!("capture_{}", fv_id));
                 let fv_loaded = self.builder.build_load(fv_ptr);
                 fv_loaded.set_name(fv_id);
@@ -1044,11 +1278,16 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         }
         let old_locals = mem::replace(&mut env.locals, local_env);
 
-        let e = self.gen_expr(env, &lam.body, None);
-        if e.get_name().is_none() {
-            e.set_name("return-val")
+        let body = self.gen_expr(env, &lam.body, None);
+        if body.get_name().is_none() {
+            body.set_name("return-val")
         }
-        self.builder.build_ret(e);
+        self.gc.build_pop_scope();
+        let body_ptr = self.build_ptr_to_val(body);
+        let body_obj_visitor = self.gen_obj_visitor(lam.body.get_type())
+            .unwrap_or(self.gc.nop_obj_visitor);
+        self.gc.build_mark_bound(body_ptr, body_obj_visitor);
+        self.builder.build_ret(body);
 
         // Restore state of code generator
         env.locals = old_locals;
@@ -1073,8 +1312,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let free_vars = free_vars_in_lambda_filter_globals(&env, &lam);
         let func_ptr = self.gen_closure_func(env, &free_vars, lam, name);
         let captures_type = self.captures_type_of_free_vars(&free_vars);
-        let undef_heap_captures_generic =
-            self.build_malloc(env, self.size_of(captures_type) as usize);
+        // TODO: First, allocate w nop obj visitor, then update visitor when "defining" the memory later.
+        let undef_heap_captures_generic = self.gc.build_alloc_temp(
+            self.size_of_(captures_type) as usize,
+            self.gc.nop_obj_visitor,
+        );
         undef_heap_captures_generic.set_name(&format!("{}-undef-capts-generic", name));
         let closure = self.build_struct(&[func_ptr, undef_heap_captures_generic]);
         closure.set_name(&format!("{}-clos", name));
@@ -1090,28 +1332,39 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         env: &mut Env<'src, 'ctx>,
         free_vars: &FreeVarInsts<'src>,
         name: &str,
-    ) -> &'ctx Value {
+    ) -> (&'ctx Value, &'ctx Function) {
         let mut captures_vals = Vec::new();
+        let mut captures_types = Vec::new();
         for (&fv, insts) in free_vars {
-            for &(ref inst, _) in insts {
-                captures_vals.push(env.get_local(fv, inst).unwrap_or_else(|| {
+            for &(ref inst, ref typ) in insts {
+                let val = env.get_local(fv, inst).unwrap_or_else(|| {
                     panic!(
                         "ICE: Free var not found in env\n\
                          var: {}, inst: {:?}\n\
                          env: {:?}",
                         fv, inst, env
                     )
-                }));
+                });
+                captures_vals.push(val);
+                captures_types.push(typ.clone());
             }
         }
-        let r = self.build_struct(&captures_vals);
-        r.set_name(&format!("{}-capts", name));
-        r
+        let captures = self.build_struct(&captures_vals);
+        captures.set_name(&format!("{}-capts", name));
+        let captures_obj_visitor = self.gen_captures_obj_visitor(captures_types)
+            .unwrap_or(self.gc.nop_obj_visitor);
+        (captures, captures_obj_visitor)
     }
 
     /// Insert the captured environment for a closure, into a closure
     /// that was created without environment capture.
-    fn build_insert_closure_captures(&mut self, closure: &Value, captures: &Value, name: &str) {
+    fn build_insert_closure_captures(
+        &mut self,
+        closure: &Value,
+        captures: &Value,
+        captures_obj_visitor: &Function,
+        name: &str,
+    ) {
         let target_captures_generic_ptr = self.builder.build_extract_value(closure, 1);
         target_captures_generic_ptr.set_name(&format!("{}-clos-capts-generic-ptr", name));
         let target_captures_ptr = self.builder.build_bit_cast(
@@ -1120,6 +1373,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         );
         target_captures_ptr.set_name(&format!("{}-clos-capts-ptr", name));
         self.builder.build_store(captures, target_captures_ptr);
+        self.gc
+            .build_update_obj_visitor(target_captures_generic_ptr, captures_obj_visitor);
     }
 
     /// Generate the LLVM representation of a lambda expression
@@ -1130,8 +1385,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         name: &str,
     ) -> &'ctx Value {
         let (closure, free_vars) = self.gen_closure_without_captures(env, lam, name);
-        let captures = self.gen_closure_env_capture(env, &free_vars, name);
-        self.build_insert_closure_captures(closure, captures, name);
+        let (captures, captures_obj_visitor) = self.gen_closure_env_capture(env, &free_vars, name);
+        self.build_insert_closure_captures(closure, captures, captures_obj_visitor, name);
         closure
     }
 
@@ -1139,7 +1394,11 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     ///
     /// Assumes that the variable bindings in `bs` are in reverse
     /// topologically order for the relation: "depends on".
-    fn gen_bindings(&mut self, env: &mut Env<'src, 'ctx>, bindings: &[&'ast ast::Binding<'src>]) {
+    fn gen_let_bindings(
+        &mut self,
+        env: &mut Env<'src, 'ctx>,
+        bindings: &[&'ast ast::Binding<'src>],
+    ) {
         // To solve the problem of recursive references in closure
         // captures, e.g. two mutually recursive functions that need
         // to capture each other: First create closures where captures
@@ -1159,6 +1418,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 }
             }
         }
+        // Declare functions to allow recursive defs
         let mut lambdas_free_vars = VecDeque::new();
         for &(name, inst, val) in &bindings_insts {
             match *val {
@@ -1170,19 +1430,31 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 _ => (),
             }
         }
+        // Define functions and variables
         for &(name, inst, val) in &bindings_insts {
             match val {
                 &ast::Expr::Lambda(_) => {
                     let closure = env.get_local(name, &inst)
                         .expect("ICE: variable dissapeared");
                     let free_vars = lambdas_free_vars.pop_front().unwrap();
-                    let captures = self.gen_closure_env_capture(env, &free_vars, name);
-                    self.build_insert_closure_captures(closure, captures, name);
+                    let (captures, captures_obj_visitor) =
+                        self.gen_closure_env_capture(env, &free_vars, name);
+                    self.build_insert_closure_captures(
+                        closure,
+                        captures,
+                        captures_obj_visitor,
+                        name,
+                    );
                 }
                 expr => {
                     let var = self.gen_expr(env, expr, Some(name));
                     var.set_name(name);
                     env.add_local_inst(name, inst.clone(), var);
+                    let ptr = self.build_ptr_to_val(var);
+                    let var_obj_visitor = self.gen_obj_visitor(expr.get_type())
+                        .unwrap_or(self.gc.nop_obj_visitor);
+                    self.gc
+                        .build_mark_bound_and_clear_scope_temps(ptr, var_obj_visitor);
                 }
             }
         }
@@ -1190,9 +1462,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate LLVM IR for a `let` special form
     fn gen_let(&mut self, env: &mut Env<'src, 'ctx>, l: &'ast ast::Let<'src>) -> &'ctx Value {
+        self.gc.build_push_new_scope();
         let bindings = l.bindings.bindings().rev().collect::<Vec<_>>();
-        self.gen_bindings(env, &bindings);
+        self.gen_let_bindings(env, &bindings);
         let v = self.gen_expr(env, &l.body, None);
+        self.gc
+            .build_move_locals_to_parent_scope_as_temps_and_pop_scope();
         for b in bindings {
             env.pop_local(b.ident.s);
         }
@@ -1226,7 +1501,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
 
     /// Generate LLVM IR for the cast of an expression to a type
     fn gen_cast(&mut self, env: &mut Env<'src, 'ctx>, c: &'ast ast::Cast<'src>) -> &'ctx Value {
-        let ptr_size = self.ptr_size_bits();
+        let ptr_size = self.ptr_size_bits_();
         let from_type = c.expr.get_type();
         let to_type = &c.typ;
         let to_type_ll = self.gen_type(to_type);
@@ -1326,14 +1601,12 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             wrapped_stack
         };
         wrapped_ptr.set_name("as-variant_wrapped-ptr");
-        let unwrapped_ptr_of_largest_member_type = self.builder.build_gep(
-            wrapped_ptr,
-            &[0usize.compile(self.ctx), 1u32.compile(self.ctx)],
-        );
+        let unwrapped_ptr_of_largest_member_type =
+            self.builder.build_gep_struct(self.ctx, wrapped_ptr, 1);
         unwrapped_ptr_of_largest_member_type.set_name("as-variant_unwrapped-largest");
         let variant_type = self.adts
             .type_with_inst_of_variant_with_name(variant, inst)
-            .expect("ICE: No type_of_variant in gen_as_variant");
+            .expect("ICE: No type_of_variant in gen_as_varian");
         let unwrapped_type = self.gen_type(&variant_type);
         let unwrapped_ptr = self.builder.build_bit_cast(
             unwrapped_ptr_of_largest_member_type,
@@ -1376,7 +1649,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             .collect::<Vec<_>>();
         variant_types
             .into_iter()
-            .max_by_key(|t| self.size_of(t))
+            .max_by_key(|t| self.size_of_(t))
             .unwrap_or(self.named_types.nil)
     }
 
@@ -1406,11 +1679,14 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                                  adt.name.s,
                                  adt_inst,
                                  self.named_types.adts_inner)
-                });
+                })
+                .clone();
             let wrapped_largest =
                 self.build_struct_of_type(&[tag, unwrapped_largest], adt_inner_type);
             wrapped_largest.set_name("gen-new_wrapped-larg");
-            let wrapped_largest_heap = self.build_val_on_heap(env, wrapped_largest);
+            let wrapped_largest_heap = self.gen_gc_alloc_adt(adt.name.s, adt_inst, adt_inner_type);
+            self.builder
+                .build_store(wrapped_largest, wrapped_largest_heap);
             wrapped_largest_heap.set_name("gen-new_wrapped-larg-heap");
             wrapped_largest_heap
         } else {
@@ -1767,3 +2043,81 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         self.builder.build_ret(0i32.compile(self.ctx));
     }
 }
+
+// Need to handle temporary allocs and nested allocs. E.g.:
+//
+// For heap allocated a, b, c:
+// let x = cdr (cons (new a)
+//                   -- don't dealloc `a` yet
+//                   (new b))
+//     -- May dealloc `a` now, but not `b`
+//     y = (new c)
+// in x + y
+//
+// Maybe: On allocation, mark as temporary (temporaries may not be
+//        deallocated). Then as soon as a binding happens (let
+//        binding, lambda param binding), add the obj visitor for the
+//        arbitrary type to a stack of obj visitors for all locals, and empty the set
+
+// # How to communicate w gc:
+//
+// Overall stratergy: As far as possible, each special form should be responsible for its own intermediates.
+//
+// ## For let:
+//
+// A let consists of:
+//   (scope enter), bindings, body, scope exit
+//     where bindings = (intermediate*, binding)+
+//           body = intermediate*
+//           scope exit = return / tail call
+//
+// On scope enter: Signal new scope
+// On intermediate alloc: Tell gc intermediate alloced
+// On variable binding: Tell gc of new local var w obj visitor, clear current scope of intermediates
+//   Problem: Except for recursive ADTs, locals will be in registers, not on the stack, so we can't send pointers to the gc.
+//   Solution: Put them on the stack as well?
+// repeat for all bindings
+// On intermediates allocs in body: Tell gc intermediates alloced
+// On scope exit: Tell gc to pop locals in scope, send all intermediates (from body) to parent scope.
+// In next scope:
+//   If returned:
+//     If the previous let was part of calculating a
+//     binding in a parent let, the intermediates will be treated
+//     appropriately by induction. Would work fine as well if the
+//     returned value is passed as an argument to a function. The
+//     lambda param binding will clear the scope of intermediates
+//     appropriately.
+//   If tail call:
+//     The lambda param binding will be a root and will
+//     make sure needed pointers are reachable. Intermediates will be
+//     appropriately cleared.
+//
+// ## For lambda:
+//
+// A lambda consists of:
+//   scope enter, body, scope exit
+//
+// On scope enter: Register param. Is it ok to clear all intermediates here? Should we register a new scope to the gc?
+// On return / tail call: Clear all locals and
+//
+// ## In general:
+// On return / tail call: Clear intermediates of scope, pop locals.
+// After return / tail call: Put returned/param register on stack and register local.
+//  Alt: At tail call: Clear all and register param later,
+//       At return (after tail call or not): Don't clear. Leave that to the parent.
+
+// ## If
+//
+// I guess the predicate can be seen as a scope of its own?
+
+// Always look at type to determine if it's even possible for the type to contain a heap pointer.
+
+// Don't forget that I don't have multary functions.
+//
+// h(f(), g()) is really h(f())(g())
+//
+// In the former case, I would have to eval both f() and g() before
+// h(..), and would have to keep f() as an intermediate heap alloc
+// while calculating g().
+//
+// In my case, g() is not calculated until after h(f()).

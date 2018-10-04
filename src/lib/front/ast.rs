@@ -1404,6 +1404,13 @@ impl<'s> Adts<'s> {
     //     self.is_rec_type(&typ, adt_name)
     // }
 
+    pub fn adt_of_name_is_recursive(&self, adt_name: &str) -> bool {
+        let adt = self.defs
+            .get(adt_name)
+            .expect(&format!("ICE: No adt of name `{}`", adt_name));
+        self.adt_is_recursive(adt)
+    }
+
     pub fn adt_is_recursive(&self, adt: &AdtDef) -> bool {
         self.is_rec_adt(adt, adt.name.s, &mut BTreeSet::new())
     }
