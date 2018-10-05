@@ -553,10 +553,25 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         let mut captures_types = Vec::new();
         for (_, insts) in free_vars {
             for &(_, ref typ) in insts {
-                captures_types.push(self.gen_type(typ));
+                captures_types.push(typ);
             }
         }
-        StructType::new(self.ctx, &captures_types, false)
+        self.gen_struct_type(captures_types)
+    }
+
+    fn gen_struct_type<'a, I>(&mut self, types: I) -> &'ctx Type
+    where
+        'src: 'a,
+        I: IntoIterator<Item = &'a ast::Type<'src>>,
+    {
+        StructType::new(
+            self.ctx,
+            &types
+                .into_iter()
+                .map(|t| self.gen_type(t))
+                .collect::<Vec<_>>(),
+            false,
+        )
     }
 
     /// Generate an external function declaration
@@ -1001,6 +1016,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
     }
 
     fn gen_captures_obj_visitor(&mut self, types: Vec<ast::Type<'src>>) -> Option<&'ctx Function> {
+        println!("gen_captures_obj_visitor: types: {:?}", types);
         if let Some(visitor) = self.gc.captures_obj_visitors.get(&types) {
             return visitor.clone();
         }
@@ -1021,7 +1037,9 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             let func = self.module.add_function(&name, self.gc.obj_visitor_type);
             let entry = func.append("entry");
             self.builder.position_at_end(entry);
-            let captures = &*func[0];
+            let captures_generic = &*func[0];
+            let captures_type = PointerType::new(self.gen_struct_type(&types));
+            let captures = self.builder.build_bit_cast(captures_generic, captures_type);
             captures.set_name("captures");
             let obj_handler = &*func[1];
             obj_handler.set_name("obj_handler");
@@ -1954,7 +1972,8 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
             funcs.push(&*func);
             env.add_global_inst(name, inst.to_vec(), Global::Func(glob_func));
         }
-        for ((_, _, lam), func) in bindings.into_iter().zip(funcs) {
+        for ((name, _, lam), func) in bindings.into_iter().zip(funcs) {
+            println!("gen_func_def: name: {}", name);
             self.gen_func_def(env, func, lam);
         }
     }
