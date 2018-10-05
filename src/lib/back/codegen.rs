@@ -907,7 +907,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         if let Some(visitor) = self.gc.adt_obj_visitors.get(&(name, inst.to_vec())) {
             return visitor;
         }
-        let name = format!(
+        let visitor_name = format!(
             "obj_visitor_adt_{}_[{}]",
             name,
             inst.iter()
@@ -915,10 +915,19 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
                 .intersperse("_".to_string())
                 .collect::<String>()
         );
-        let func = self.module.add_function(&name, self.gc.obj_visitor_type);
+        let func = self.module
+            .add_function(&visitor_name, self.gc.obj_visitor_type);
         let entry = func.append("entry");
         self.builder.position_at_end(entry);
-        let adt = &*func[0];
+        let adt_generic = &*func[0];
+        let tag_type = Type::get::<u16>(self.ctx);
+        let inner_type_generic = Type::get::<u8>(self.ctx);
+        let adt_type = PointerType::new(StructType::new(
+            self.ctx,
+            &[tag_type, inner_type_generic],
+            false,
+        ));
+        let adt = self.builder.build_bit_cast(adt_generic, adt_type);
         adt.set_name("adt");
         let tag = self.build_load_car(adt);
         tag.set_name("tag");
@@ -928,7 +937,7 @@ impl<'src: 'ast, 'ast, 'ctx> CodeGenerator<'ctx, 'src> {
         obj_handler.set_name("obj_handler");
         // Switch over variants.
         let mut cases: Vec<(&Value, &BasicBlock)> = vec![];
-        let variants = self.adts.defs[name.as_str()]
+        let variants = self.adts.defs[name]
             .variants
             .iter()
             .cloned()
