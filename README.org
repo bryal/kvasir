@@ -1,7 +1,8 @@
 #+TITLE: The Kvasir Programming Language
 
-/NOTE: Kvasir is very much a WIP. Documentation is lacking and may be outdated at places.
-The project may be difficult to build and buggy to use./
+** /UNMAINTAINED/
+
+Kvasir is no longer maintained, in favour of a remake in Haskell called Carth. See https://git.sr.ht/~jojo/Carth.
 
 ** About
    Kvasir is a toy programming language, much inspired by Haskell, LISP/Scheme/Racket, and Rust.
